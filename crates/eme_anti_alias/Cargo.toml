@@ -1,0 +1,51 @@
+[package]
+name = "eme_anti_alias"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Provides various anti-aliasing implementations for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+trace = []
+webgl = []
+webgpu = []
+smaa_luts = ["eme_image/ktx2", "eme_image/zstd"]
+dlss = ["dep:dlss_wgpu", "dep:uuid", "eme_render/raw_vulkan_init"]
+force_disable_dlss = ["dlss_wgpu?/mock"]
+
+[dependencies]
+# eme
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_render = { path = "../eme_render", version = "0.20.0-dev" }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_utils = { path = "../eme_utils", version = "0.20.0-dev" }
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_image = { path = "../eme_image", version = "0.20.0-dev" }
+eme_derive = { path = "../eme_derive", version = "0.20.0-dev" }
+eme_shader = { path = "../eme_shader", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_extract = { path = "../eme_extract", version = "0.20.0-dev" }
+eme_core_pipeline = { path = "../eme_core_pipeline", version = "0.20.0-dev" }
+eme_diagnostic = { path = "../eme_diagnostic", version = "0.20.0-dev" }
+
+# other
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+dlss_wgpu = { version = "5.0.0", optional = true }
+uuid = { version = "1.21.0", optional = true }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true
+features = ["eme_image/zstd_rust"]

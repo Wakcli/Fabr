@@ -1,0 +1,18 @@
+[package]
+name = "eme_derive_compile_fail"
+edition = "2024"
+description = "Compile fail tests for Eme Engine's various macros"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+eme_derive = { path = "../" }
+
+[dev-dependencies]
+compile_fail_utils = { path = "../../../tools/compile_fail_utils" }
+
+[[test]]
+name = "derive"
+harness = false

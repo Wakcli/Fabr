@@ -1,0 +1,65 @@
+[package]
+name = "eme_camera_controller"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Premade camera controllers for Eme"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme", "input", "camera", "control"]
+rust-version = "1.85.0"
+
+[dependencies]
+eme_app = { path = "../eme_app", version = "0.20.0-dev", default-features = false }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev", default-features = false }
+eme_curve = { path = "../eme_curve", version = "0.20.0-dev", default-features = false }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev", default-features = false }
+eme_input = { path = "../eme_input", version = "0.20.0-dev", default-features = false }
+eme_log = { path = "../eme_log", version = "0.20.0-dev", default-features = false }
+eme_math = { path = "../eme_math", version = "0.20.0-dev", default-features = false }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev", default-features = false, optional = true }
+eme_time = { path = "../eme_time", version = "0.20.0-dev", default-features = false }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev", default-features = false }
+eme_window = { path = "../eme_window", version = "0.20.0-dev", default-features = false }
+eme_picking = { path = "../eme_picking", version = "0.20.0-dev", default-features = false }
+
+eme_derive = { path = "../eme_derive", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev" }
+eme_image = { path = "../eme_image", version = "0.20.0-dev" }
+eme_render = { path = "../eme_render", version = "0.20.0-dev" }
+eme_color = { path = "../eme_color", version = "0.20.0-dev" }
+
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev", optional = true }
+eme_core_pipeline = { path = "../eme_core_pipeline", version = "0.20.0-dev", optional = true }
+eme_gizmos = { path = "../eme_gizmos", version = "0.20.0-dev", optional = true }
+
+
+[features]
+default = ["eme_reflect"]
+eme_reflect = ["dep:eme_reflect"]
+libm = ["eme_math/libm"]
+
+# Camera controllers
+free_camera = []
+pan_camera = []
+pan_orbit_camera = []
+
+# PanOrbitCamera's extensions
+
+extension_anchor_indicator = ["pan_orbit_camera", "eme_gizmos"]
+extension_independent_skybox = [
+  "pan_orbit_camera",
+  "eme_asset",
+  "eme_core_pipeline",
+]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

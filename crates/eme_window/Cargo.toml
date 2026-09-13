@@ -1,0 +1,88 @@
+[package]
+name = "eme_window"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Provides windowing functionality for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+default = ["std", "eme_reflect"]
+
+# Functionality
+
+## Adds runtime reflection support using `eme_reflect`.
+eme_reflect = [
+  "dep:eme_reflect",
+  "eme_app/eme_reflect",
+  "eme_ecs/eme_reflect",
+  "eme_input/eme_reflect",
+]
+
+## Adds serialization support through `serde`.
+serialize = ["serde", "eme_ecs/serialize", "eme_input/serialize"]
+
+# Enable custom cursor support
+custom_cursor = ["eme_image", "eme_asset"]
+
+# Platform Compatibility
+
+## Allows access to the `std` crate. Enabling this feature will prevent compilation
+## on `no_std` targets, but provides access to certain additional features on
+## supported platforms.
+std = [
+  "eme_app/std",
+  "eme_ecs/std",
+  "eme_input/std",
+  "eme_math/std",
+  "eme_reflect?/std",
+  "serde?/std",
+  "raw-window-handle/std",
+  "eme_platform/std",
+]
+
+## Uses the `libm` maths library instead of the one provided in `std` and `core`.
+libm = ["eme_math/libm"]
+
+[dependencies]
+# eme
+eme_app = { path = "../eme_app", version = "0.20.0-dev", default-features = false }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev", default-features = false }
+eme_input = { path = "../eme_input", version = "0.20.0-dev", default-features = false, features = [
+  "gestures",
+  "keyboard",
+  "mouse",
+  "touch",
+] }
+eme_math = { path = "../eme_math", version = "0.20.0-dev", default-features = false }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-features = false }
+
+# eme optional
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev", default-features = false, optional = true }
+eme_image = { path = "../eme_image", version = "0.20.0-dev", optional = true }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev", default-features = false, features = [
+  "glam",
+], optional = true }
+
+# other
+serde = { version = "1.0", features = [
+  "alloc",
+  "derive",
+], default-features = false, optional = true }
+raw-window-handle = { version = "0.6", features = [
+  "alloc",
+], default-features = false }
+log = { version = "0.4", default-features = false }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

@@ -1,0 +1,41 @@
+[package]
+# crate was originally published as eme-settings and can't be renamed on crates.io
+name = "eme-settings"
+version = "0.20.0-dev"
+edition = "2024"
+description = "User settings framework for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[dependencies]
+# eme
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_ecs_macros = { path = "../eme_ecs/macros", version = "0.20.0-dev" }
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev" }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_tasks = { path = "../eme_tasks", version = "0.20.0-dev" }
+eme_time = { path = "../eme_time", version = "0.20.0-dev" }
+
+serde = "1.0.217"
+thiserror = "2.0.18"
+toml = { version = "1.1.0" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", default-features = false, features = [
+  "Window",
+  "Storage",
+] }
+
+[features]
+default = []
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = ["-Zunstable-options", "--generate-link-to-definition"]
+all-features = true

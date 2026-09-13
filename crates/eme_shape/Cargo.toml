@@ -1,0 +1,71 @@
+[package]
+description = "Provides primitive shape data definitions for Eme Engine"
+edition = "2024"
+homepage = "https://eme.org"
+keywords = ["eme"]
+license = "MIT OR Apache-2.0"
+name = "eme_shape"
+repository = "https://github.com/bevyengine/eme"
+rust-version = "1.94.0"
+version = "0.20.0-dev"
+
+[dependencies]
+eme_math = { path = "../eme_math", version = "0.20.0-dev", default-features = false }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev", default-features = false, features = [
+  "glam",
+], optional = true }
+
+arrayvec = { version = "0.7", default-features = false }
+thiserror = { version = "2", default-features = false }
+derive_more = { version = "2", default-features = false, features = [
+  "from",
+  "into",
+] }
+serde = { version = "1", default-features = false, features = [
+  "derive",
+], optional = true }
+approx = { version = "0.5", default-features = false, optional = true }
+rand = { version = "0.10", default-features = false, optional = true }
+rand_distr = { version = "0.6", optional = true }
+
+[dev-dependencies]
+approx = "0.5"
+# Enable the approx feature when testing.
+eme_math = { path = "../eme_math", version = "0.20.0-dev", default-features = false, features = [
+  "approx",
+] }
+# Supply rngs for examples and tests
+chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
+rand = "0.10"
+
+[features]
+alloc = ["eme_math/alloc", "rand_distr?/alloc"]
+default = ["rand", "std"]
+std = [
+  "alloc",
+  "eme_math/std",
+  "eme_reflect?/std",
+  "derive_more/std",
+  "rand?/std",
+  "rand_distr?/std",
+  "serde?/std",
+]
+
+serialize = ["eme_math/serialize", "dep:serde"]
+# Enable approx for glam types to approximate floating point equality comparisons and assertions
+approx = ["eme_math/approx", "dep:approx"]
+# Enable eme_reflect (requires alloc)
+eme_reflect = ["alloc", "eme_math/eme_reflect", "dep:eme_reflect"]
+# Enable the rand dependency for shape_sampling
+rand = ["eme_math/rand", "dep:rand", "dep:rand_distr"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+  "-Zunstable-options",
+]

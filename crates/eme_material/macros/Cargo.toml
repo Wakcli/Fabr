@@ -1,0 +1,29 @@
+[package]
+name = "eme_material_macros"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Derive implementations for eme_material"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+eme_macro_utils = { path = "../../eme_macro_utils", version = "0.20.0-dev" }
+
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

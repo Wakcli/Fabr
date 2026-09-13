@@ -1,0 +1,53 @@
+[package]
+name = "eme_ui_widgets"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Unstyled common widgets for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[dependencies]
+# eme
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_a11y = { path = "../eme_a11y", version = "0.20.0-dev" }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_input = { path = "../eme_input", version = "0.20.0-dev" }
+eme_input_focus = { path = "../eme_input_focus", version = "0.20.0-dev", features = [
+  "eme_picking",
+] }
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_picking = { path = "../eme_picking", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev" }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_ui = { path = "../eme_ui", version = "0.20.0-dev" }
+eme_text = { path = "../eme_text", version = "0.20.0-dev" }
+eme_time = { path = "../eme_time", version = "0.20.0-dev" }
+eme_window = { path = "../eme_window", version = "0.20.0-dev" }
+
+# other
+accesskit = "0.24"
+parley = { version = "0.11.0", default-features = false }
+smol_str = "0.2"
+
+# The shortcut layout (Cmd vs Ctrl) depends on the HOST os, which on wasm is
+# only knowable at runtime -- see `mac_host` in text_input.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Navigator"] }
+
+[features]
+default = []
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

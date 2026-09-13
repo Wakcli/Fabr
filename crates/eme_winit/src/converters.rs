@@ -1,0 +1,755 @@
+//! Helpers for mapping between winit and eme types
+use eme_ecs::entity::Entity;
+use eme_input::{
+    keyboard::{KeyCode, KeyboardInput, NativeKeyCode},
+    mouse::MouseButton,
+    touch::{ForceTouch, TouchInput, TouchPhase},
+    ButtonState,
+};
+use eme_math::{CompassOctant, Vec2};
+use eme_window::SystemCursorIcon;
+use eme_window::{EnabledButtons, WindowLevel, WindowTheme};
+use winit::keyboard::{Key, NamedKey, NativeKey};
+
+#[cfg(target_os = "ios")]
+use eme_window::ScreenEdge;
+
+/// Converts a [`winit::event::KeyEvent`] and a window [`Entity`] to a Eme [`KeyboardInput`]
+pub fn convert_keyboard_input(
+    keyboard_input: &winit::event::KeyEvent,
+    window: Entity,
+) -> KeyboardInput {
+    KeyboardInput {
+        state: convert_element_state(keyboard_input.state),
+        key_code: convert_physical_key_code(keyboard_input.physical_key),
+        logical_key: convert_logical_key(&keyboard_input.logical_key),
+        text: keyboard_input.text.clone(),
+        repeat: keyboard_input.repeat,
+        window,
+    }
+}
+
+/// Converts a [`winit::event::ElementState`] to a Eme [`ButtonState`]
+pub fn convert_element_state(element_state: winit::event::ElementState) -> ButtonState {
+    match element_state {
+        winit::event::ElementState::Pressed => ButtonState::Pressed,
+        winit::event::ElementState::Released => ButtonState::Released,
+    }
+}
+
+/// Converts a [`winit::event::MouseButton`] to a Eme [`MouseButton`]
+pub fn convert_mouse_button(mouse_button: winit::event::MouseButton) -> MouseButton {
+    match mouse_button {
+        winit::event::MouseButton::Left => MouseButton::Left,
+        winit::event::MouseButton::Right => MouseButton::Right,
+        winit::event::MouseButton::Middle => MouseButton::Middle,
+        winit::event::MouseButton::Back => MouseButton::Back,
+        winit::event::MouseButton::Forward => MouseButton::Forward,
+        winit::event::MouseButton::Other(val) => MouseButton::Other(val),
+    }
+}
+
+/// Converts a [`winit::event::TouchPhase`] to a Eme [`TouchPhase`].
+pub fn convert_touch_phase(phase: winit::event::TouchPhase) -> TouchPhase {
+    match phase {
+        winit::event::TouchPhase::Started => TouchPhase::Started,
+        winit::event::TouchPhase::Moved => TouchPhase::Moved,
+        winit::event::TouchPhase::Ended => TouchPhase::Ended,
+        winit::event::TouchPhase::Cancelled => TouchPhase::Canceled,
+    }
+}
+
+/// Converts a [`winit::event::Touch`], [`winit::dpi::LogicalPosition<f64>`] and window [`Entity`] to a Eme [`TouchInput`]
+pub fn convert_touch_input(
+    touch_input: winit::event::Touch,
+    location: winit::dpi::LogicalPosition<f64>,
+    window_entity: Entity,
+) -> TouchInput {
+    TouchInput {
+        phase: convert_touch_phase(touch_input.phase),
+        position: Vec2::new(location.x as f32, location.y as f32),
+        window: window_entity,
+        force: touch_input.force.map(|f| match f {
+            winit::event::Force::Calibrated {
+                force,
+                max_possible_force,
+                altitude_angle,
+            } => ForceTouch::Calibrated {
+                force,
+                max_possible_force,
+                altitude_angle,
+            },
+            winit::event::Force::Normalized(x) => ForceTouch::Normalized(x),
+        }),
+        id: touch_input.id,
+    }
+}
+
+/// Converts a [`winit::keyboard::NativeKeyCode`] to a Eme [`NativeKeyCode`]
+pub fn convert_physical_native_key_code(
+    native_key_code: winit::keyboard::NativeKeyCode,
+) -> NativeKeyCode {
+    match native_key_code {
+        winit::keyboard::NativeKeyCode::Unidentified => NativeKeyCode::Unidentified,
+        winit::keyboard::NativeKeyCode::Android(scan_code) => NativeKeyCode::Android(scan_code),
+        winit::keyboard::NativeKeyCode::MacOS(scan_code) => NativeKeyCode::MacOS(scan_code),
+        winit::keyboard::NativeKeyCode::Windows(scan_code) => NativeKeyCode::Windows(scan_code),
+        winit::keyboard::NativeKeyCode::Xkb(key_code) => NativeKeyCode::Xkb(key_code),
+    }
+}
+/// Converts a [`winit::keyboard::PhysicalKey`] to a Eme [`KeyCode`]
+pub fn convert_physical_key_code(virtual_key_code: winit::keyboard::PhysicalKey) -> KeyCode {
+    match virtual_key_code {
+        winit::keyboard::PhysicalKey::Unidentified(native_key_code) => {
+            KeyCode::Unidentified(convert_physical_native_key_code(native_key_code))
+        }
+        winit::keyboard::PhysicalKey::Code(code) => match code {
+            winit::keyboard::KeyCode::Backquote => KeyCode::Backquote,
+            winit::keyboard::KeyCode::Backslash => KeyCode::Backslash,
+            winit::keyboard::KeyCode::BracketLeft => KeyCode::BracketLeft,
+            winit::keyboard::KeyCode::BracketRight => KeyCode::BracketRight,
+            winit::keyboard::KeyCode::Comma => KeyCode::Comma,
+            winit::keyboard::KeyCode::Digit0 => KeyCode::Digit0,
+            winit::keyboard::KeyCode::Digit1 => KeyCode::Digit1,
+            winit::keyboard::KeyCode::Digit2 => KeyCode::Digit2,
+            winit::keyboard::KeyCode::Digit3 => KeyCode::Digit3,
+            winit::keyboard::KeyCode::Digit4 => KeyCode::Digit4,
+            winit::keyboard::KeyCode::Digit5 => KeyCode::Digit5,
+            winit::keyboard::KeyCode::Digit6 => KeyCode::Digit6,
+            winit::keyboard::KeyCode::Digit7 => KeyCode::Digit7,
+            winit::keyboard::KeyCode::Digit8 => KeyCode::Digit8,
+            winit::keyboard::KeyCode::Digit9 => KeyCode::Digit9,
+            winit::keyboard::KeyCode::Equal => KeyCode::Equal,
+            winit::keyboard::KeyCode::IntlBackslash => KeyCode::IntlBackslash,
+            winit::keyboard::KeyCode::IntlRo => KeyCode::IntlRo,
+            winit::keyboard::KeyCode::IntlYen => KeyCode::IntlYen,
+            winit::keyboard::KeyCode::KeyA => KeyCode::KeyA,
+            winit::keyboard::KeyCode::KeyB => KeyCode::KeyB,
+            winit::keyboard::KeyCode::KeyC => KeyCode::KeyC,
+            winit::keyboard::KeyCode::KeyD => KeyCode::KeyD,
+            winit::keyboard::KeyCode::KeyE => KeyCode::KeyE,
+            winit::keyboard::KeyCode::KeyF => KeyCode::KeyF,
+            winit::keyboard::KeyCode::KeyG => KeyCode::KeyG,
+            winit::keyboard::KeyCode::KeyH => KeyCode::KeyH,
+            winit::keyboard::KeyCode::KeyI => KeyCode::KeyI,
+            winit::keyboard::KeyCode::KeyJ => KeyCode::KeyJ,
+            winit::keyboard::KeyCode::KeyK => KeyCode::KeyK,
+            winit::keyboard::KeyCode::KeyL => KeyCode::KeyL,
+            winit::keyboard::KeyCode::KeyM => KeyCode::KeyM,
+            winit::keyboard::KeyCode::KeyN => KeyCode::KeyN,
+            winit::keyboard::KeyCode::KeyO => KeyCode::KeyO,
+            winit::keyboard::KeyCode::KeyP => KeyCode::KeyP,
+            winit::keyboard::KeyCode::KeyQ => KeyCode::KeyQ,
+            winit::keyboard::KeyCode::KeyR => KeyCode::KeyR,
+            winit::keyboard::KeyCode::KeyS => KeyCode::KeyS,
+            winit::keyboard::KeyCode::KeyT => KeyCode::KeyT,
+            winit::keyboard::KeyCode::KeyU => KeyCode::KeyU,
+            winit::keyboard::KeyCode::KeyV => KeyCode::KeyV,
+            winit::keyboard::KeyCode::KeyW => KeyCode::KeyW,
+            winit::keyboard::KeyCode::KeyX => KeyCode::KeyX,
+            winit::keyboard::KeyCode::KeyY => KeyCode::KeyY,
+            winit::keyboard::KeyCode::KeyZ => KeyCode::KeyZ,
+            winit::keyboard::KeyCode::Minus => KeyCode::Minus,
+            winit::keyboard::KeyCode::Period => KeyCode::Period,
+            winit::keyboard::KeyCode::Quote => KeyCode::Quote,
+            winit::keyboard::KeyCode::Semicolon => KeyCode::Semicolon,
+            winit::keyboard::KeyCode::Slash => KeyCode::Slash,
+            winit::keyboard::KeyCode::AltLeft => KeyCode::AltLeft,
+            winit::keyboard::KeyCode::AltRight => KeyCode::AltRight,
+            winit::keyboard::KeyCode::Backspace => KeyCode::Backspace,
+            winit::keyboard::KeyCode::CapsLock => KeyCode::CapsLock,
+            winit::keyboard::KeyCode::ContextMenu => KeyCode::ContextMenu,
+            winit::keyboard::KeyCode::ControlLeft => KeyCode::ControlLeft,
+            winit::keyboard::KeyCode::ControlRight => KeyCode::ControlRight,
+            winit::keyboard::KeyCode::Enter => KeyCode::Enter,
+            winit::keyboard::KeyCode::SuperLeft => KeyCode::SuperLeft,
+            winit::keyboard::KeyCode::SuperRight => KeyCode::SuperRight,
+            winit::keyboard::KeyCode::ShiftLeft => KeyCode::ShiftLeft,
+            winit::keyboard::KeyCode::ShiftRight => KeyCode::ShiftRight,
+            winit::keyboard::KeyCode::Space => KeyCode::Space,
+            winit::keyboard::KeyCode::Tab => KeyCode::Tab,
+            winit::keyboard::KeyCode::Convert => KeyCode::Convert,
+            winit::keyboard::KeyCode::KanaMode => KeyCode::KanaMode,
+            winit::keyboard::KeyCode::Lang1 => KeyCode::Lang1,
+            winit::keyboard::KeyCode::Lang2 => KeyCode::Lang2,
+            winit::keyboard::KeyCode::Lang3 => KeyCode::Lang3,
+            winit::keyboard::KeyCode::Lang4 => KeyCode::Lang4,
+            winit::keyboard::KeyCode::Lang5 => KeyCode::Lang5,
+            winit::keyboard::KeyCode::NonConvert => KeyCode::NonConvert,
+            winit::keyboard::KeyCode::Delete => KeyCode::Delete,
+            winit::keyboard::KeyCode::End => KeyCode::End,
+            winit::keyboard::KeyCode::Help => KeyCode::Help,
+            winit::keyboard::KeyCode::Home => KeyCode::Home,
+            winit::keyboard::KeyCode::Insert => KeyCode::Insert,
+            winit::keyboard::KeyCode::PageDown => KeyCode::PageDown,
+            winit::keyboard::KeyCode::PageUp => KeyCode::PageUp,
+            winit::keyboard::KeyCode::ArrowDown => KeyCode::ArrowDown,
+            winit::keyboard::KeyCode::ArrowLeft => KeyCode::ArrowLeft,
+            winit::keyboard::KeyCode::ArrowRight => KeyCode::ArrowRight,
+            winit::keyboard::KeyCode::ArrowUp => KeyCode::ArrowUp,
+            winit::keyboard::KeyCode::NumLock => KeyCode::NumLock,
+            winit::keyboard::KeyCode::Numpad0 => KeyCode::Numpad0,
+            winit::keyboard::KeyCode::Numpad1 => KeyCode::Numpad1,
+            winit::keyboard::KeyCode::Numpad2 => KeyCode::Numpad2,
+            winit::keyboard::KeyCode::Numpad3 => KeyCode::Numpad3,
+            winit::keyboard::KeyCode::Numpad4 => KeyCode::Numpad4,
+            winit::keyboard::KeyCode::Numpad5 => KeyCode::Numpad5,
+            winit::keyboard::KeyCode::Numpad6 => KeyCode::Numpad6,
+            winit::keyboard::KeyCode::Numpad7 => KeyCode::Numpad7,
+            winit::keyboard::KeyCode::Numpad8 => KeyCode::Numpad8,
+            winit::keyboard::KeyCode::Numpad9 => KeyCode::Numpad9,
+            winit::keyboard::KeyCode::NumpadAdd => KeyCode::NumpadAdd,
+            winit::keyboard::KeyCode::NumpadBackspace => KeyCode::NumpadBackspace,
+            winit::keyboard::KeyCode::NumpadClear => KeyCode::NumpadClear,
+            winit::keyboard::KeyCode::NumpadClearEntry => KeyCode::NumpadClearEntry,
+            winit::keyboard::KeyCode::NumpadComma => KeyCode::NumpadComma,
+            winit::keyboard::KeyCode::NumpadDecimal => KeyCode::NumpadDecimal,
+            winit::keyboard::KeyCode::NumpadDivide => KeyCode::NumpadDivide,
+            winit::keyboard::KeyCode::NumpadEnter => KeyCode::NumpadEnter,
+            winit::keyboard::KeyCode::NumpadEqual => KeyCode::NumpadEqual,
+            winit::keyboard::KeyCode::NumpadHash => KeyCode::NumpadHash,
+            winit::keyboard::KeyCode::NumpadMemoryAdd => KeyCode::NumpadMemoryAdd,
+            winit::keyboard::KeyCode::NumpadMemoryClear => KeyCode::NumpadMemoryClear,
+            winit::keyboard::KeyCode::NumpadMemoryRecall => KeyCode::NumpadMemoryRecall,
+            winit::keyboard::KeyCode::NumpadMemoryStore => KeyCode::NumpadMemoryStore,
+            winit::keyboard::KeyCode::NumpadMemorySubtract => KeyCode::NumpadMemorySubtract,
+            winit::keyboard::KeyCode::NumpadMultiply => KeyCode::NumpadMultiply,
+            winit::keyboard::KeyCode::NumpadParenLeft => KeyCode::NumpadParenLeft,
+            winit::keyboard::KeyCode::NumpadParenRight => KeyCode::NumpadParenRight,
+            winit::keyboard::KeyCode::NumpadStar => KeyCode::NumpadStar,
+            winit::keyboard::KeyCode::NumpadSubtract => KeyCode::NumpadSubtract,
+            winit::keyboard::KeyCode::Escape => KeyCode::Escape,
+            winit::keyboard::KeyCode::Fn => KeyCode::Fn,
+            winit::keyboard::KeyCode::FnLock => KeyCode::FnLock,
+            winit::keyboard::KeyCode::PrintScreen => KeyCode::PrintScreen,
+            winit::keyboard::KeyCode::ScrollLock => KeyCode::ScrollLock,
+            winit::keyboard::KeyCode::Pause => KeyCode::Pause,
+            winit::keyboard::KeyCode::BrowserBack => KeyCode::BrowserBack,
+            winit::keyboard::KeyCode::BrowserFavorites => KeyCode::BrowserFavorites,
+            winit::keyboard::KeyCode::BrowserForward => KeyCode::BrowserForward,
+            winit::keyboard::KeyCode::BrowserHome => KeyCode::BrowserHome,
+            winit::keyboard::KeyCode::BrowserRefresh => KeyCode::BrowserRefresh,
+            winit::keyboard::KeyCode::BrowserSearch => KeyCode::BrowserSearch,
+            winit::keyboard::KeyCode::BrowserStop => KeyCode::BrowserStop,
+            winit::keyboard::KeyCode::Eject => KeyCode::Eject,
+            winit::keyboard::KeyCode::LaunchApp1 => KeyCode::LaunchApp1,
+            winit::keyboard::KeyCode::LaunchApp2 => KeyCode::LaunchApp2,
+            winit::keyboard::KeyCode::LaunchMail => KeyCode::LaunchMail,
+            winit::keyboard::KeyCode::MediaPlayPause => KeyCode::MediaPlayPause,
+            winit::keyboard::KeyCode::MediaSelect => KeyCode::MediaSelect,
+            winit::keyboard::KeyCode::MediaStop => KeyCode::MediaStop,
+            winit::keyboard::KeyCode::MediaTrackNext => KeyCode::MediaTrackNext,
+            winit::keyboard::KeyCode::MediaTrackPrevious => KeyCode::MediaTrackPrevious,
+            winit::keyboard::KeyCode::Power => KeyCode::Power,
+            winit::keyboard::KeyCode::Sleep => KeyCode::Sleep,
+            winit::keyboard::KeyCode::AudioVolumeDown => KeyCode::AudioVolumeDown,
+            winit::keyboard::KeyCode::AudioVolumeMute => KeyCode::AudioVolumeMute,
+            winit::keyboard::KeyCode::AudioVolumeUp => KeyCode::AudioVolumeUp,
+            winit::keyboard::KeyCode::WakeUp => KeyCode::WakeUp,
+            winit::keyboard::KeyCode::Meta => KeyCode::Meta,
+            winit::keyboard::KeyCode::Hyper => KeyCode::Hyper,
+            winit::keyboard::KeyCode::Turbo => KeyCode::Turbo,
+            winit::keyboard::KeyCode::Abort => KeyCode::Abort,
+            winit::keyboard::KeyCode::Resume => KeyCode::Resume,
+            winit::keyboard::KeyCode::Suspend => KeyCode::Suspend,
+            winit::keyboard::KeyCode::Again => KeyCode::Again,
+            winit::keyboard::KeyCode::Copy => KeyCode::Copy,
+            winit::keyboard::KeyCode::Cut => KeyCode::Cut,
+            winit::keyboard::KeyCode::Find => KeyCode::Find,
+            winit::keyboard::KeyCode::Open => KeyCode::Open,
+            winit::keyboard::KeyCode::Paste => KeyCode::Paste,
+            winit::keyboard::KeyCode::Props => KeyCode::Props,
+            winit::keyboard::KeyCode::Select => KeyCode::Select,
+            winit::keyboard::KeyCode::Undo => KeyCode::Undo,
+            winit::keyboard::KeyCode::Hiragana => KeyCode::Hiragana,
+            winit::keyboard::KeyCode::Katakana => KeyCode::Katakana,
+            winit::keyboard::KeyCode::F1 => KeyCode::F1,
+            winit::keyboard::KeyCode::F2 => KeyCode::F2,
+            winit::keyboard::KeyCode::F3 => KeyCode::F3,
+            winit::keyboard::KeyCode::F4 => KeyCode::F4,
+            winit::keyboard::KeyCode::F5 => KeyCode::F5,
+            winit::keyboard::KeyCode::F6 => KeyCode::F6,
+            winit::keyboard::KeyCode::F7 => KeyCode::F7,
+            winit::keyboard::KeyCode::F8 => KeyCode::F8,
+            winit::keyboard::KeyCode::F9 => KeyCode::F9,
+            winit::keyboard::KeyCode::F10 => KeyCode::F10,
+            winit::keyboard::KeyCode::F11 => KeyCode::F11,
+            winit::keyboard::KeyCode::F12 => KeyCode::F12,
+            winit::keyboard::KeyCode::F13 => KeyCode::F13,
+            winit::keyboard::KeyCode::F14 => KeyCode::F14,
+            winit::keyboard::KeyCode::F15 => KeyCode::F15,
+            winit::keyboard::KeyCode::F16 => KeyCode::F16,
+            winit::keyboard::KeyCode::F17 => KeyCode::F17,
+            winit::keyboard::KeyCode::F18 => KeyCode::F18,
+            winit::keyboard::KeyCode::F19 => KeyCode::F19,
+            winit::keyboard::KeyCode::F20 => KeyCode::F20,
+            winit::keyboard::KeyCode::F21 => KeyCode::F21,
+            winit::keyboard::KeyCode::F22 => KeyCode::F22,
+            winit::keyboard::KeyCode::F23 => KeyCode::F23,
+            winit::keyboard::KeyCode::F24 => KeyCode::F24,
+            winit::keyboard::KeyCode::F25 => KeyCode::F25,
+            winit::keyboard::KeyCode::F26 => KeyCode::F26,
+            winit::keyboard::KeyCode::F27 => KeyCode::F27,
+            winit::keyboard::KeyCode::F28 => KeyCode::F28,
+            winit::keyboard::KeyCode::F29 => KeyCode::F29,
+            winit::keyboard::KeyCode::F30 => KeyCode::F30,
+            winit::keyboard::KeyCode::F31 => KeyCode::F31,
+            winit::keyboard::KeyCode::F32 => KeyCode::F32,
+            winit::keyboard::KeyCode::F33 => KeyCode::F33,
+            winit::keyboard::KeyCode::F34 => KeyCode::F34,
+            winit::keyboard::KeyCode::F35 => KeyCode::F35,
+            _ => KeyCode::Unidentified(NativeKeyCode::Unidentified),
+        },
+    }
+}
+
+///Converts a [`winit::keyboard::Key`] to a Eme [`eme_input::keyboard::Key`]
+pub fn convert_logical_key(logical_key_code: &Key) -> eme_input::keyboard::Key {
+    match logical_key_code {
+        Key::Character(s) => eme_input::keyboard::Key::Character(s.clone()),
+        Key::Unidentified(nk) => eme_input::keyboard::Key::Unidentified(convert_native_key(nk)),
+        Key::Dead(c) => eme_input::keyboard::Key::Dead(c.to_owned()),
+        Key::Named(NamedKey::Alt) => eme_input::keyboard::Key::Alt,
+        Key::Named(NamedKey::AltGraph) => eme_input::keyboard::Key::AltGraph,
+        Key::Named(NamedKey::CapsLock) => eme_input::keyboard::Key::CapsLock,
+        Key::Named(NamedKey::Control) => eme_input::keyboard::Key::Control,
+        Key::Named(NamedKey::Fn) => eme_input::keyboard::Key::Fn,
+        Key::Named(NamedKey::FnLock) => eme_input::keyboard::Key::FnLock,
+        Key::Named(NamedKey::NumLock) => eme_input::keyboard::Key::NumLock,
+        Key::Named(NamedKey::ScrollLock) => eme_input::keyboard::Key::ScrollLock,
+        Key::Named(NamedKey::Shift) => eme_input::keyboard::Key::Shift,
+        Key::Named(NamedKey::Symbol) => eme_input::keyboard::Key::Symbol,
+        Key::Named(NamedKey::SymbolLock) => eme_input::keyboard::Key::SymbolLock,
+        Key::Named(NamedKey::Meta) => eme_input::keyboard::Key::Meta,
+        Key::Named(NamedKey::Hyper) => eme_input::keyboard::Key::Hyper,
+        Key::Named(NamedKey::Super) => eme_input::keyboard::Key::Super,
+        Key::Named(NamedKey::Enter) => eme_input::keyboard::Key::Enter,
+        Key::Named(NamedKey::Tab) => eme_input::keyboard::Key::Tab,
+        Key::Named(NamedKey::Space) => eme_input::keyboard::Key::Space,
+        Key::Named(NamedKey::ArrowDown) => eme_input::keyboard::Key::ArrowDown,
+        Key::Named(NamedKey::ArrowLeft) => eme_input::keyboard::Key::ArrowLeft,
+        Key::Named(NamedKey::ArrowRight) => eme_input::keyboard::Key::ArrowRight,
+        Key::Named(NamedKey::ArrowUp) => eme_input::keyboard::Key::ArrowUp,
+        Key::Named(NamedKey::End) => eme_input::keyboard::Key::End,
+        Key::Named(NamedKey::Home) => eme_input::keyboard::Key::Home,
+        Key::Named(NamedKey::PageDown) => eme_input::keyboard::Key::PageDown,
+        Key::Named(NamedKey::PageUp) => eme_input::keyboard::Key::PageUp,
+        Key::Named(NamedKey::Backspace) => eme_input::keyboard::Key::Backspace,
+        Key::Named(NamedKey::Clear) => eme_input::keyboard::Key::Clear,
+        Key::Named(NamedKey::Copy) => eme_input::keyboard::Key::Copy,
+        Key::Named(NamedKey::CrSel) => eme_input::keyboard::Key::CrSel,
+        Key::Named(NamedKey::Cut) => eme_input::keyboard::Key::Cut,
+        Key::Named(NamedKey::Delete) => eme_input::keyboard::Key::Delete,
+        Key::Named(NamedKey::EraseEof) => eme_input::keyboard::Key::EraseEof,
+        Key::Named(NamedKey::ExSel) => eme_input::keyboard::Key::ExSel,
+        Key::Named(NamedKey::Insert) => eme_input::keyboard::Key::Insert,
+        Key::Named(NamedKey::Paste) => eme_input::keyboard::Key::Paste,
+        Key::Named(NamedKey::Redo) => eme_input::keyboard::Key::Redo,
+        Key::Named(NamedKey::Undo) => eme_input::keyboard::Key::Undo,
+        Key::Named(NamedKey::Accept) => eme_input::keyboard::Key::Accept,
+        Key::Named(NamedKey::Again) => eme_input::keyboard::Key::Again,
+        Key::Named(NamedKey::Attn) => eme_input::keyboard::Key::Attn,
+        Key::Named(NamedKey::Cancel) => eme_input::keyboard::Key::Cancel,
+        Key::Named(NamedKey::ContextMenu) => eme_input::keyboard::Key::ContextMenu,
+        Key::Named(NamedKey::Escape) => eme_input::keyboard::Key::Escape,
+        Key::Named(NamedKey::Execute) => eme_input::keyboard::Key::Execute,
+        Key::Named(NamedKey::Find) => eme_input::keyboard::Key::Find,
+        Key::Named(NamedKey::Help) => eme_input::keyboard::Key::Help,
+        Key::Named(NamedKey::Pause) => eme_input::keyboard::Key::Pause,
+        Key::Named(NamedKey::Play) => eme_input::keyboard::Key::Play,
+        Key::Named(NamedKey::Props) => eme_input::keyboard::Key::Props,
+        Key::Named(NamedKey::Select) => eme_input::keyboard::Key::Select,
+        Key::Named(NamedKey::ZoomIn) => eme_input::keyboard::Key::ZoomIn,
+        Key::Named(NamedKey::ZoomOut) => eme_input::keyboard::Key::ZoomOut,
+        Key::Named(NamedKey::BrightnessDown) => eme_input::keyboard::Key::BrightnessDown,
+        Key::Named(NamedKey::BrightnessUp) => eme_input::keyboard::Key::BrightnessUp,
+        Key::Named(NamedKey::Eject) => eme_input::keyboard::Key::Eject,
+        Key::Named(NamedKey::LogOff) => eme_input::keyboard::Key::LogOff,
+        Key::Named(NamedKey::Power) => eme_input::keyboard::Key::Power,
+        Key::Named(NamedKey::PowerOff) => eme_input::keyboard::Key::PowerOff,
+        Key::Named(NamedKey::PrintScreen) => eme_input::keyboard::Key::PrintScreen,
+        Key::Named(NamedKey::Hibernate) => eme_input::keyboard::Key::Hibernate,
+        Key::Named(NamedKey::Standby) => eme_input::keyboard::Key::Standby,
+        Key::Named(NamedKey::WakeUp) => eme_input::keyboard::Key::WakeUp,
+        Key::Named(NamedKey::AllCandidates) => eme_input::keyboard::Key::AllCandidates,
+        Key::Named(NamedKey::Alphanumeric) => eme_input::keyboard::Key::Alphanumeric,
+        Key::Named(NamedKey::CodeInput) => eme_input::keyboard::Key::CodeInput,
+        Key::Named(NamedKey::Compose) => eme_input::keyboard::Key::Compose,
+        Key::Named(NamedKey::Convert) => eme_input::keyboard::Key::Convert,
+        Key::Named(NamedKey::FinalMode) => eme_input::keyboard::Key::FinalMode,
+        Key::Named(NamedKey::GroupFirst) => eme_input::keyboard::Key::GroupFirst,
+        Key::Named(NamedKey::GroupLast) => eme_input::keyboard::Key::GroupLast,
+        Key::Named(NamedKey::GroupNext) => eme_input::keyboard::Key::GroupNext,
+        Key::Named(NamedKey::GroupPrevious) => eme_input::keyboard::Key::GroupPrevious,
+        Key::Named(NamedKey::ModeChange) => eme_input::keyboard::Key::ModeChange,
+        Key::Named(NamedKey::NextCandidate) => eme_input::keyboard::Key::NextCandidate,
+        Key::Named(NamedKey::NonConvert) => eme_input::keyboard::Key::NonConvert,
+        Key::Named(NamedKey::PreviousCandidate) => eme_input::keyboard::Key::PreviousCandidate,
+        Key::Named(NamedKey::Process) => eme_input::keyboard::Key::Process,
+        Key::Named(NamedKey::SingleCandidate) => eme_input::keyboard::Key::SingleCandidate,
+        Key::Named(NamedKey::HangulMode) => eme_input::keyboard::Key::HangulMode,
+        Key::Named(NamedKey::HanjaMode) => eme_input::keyboard::Key::HanjaMode,
+        Key::Named(NamedKey::JunjaMode) => eme_input::keyboard::Key::JunjaMode,
+        Key::Named(NamedKey::Eisu) => eme_input::keyboard::Key::Eisu,
+        Key::Named(NamedKey::Hankaku) => eme_input::keyboard::Key::Hankaku,
+        Key::Named(NamedKey::Hiragana) => eme_input::keyboard::Key::Hiragana,
+        Key::Named(NamedKey::HiraganaKatakana) => eme_input::keyboard::Key::HiraganaKatakana,
+        Key::Named(NamedKey::KanaMode) => eme_input::keyboard::Key::KanaMode,
+        Key::Named(NamedKey::KanjiMode) => eme_input::keyboard::Key::KanjiMode,
+        Key::Named(NamedKey::Katakana) => eme_input::keyboard::Key::Katakana,
+        Key::Named(NamedKey::Romaji) => eme_input::keyboard::Key::Romaji,
+        Key::Named(NamedKey::Zenkaku) => eme_input::keyboard::Key::Zenkaku,
+        Key::Named(NamedKey::ZenkakuHankaku) => eme_input::keyboard::Key::ZenkakuHankaku,
+        Key::Named(NamedKey::Soft1) => eme_input::keyboard::Key::Soft1,
+        Key::Named(NamedKey::Soft2) => eme_input::keyboard::Key::Soft2,
+        Key::Named(NamedKey::Soft3) => eme_input::keyboard::Key::Soft3,
+        Key::Named(NamedKey::Soft4) => eme_input::keyboard::Key::Soft4,
+        Key::Named(NamedKey::ChannelDown) => eme_input::keyboard::Key::ChannelDown,
+        Key::Named(NamedKey::ChannelUp) => eme_input::keyboard::Key::ChannelUp,
+        Key::Named(NamedKey::Close) => eme_input::keyboard::Key::Close,
+        Key::Named(NamedKey::MailForward) => eme_input::keyboard::Key::MailForward,
+        Key::Named(NamedKey::MailReply) => eme_input::keyboard::Key::MailReply,
+        Key::Named(NamedKey::MailSend) => eme_input::keyboard::Key::MailSend,
+        Key::Named(NamedKey::MediaClose) => eme_input::keyboard::Key::MediaClose,
+        Key::Named(NamedKey::MediaFastForward) => eme_input::keyboard::Key::MediaFastForward,
+        Key::Named(NamedKey::MediaPause) => eme_input::keyboard::Key::MediaPause,
+        Key::Named(NamedKey::MediaPlay) => eme_input::keyboard::Key::MediaPlay,
+        Key::Named(NamedKey::MediaPlayPause) => eme_input::keyboard::Key::MediaPlayPause,
+        Key::Named(NamedKey::MediaRecord) => eme_input::keyboard::Key::MediaRecord,
+        Key::Named(NamedKey::MediaRewind) => eme_input::keyboard::Key::MediaRewind,
+        Key::Named(NamedKey::MediaStop) => eme_input::keyboard::Key::MediaStop,
+        Key::Named(NamedKey::MediaTrackNext) => eme_input::keyboard::Key::MediaTrackNext,
+        Key::Named(NamedKey::MediaTrackPrevious) => eme_input::keyboard::Key::MediaTrackPrevious,
+        Key::Named(NamedKey::New) => eme_input::keyboard::Key::New,
+        Key::Named(NamedKey::Open) => eme_input::keyboard::Key::Open,
+        Key::Named(NamedKey::Print) => eme_input::keyboard::Key::Print,
+        Key::Named(NamedKey::Save) => eme_input::keyboard::Key::Save,
+        Key::Named(NamedKey::SpellCheck) => eme_input::keyboard::Key::SpellCheck,
+        Key::Named(NamedKey::Key11) => eme_input::keyboard::Key::Key11,
+        Key::Named(NamedKey::Key12) => eme_input::keyboard::Key::Key12,
+        Key::Named(NamedKey::AudioBalanceLeft) => eme_input::keyboard::Key::AudioBalanceLeft,
+        Key::Named(NamedKey::AudioBalanceRight) => eme_input::keyboard::Key::AudioBalanceRight,
+        Key::Named(NamedKey::AudioBassBoostDown) => eme_input::keyboard::Key::AudioBassBoostDown,
+        Key::Named(NamedKey::AudioBassBoostToggle) => {
+            eme_input::keyboard::Key::AudioBassBoostToggle
+        }
+        Key::Named(NamedKey::AudioBassBoostUp) => eme_input::keyboard::Key::AudioBassBoostUp,
+        Key::Named(NamedKey::AudioFaderFront) => eme_input::keyboard::Key::AudioFaderFront,
+        Key::Named(NamedKey::AudioFaderRear) => eme_input::keyboard::Key::AudioFaderRear,
+        Key::Named(NamedKey::AudioSurroundModeNext) => {
+            eme_input::keyboard::Key::AudioSurroundModeNext
+        }
+        Key::Named(NamedKey::AudioTrebleDown) => eme_input::keyboard::Key::AudioTrebleDown,
+        Key::Named(NamedKey::AudioTrebleUp) => eme_input::keyboard::Key::AudioTrebleUp,
+        Key::Named(NamedKey::AudioVolumeDown) => eme_input::keyboard::Key::AudioVolumeDown,
+        Key::Named(NamedKey::AudioVolumeUp) => eme_input::keyboard::Key::AudioVolumeUp,
+        Key::Named(NamedKey::AudioVolumeMute) => eme_input::keyboard::Key::AudioVolumeMute,
+        Key::Named(NamedKey::MicrophoneToggle) => eme_input::keyboard::Key::MicrophoneToggle,
+        Key::Named(NamedKey::MicrophoneVolumeDown) => {
+            eme_input::keyboard::Key::MicrophoneVolumeDown
+        }
+        Key::Named(NamedKey::MicrophoneVolumeUp) => eme_input::keyboard::Key::MicrophoneVolumeUp,
+        Key::Named(NamedKey::MicrophoneVolumeMute) => {
+            eme_input::keyboard::Key::MicrophoneVolumeMute
+        }
+        Key::Named(NamedKey::SpeechCorrectionList) => {
+            eme_input::keyboard::Key::SpeechCorrectionList
+        }
+        Key::Named(NamedKey::SpeechInputToggle) => eme_input::keyboard::Key::SpeechInputToggle,
+        Key::Named(NamedKey::LaunchApplication1) => eme_input::keyboard::Key::LaunchApplication1,
+        Key::Named(NamedKey::LaunchApplication2) => eme_input::keyboard::Key::LaunchApplication2,
+        Key::Named(NamedKey::LaunchCalendar) => eme_input::keyboard::Key::LaunchCalendar,
+        Key::Named(NamedKey::LaunchContacts) => eme_input::keyboard::Key::LaunchContacts,
+        Key::Named(NamedKey::LaunchMail) => eme_input::keyboard::Key::LaunchMail,
+        Key::Named(NamedKey::LaunchMediaPlayer) => eme_input::keyboard::Key::LaunchMediaPlayer,
+        Key::Named(NamedKey::LaunchMusicPlayer) => eme_input::keyboard::Key::LaunchMusicPlayer,
+        Key::Named(NamedKey::LaunchPhone) => eme_input::keyboard::Key::LaunchPhone,
+        Key::Named(NamedKey::LaunchScreenSaver) => eme_input::keyboard::Key::LaunchScreenSaver,
+        Key::Named(NamedKey::LaunchSpreadsheet) => eme_input::keyboard::Key::LaunchSpreadsheet,
+        Key::Named(NamedKey::LaunchWebBrowser) => eme_input::keyboard::Key::LaunchWebBrowser,
+        Key::Named(NamedKey::LaunchWebCam) => eme_input::keyboard::Key::LaunchWebCam,
+        Key::Named(NamedKey::LaunchWordProcessor) => eme_input::keyboard::Key::LaunchWordProcessor,
+        Key::Named(NamedKey::BrowserBack) => eme_input::keyboard::Key::BrowserBack,
+        Key::Named(NamedKey::BrowserFavorites) => eme_input::keyboard::Key::BrowserFavorites,
+        Key::Named(NamedKey::BrowserForward) => eme_input::keyboard::Key::BrowserForward,
+        Key::Named(NamedKey::BrowserHome) => eme_input::keyboard::Key::BrowserHome,
+        Key::Named(NamedKey::BrowserRefresh) => eme_input::keyboard::Key::BrowserRefresh,
+        Key::Named(NamedKey::BrowserSearch) => eme_input::keyboard::Key::BrowserSearch,
+        Key::Named(NamedKey::BrowserStop) => eme_input::keyboard::Key::BrowserStop,
+        Key::Named(NamedKey::AppSwitch) => eme_input::keyboard::Key::AppSwitch,
+        Key::Named(NamedKey::Call) => eme_input::keyboard::Key::Call,
+        Key::Named(NamedKey::Camera) => eme_input::keyboard::Key::Camera,
+        Key::Named(NamedKey::CameraFocus) => eme_input::keyboard::Key::CameraFocus,
+        Key::Named(NamedKey::EndCall) => eme_input::keyboard::Key::EndCall,
+        Key::Named(NamedKey::GoBack) => eme_input::keyboard::Key::GoBack,
+        Key::Named(NamedKey::GoHome) => eme_input::keyboard::Key::GoHome,
+        Key::Named(NamedKey::HeadsetHook) => eme_input::keyboard::Key::HeadsetHook,
+        Key::Named(NamedKey::LastNumberRedial) => eme_input::keyboard::Key::LastNumberRedial,
+        Key::Named(NamedKey::Notification) => eme_input::keyboard::Key::Notification,
+        Key::Named(NamedKey::MannerMode) => eme_input::keyboard::Key::MannerMode,
+        Key::Named(NamedKey::VoiceDial) => eme_input::keyboard::Key::VoiceDial,
+        Key::Named(NamedKey::TV) => eme_input::keyboard::Key::TV,
+        Key::Named(NamedKey::TV3DMode) => eme_input::keyboard::Key::TV3DMode,
+        Key::Named(NamedKey::TVAntennaCable) => eme_input::keyboard::Key::TVAntennaCable,
+        Key::Named(NamedKey::TVAudioDescription) => eme_input::keyboard::Key::TVAudioDescription,
+        Key::Named(NamedKey::TVAudioDescriptionMixDown) => {
+            eme_input::keyboard::Key::TVAudioDescriptionMixDown
+        }
+        Key::Named(NamedKey::TVAudioDescriptionMixUp) => {
+            eme_input::keyboard::Key::TVAudioDescriptionMixUp
+        }
+        Key::Named(NamedKey::TVContentsMenu) => eme_input::keyboard::Key::TVContentsMenu,
+        Key::Named(NamedKey::TVDataService) => eme_input::keyboard::Key::TVDataService,
+        Key::Named(NamedKey::TVInput) => eme_input::keyboard::Key::TVInput,
+        Key::Named(NamedKey::TVInputComponent1) => eme_input::keyboard::Key::TVInputComponent1,
+        Key::Named(NamedKey::TVInputComponent2) => eme_input::keyboard::Key::TVInputComponent2,
+        Key::Named(NamedKey::TVInputComposite1) => eme_input::keyboard::Key::TVInputComposite1,
+        Key::Named(NamedKey::TVInputComposite2) => eme_input::keyboard::Key::TVInputComposite2,
+        Key::Named(NamedKey::TVInputHDMI1) => eme_input::keyboard::Key::TVInputHDMI1,
+        Key::Named(NamedKey::TVInputHDMI2) => eme_input::keyboard::Key::TVInputHDMI2,
+        Key::Named(NamedKey::TVInputHDMI3) => eme_input::keyboard::Key::TVInputHDMI3,
+        Key::Named(NamedKey::TVInputHDMI4) => eme_input::keyboard::Key::TVInputHDMI4,
+        Key::Named(NamedKey::TVInputVGA1) => eme_input::keyboard::Key::TVInputVGA1,
+        Key::Named(NamedKey::TVMediaContext) => eme_input::keyboard::Key::TVMediaContext,
+        Key::Named(NamedKey::TVNetwork) => eme_input::keyboard::Key::TVNetwork,
+        Key::Named(NamedKey::TVNumberEntry) => eme_input::keyboard::Key::TVNumberEntry,
+        Key::Named(NamedKey::TVPower) => eme_input::keyboard::Key::TVPower,
+        Key::Named(NamedKey::TVRadioService) => eme_input::keyboard::Key::TVRadioService,
+        Key::Named(NamedKey::TVSatellite) => eme_input::keyboard::Key::TVSatellite,
+        Key::Named(NamedKey::TVSatelliteBS) => eme_input::keyboard::Key::TVSatelliteBS,
+        Key::Named(NamedKey::TVSatelliteCS) => eme_input::keyboard::Key::TVSatelliteCS,
+        Key::Named(NamedKey::TVSatelliteToggle) => eme_input::keyboard::Key::TVSatelliteToggle,
+        Key::Named(NamedKey::TVTerrestrialAnalog) => eme_input::keyboard::Key::TVTerrestrialAnalog,
+        Key::Named(NamedKey::TVTerrestrialDigital) => {
+            eme_input::keyboard::Key::TVTerrestrialDigital
+        }
+        Key::Named(NamedKey::TVTimer) => eme_input::keyboard::Key::TVTimer,
+        Key::Named(NamedKey::AVRInput) => eme_input::keyboard::Key::AVRInput,
+        Key::Named(NamedKey::AVRPower) => eme_input::keyboard::Key::AVRPower,
+        Key::Named(NamedKey::ColorF0Red) => eme_input::keyboard::Key::ColorF0Red,
+        Key::Named(NamedKey::ColorF1Green) => eme_input::keyboard::Key::ColorF1Green,
+        Key::Named(NamedKey::ColorF2Yellow) => eme_input::keyboard::Key::ColorF2Yellow,
+        Key::Named(NamedKey::ColorF3Blue) => eme_input::keyboard::Key::ColorF3Blue,
+        Key::Named(NamedKey::ColorF4Grey) => eme_input::keyboard::Key::ColorF4Grey,
+        Key::Named(NamedKey::ColorF5Brown) => eme_input::keyboard::Key::ColorF5Brown,
+        Key::Named(NamedKey::ClosedCaptionToggle) => eme_input::keyboard::Key::ClosedCaptionToggle,
+        Key::Named(NamedKey::Dimmer) => eme_input::keyboard::Key::Dimmer,
+        Key::Named(NamedKey::DisplaySwap) => eme_input::keyboard::Key::DisplaySwap,
+        Key::Named(NamedKey::DVR) => eme_input::keyboard::Key::DVR,
+        Key::Named(NamedKey::Exit) => eme_input::keyboard::Key::Exit,
+        Key::Named(NamedKey::FavoriteClear0) => eme_input::keyboard::Key::FavoriteClear0,
+        Key::Named(NamedKey::FavoriteClear1) => eme_input::keyboard::Key::FavoriteClear1,
+        Key::Named(NamedKey::FavoriteClear2) => eme_input::keyboard::Key::FavoriteClear2,
+        Key::Named(NamedKey::FavoriteClear3) => eme_input::keyboard::Key::FavoriteClear3,
+        Key::Named(NamedKey::FavoriteRecall0) => eme_input::keyboard::Key::FavoriteRecall0,
+        Key::Named(NamedKey::FavoriteRecall1) => eme_input::keyboard::Key::FavoriteRecall1,
+        Key::Named(NamedKey::FavoriteRecall2) => eme_input::keyboard::Key::FavoriteRecall2,
+        Key::Named(NamedKey::FavoriteRecall3) => eme_input::keyboard::Key::FavoriteRecall3,
+        Key::Named(NamedKey::FavoriteStore0) => eme_input::keyboard::Key::FavoriteStore0,
+        Key::Named(NamedKey::FavoriteStore1) => eme_input::keyboard::Key::FavoriteStore1,
+        Key::Named(NamedKey::FavoriteStore2) => eme_input::keyboard::Key::FavoriteStore2,
+        Key::Named(NamedKey::FavoriteStore3) => eme_input::keyboard::Key::FavoriteStore3,
+        Key::Named(NamedKey::Guide) => eme_input::keyboard::Key::Guide,
+        Key::Named(NamedKey::GuideNextDay) => eme_input::keyboard::Key::GuideNextDay,
+        Key::Named(NamedKey::GuidePreviousDay) => eme_input::keyboard::Key::GuidePreviousDay,
+        Key::Named(NamedKey::Info) => eme_input::keyboard::Key::Info,
+        Key::Named(NamedKey::InstantReplay) => eme_input::keyboard::Key::InstantReplay,
+        Key::Named(NamedKey::Link) => eme_input::keyboard::Key::Link,
+        Key::Named(NamedKey::ListProgram) => eme_input::keyboard::Key::ListProgram,
+        Key::Named(NamedKey::LiveContent) => eme_input::keyboard::Key::LiveContent,
+        Key::Named(NamedKey::Lock) => eme_input::keyboard::Key::Lock,
+        Key::Named(NamedKey::MediaApps) => eme_input::keyboard::Key::MediaApps,
+        Key::Named(NamedKey::MediaAudioTrack) => eme_input::keyboard::Key::MediaAudioTrack,
+        Key::Named(NamedKey::MediaLast) => eme_input::keyboard::Key::MediaLast,
+        Key::Named(NamedKey::MediaSkipBackward) => eme_input::keyboard::Key::MediaSkipBackward,
+        Key::Named(NamedKey::MediaSkipForward) => eme_input::keyboard::Key::MediaSkipForward,
+        Key::Named(NamedKey::MediaStepBackward) => eme_input::keyboard::Key::MediaStepBackward,
+        Key::Named(NamedKey::MediaStepForward) => eme_input::keyboard::Key::MediaStepForward,
+        Key::Named(NamedKey::MediaTopMenu) => eme_input::keyboard::Key::MediaTopMenu,
+        Key::Named(NamedKey::NavigateIn) => eme_input::keyboard::Key::NavigateIn,
+        Key::Named(NamedKey::NavigateNext) => eme_input::keyboard::Key::NavigateNext,
+        Key::Named(NamedKey::NavigateOut) => eme_input::keyboard::Key::NavigateOut,
+        Key::Named(NamedKey::NavigatePrevious) => eme_input::keyboard::Key::NavigatePrevious,
+        Key::Named(NamedKey::NextFavoriteChannel) => eme_input::keyboard::Key::NextFavoriteChannel,
+        Key::Named(NamedKey::NextUserProfile) => eme_input::keyboard::Key::NextUserProfile,
+        Key::Named(NamedKey::OnDemand) => eme_input::keyboard::Key::OnDemand,
+        Key::Named(NamedKey::Pairing) => eme_input::keyboard::Key::Pairing,
+        Key::Named(NamedKey::PinPDown) => eme_input::keyboard::Key::PinPDown,
+        Key::Named(NamedKey::PinPMove) => eme_input::keyboard::Key::PinPMove,
+        Key::Named(NamedKey::PinPToggle) => eme_input::keyboard::Key::PinPToggle,
+        Key::Named(NamedKey::PinPUp) => eme_input::keyboard::Key::PinPUp,
+        Key::Named(NamedKey::PlaySpeedDown) => eme_input::keyboard::Key::PlaySpeedDown,
+        Key::Named(NamedKey::PlaySpeedReset) => eme_input::keyboard::Key::PlaySpeedReset,
+        Key::Named(NamedKey::PlaySpeedUp) => eme_input::keyboard::Key::PlaySpeedUp,
+        Key::Named(NamedKey::RandomToggle) => eme_input::keyboard::Key::RandomToggle,
+        Key::Named(NamedKey::RcLowBattery) => eme_input::keyboard::Key::RcLowBattery,
+        Key::Named(NamedKey::RecordSpeedNext) => eme_input::keyboard::Key::RecordSpeedNext,
+        Key::Named(NamedKey::RfBypass) => eme_input::keyboard::Key::RfBypass,
+        Key::Named(NamedKey::ScanChannelsToggle) => eme_input::keyboard::Key::ScanChannelsToggle,
+        Key::Named(NamedKey::ScreenModeNext) => eme_input::keyboard::Key::ScreenModeNext,
+        Key::Named(NamedKey::Settings) => eme_input::keyboard::Key::Settings,
+        Key::Named(NamedKey::SplitScreenToggle) => eme_input::keyboard::Key::SplitScreenToggle,
+        Key::Named(NamedKey::STBInput) => eme_input::keyboard::Key::STBInput,
+        Key::Named(NamedKey::STBPower) => eme_input::keyboard::Key::STBPower,
+        Key::Named(NamedKey::Subtitle) => eme_input::keyboard::Key::Subtitle,
+        Key::Named(NamedKey::Teletext) => eme_input::keyboard::Key::Teletext,
+        Key::Named(NamedKey::VideoModeNext) => eme_input::keyboard::Key::VideoModeNext,
+        Key::Named(NamedKey::Wink) => eme_input::keyboard::Key::Wink,
+        Key::Named(NamedKey::ZoomToggle) => eme_input::keyboard::Key::ZoomToggle,
+        Key::Named(NamedKey::F1) => eme_input::keyboard::Key::F1,
+        Key::Named(NamedKey::F2) => eme_input::keyboard::Key::F2,
+        Key::Named(NamedKey::F3) => eme_input::keyboard::Key::F3,
+        Key::Named(NamedKey::F4) => eme_input::keyboard::Key::F4,
+        Key::Named(NamedKey::F5) => eme_input::keyboard::Key::F5,
+        Key::Named(NamedKey::F6) => eme_input::keyboard::Key::F6,
+        Key::Named(NamedKey::F7) => eme_input::keyboard::Key::F7,
+        Key::Named(NamedKey::F8) => eme_input::keyboard::Key::F8,
+        Key::Named(NamedKey::F9) => eme_input::keyboard::Key::F9,
+        Key::Named(NamedKey::F10) => eme_input::keyboard::Key::F10,
+        Key::Named(NamedKey::F11) => eme_input::keyboard::Key::F11,
+        Key::Named(NamedKey::F12) => eme_input::keyboard::Key::F12,
+        Key::Named(NamedKey::F13) => eme_input::keyboard::Key::F13,
+        Key::Named(NamedKey::F14) => eme_input::keyboard::Key::F14,
+        Key::Named(NamedKey::F15) => eme_input::keyboard::Key::F15,
+        Key::Named(NamedKey::F16) => eme_input::keyboard::Key::F16,
+        Key::Named(NamedKey::F17) => eme_input::keyboard::Key::F17,
+        Key::Named(NamedKey::F18) => eme_input::keyboard::Key::F18,
+        Key::Named(NamedKey::F19) => eme_input::keyboard::Key::F19,
+        Key::Named(NamedKey::F20) => eme_input::keyboard::Key::F20,
+        Key::Named(NamedKey::F21) => eme_input::keyboard::Key::F21,
+        Key::Named(NamedKey::F22) => eme_input::keyboard::Key::F22,
+        Key::Named(NamedKey::F23) => eme_input::keyboard::Key::F23,
+        Key::Named(NamedKey::F24) => eme_input::keyboard::Key::F24,
+        Key::Named(NamedKey::F25) => eme_input::keyboard::Key::F25,
+        Key::Named(NamedKey::F26) => eme_input::keyboard::Key::F26,
+        Key::Named(NamedKey::F27) => eme_input::keyboard::Key::F27,
+        Key::Named(NamedKey::F28) => eme_input::keyboard::Key::F28,
+        Key::Named(NamedKey::F29) => eme_input::keyboard::Key::F29,
+        Key::Named(NamedKey::F30) => eme_input::keyboard::Key::F30,
+        Key::Named(NamedKey::F31) => eme_input::keyboard::Key::F31,
+        Key::Named(NamedKey::F32) => eme_input::keyboard::Key::F32,
+        Key::Named(NamedKey::F33) => eme_input::keyboard::Key::F33,
+        Key::Named(NamedKey::F34) => eme_input::keyboard::Key::F34,
+        Key::Named(NamedKey::F35) => eme_input::keyboard::Key::F35,
+        _ => todo!(),
+    }
+}
+
+///Converts a [`winit::keyboard::NativeKey`] to a Eme [`NativeKey`](eme_input::keyboard::NativeKey)
+pub fn convert_native_key(native_key: &NativeKey) -> eme_input::keyboard::NativeKey {
+    match native_key {
+        NativeKey::Unidentified => eme_input::keyboard::NativeKey::Unidentified,
+        NativeKey::Android(v) => eme_input::keyboard::NativeKey::Android(*v),
+        NativeKey::MacOS(v) => eme_input::keyboard::NativeKey::MacOS(*v),
+        NativeKey::Windows(v) => eme_input::keyboard::NativeKey::Windows(*v),
+        NativeKey::Xkb(v) => eme_input::keyboard::NativeKey::Xkb(*v),
+        NativeKey::Web(v) => eme_input::keyboard::NativeKey::Web(v.clone()),
+    }
+}
+
+/// Converts a Eme [`SystemCursorIcon`] to a [`winit::window::CursorIcon`].
+pub fn convert_system_cursor_icon(cursor_icon: SystemCursorIcon) -> winit::window::CursorIcon {
+    match cursor_icon {
+        SystemCursorIcon::Crosshair => winit::window::CursorIcon::Crosshair,
+        SystemCursorIcon::Pointer => winit::window::CursorIcon::Pointer,
+        SystemCursorIcon::Move => winit::window::CursorIcon::Move,
+        SystemCursorIcon::Text => winit::window::CursorIcon::Text,
+        SystemCursorIcon::Wait => winit::window::CursorIcon::Wait,
+        SystemCursorIcon::Help => winit::window::CursorIcon::Help,
+        SystemCursorIcon::Progress => winit::window::CursorIcon::Progress,
+        SystemCursorIcon::NotAllowed => winit::window::CursorIcon::NotAllowed,
+        SystemCursorIcon::ContextMenu => winit::window::CursorIcon::ContextMenu,
+        SystemCursorIcon::Cell => winit::window::CursorIcon::Cell,
+        SystemCursorIcon::VerticalText => winit::window::CursorIcon::VerticalText,
+        SystemCursorIcon::Alias => winit::window::CursorIcon::Alias,
+        SystemCursorIcon::Copy => winit::window::CursorIcon::Copy,
+        SystemCursorIcon::NoDrop => winit::window::CursorIcon::NoDrop,
+        SystemCursorIcon::Grab => winit::window::CursorIcon::Grab,
+        SystemCursorIcon::Grabbing => winit::window::CursorIcon::Grabbing,
+        SystemCursorIcon::AllScroll => winit::window::CursorIcon::AllScroll,
+        SystemCursorIcon::ZoomIn => winit::window::CursorIcon::ZoomIn,
+        SystemCursorIcon::ZoomOut => winit::window::CursorIcon::ZoomOut,
+        SystemCursorIcon::EResize => winit::window::CursorIcon::EResize,
+        SystemCursorIcon::NResize => winit::window::CursorIcon::NResize,
+        SystemCursorIcon::NeResize => winit::window::CursorIcon::NeResize,
+        SystemCursorIcon::NwResize => winit::window::CursorIcon::NwResize,
+        SystemCursorIcon::SResize => winit::window::CursorIcon::SResize,
+        SystemCursorIcon::SeResize => winit::window::CursorIcon::SeResize,
+        SystemCursorIcon::SwResize => winit::window::CursorIcon::SwResize,
+        SystemCursorIcon::WResize => winit::window::CursorIcon::WResize,
+        SystemCursorIcon::EwResize => winit::window::CursorIcon::EwResize,
+        SystemCursorIcon::NsResize => winit::window::CursorIcon::NsResize,
+        SystemCursorIcon::NeswResize => winit::window::CursorIcon::NeswResize,
+        SystemCursorIcon::NwseResize => winit::window::CursorIcon::NwseResize,
+        SystemCursorIcon::ColResize => winit::window::CursorIcon::ColResize,
+        SystemCursorIcon::RowResize => winit::window::CursorIcon::RowResize,
+        _ => winit::window::CursorIcon::Default,
+    }
+}
+
+/// Converts a Eme [`WindowLevel`] to a [`winit::window::WindowLevel`]
+pub fn convert_window_level(window_level: WindowLevel) -> winit::window::WindowLevel {
+    match window_level {
+        WindowLevel::AlwaysOnBottom => winit::window::WindowLevel::AlwaysOnBottom,
+        WindowLevel::Normal => winit::window::WindowLevel::Normal,
+        WindowLevel::AlwaysOnTop => winit::window::WindowLevel::AlwaysOnTop,
+    }
+}
+
+/// Converts a [`winit::window::Theme`] to a Eme [`WindowTheme`]
+pub fn convert_winit_theme(theme: winit::window::Theme) -> WindowTheme {
+    match theme {
+        winit::window::Theme::Light => WindowTheme::Light,
+        winit::window::Theme::Dark => WindowTheme::Dark,
+    }
+}
+
+/// Converts a Eme [`WindowTheme`] to a [`winit::window::Theme`]
+pub fn convert_window_theme(theme: WindowTheme) -> winit::window::Theme {
+    match theme {
+        WindowTheme::Light => winit::window::Theme::Light,
+        WindowTheme::Dark => winit::window::Theme::Dark,
+    }
+}
+
+/// Converts a Eme [`EnabledButtons`] to a [`winit::window::WindowButtons`]
+pub fn convert_enabled_buttons(enabled_buttons: EnabledButtons) -> winit::window::WindowButtons {
+    let mut window_buttons = winit::window::WindowButtons::empty();
+    if enabled_buttons.minimize {
+        window_buttons.insert(winit::window::WindowButtons::MINIMIZE);
+    }
+    if enabled_buttons.maximize {
+        window_buttons.insert(winit::window::WindowButtons::MAXIMIZE);
+    }
+    if enabled_buttons.close {
+        window_buttons.insert(winit::window::WindowButtons::CLOSE);
+    }
+    window_buttons
+}
+
+/// Converts a Eme [`CompassOctant`] to a [`winit::window::ResizeDirection`]
+pub fn convert_resize_direction(resize_direction: CompassOctant) -> winit::window::ResizeDirection {
+    match resize_direction {
+        CompassOctant::West => winit::window::ResizeDirection::West,
+        CompassOctant::North => winit::window::ResizeDirection::North,
+        CompassOctant::East => winit::window::ResizeDirection::East,
+        CompassOctant::South => winit::window::ResizeDirection::South,
+        CompassOctant::NorthWest => winit::window::ResizeDirection::NorthWest,
+        CompassOctant::NorthEast => winit::window::ResizeDirection::NorthEast,
+        CompassOctant::SouthWest => winit::window::ResizeDirection::SouthWest,
+        CompassOctant::SouthEast => winit::window::ResizeDirection::SouthEast,
+    }
+}
+
+#[cfg(target_os = "ios")]
+/// Converts a [`eme_window::ScreenEdge`] to a [`winit::platform::ios::ScreenEdge`].
+pub(crate) fn convert_screen_edge(edge: ScreenEdge) -> winit::platform::ios::ScreenEdge {
+    match edge {
+        ScreenEdge::None => winit::platform::ios::ScreenEdge::NONE,
+        ScreenEdge::Top => winit::platform::ios::ScreenEdge::TOP,
+        ScreenEdge::Bottom => winit::platform::ios::ScreenEdge::BOTTOM,
+        ScreenEdge::Left => winit::platform::ios::ScreenEdge::LEFT,
+        ScreenEdge::Right => winit::platform::ios::ScreenEdge::RIGHT,
+        ScreenEdge::All => winit::platform::ios::ScreenEdge::ALL,
+    }
+}

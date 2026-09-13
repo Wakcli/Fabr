@@ -1,0 +1,48 @@
+[package]
+name = "eme_picking"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Provides screen picking functionality for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+
+[features]
+# Provides a mesh picking backend
+mesh_picking = ["dep:eme_mesh", "dep:crossbeam-channel"]
+custom_cursor = ["eme_window/custom_cursor"]
+
+[dependencies]
+# eme
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_derive = { path = "../eme_derive", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_input = { path = "../eme_input", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_mesh = { path = "../eme_mesh", version = "0.20.0-dev", optional = true }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_shape = { path = "../eme_shape", version = "0.20.0-dev" }
+eme_time = { path = "../eme_time", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+eme_window = { path = "../eme_window", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-features = false, features = [
+  "std",
+] }
+
+# other
+crossbeam-channel = { version = "0.5", optional = true }
+uuid = { version = "1.21.0", features = ["v4"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# TODO: Assuming all wasm builds are for the browser. Require `no_std` support to break assumption.
+uuid = { version = "1.21.0", default-features = false, features = ["js"] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = ["-Zunstable-options"]
+all-features = true

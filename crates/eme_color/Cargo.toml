@@ -1,0 +1,52 @@
+[package]
+name = "eme_color"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Types for representing and manipulating color values"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme", "color"]
+rust-version = "1.85.0"
+
+[dependencies]
+eme_curve = { path = "../eme_curve", default-features = false, version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev", default-features = false }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev", default-features = false, optional = true }
+bytemuck = { version = "1", features = ["derive"] }
+serde = { version = "1.0", features = [
+  "derive",
+], default-features = false, optional = true }
+thiserror = { version = "2", default-features = false }
+derive_more = { version = "2", default-features = false, features = ["from"] }
+wgpu-types = { version = "30", default-features = false, optional = true }
+encase = { version = "0.12", default-features = false, optional = true }
+
+[features]
+default = ["std", "eme_reflect", "encase"]
+std = [
+  "alloc",
+  "eme_math/std",
+  "eme_curve/std",
+  "serde?/std",
+  "wgpu-types?/std",
+  "eme_reflect?/std",
+]
+alloc = ["eme_math/alloc", "eme_curve/alloc", "serde?/alloc"]
+serialize = ["serde", "eme_math/serialize", "eme_curve/serialize"]
+eme_reflect = ["dep:eme_reflect"]
+wgpu-types = ["dep:wgpu-types"]
+encase = ["dep:encase", "std"]
+libm = ["eme_math/libm"]
+critical-section = ["eme_reflect?/critical-section"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

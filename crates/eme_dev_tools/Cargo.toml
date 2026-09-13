@@ -1,0 +1,85 @@
+[package]
+name = "eme_dev_tools"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Collection of developer tools for the Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+eme_ci_testing = ["dep:serde", "dep:ron"]
+screenrecording = ["dep:x264"]
+render = [
+  "dep:eme_render",
+  "dep:eme_core_pipeline",
+  "dep:eme_pbr",
+  "dep:eme_ui_render",
+]
+webgl = ["dep:eme_render", "eme_render?/webgl"]
+webgpu = ["dep:eme_render", "eme_render?/webgpu"]
+schedule_data = ["dep:serde", "dep:ron", "dep:eme_utils", "dep:thiserror"]
+serialize = ["dep:serde"]
+
+[dependencies]
+# eme
+eme_animation = { path = "../eme_animation", version = "0.20.0-dev" }
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_audio = { path = "../eme_audio", version = "0.20.0-dev" }
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_color = { path = "../eme_color", version = "0.20.0-dev" }
+eme_core_pipeline = { path = "../eme_core_pipeline", version = "0.20.0-dev", optional = true }
+eme_diagnostic = { path = "../eme_diagnostic", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_extract = { path = "../eme_extract", version = "0.20.0-dev" }
+eme_image = { path = "../eme_image", version = "0.20.0-dev" }
+eme_input = { path = "../eme_input", version = "0.20.0-dev" }
+eme_light = { path = "../eme_light", version = "0.20.0-dev" }
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_pbr = { path = "../eme_pbr", version = "0.20.0-dev", optional = true }
+eme_picking = { path = "../eme_picking", version = "0.20.0-dev" }
+eme_render = { path = "../eme_render", version = "0.20.0-dev", optional = true }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_time = { path = "../eme_time", version = "0.20.0-dev" }
+eme_text = { path = "../eme_text", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+eme_shader = { path = "../eme_shader", version = "0.20.0-dev" }
+eme_sprite = { path = "../eme_sprite", version = "0.20.0-dev" }
+eme_ui = { path = "../eme_ui", version = "0.20.0-dev" }
+eme_ui_render = { path = "../eme_ui_render", version = "0.20.0-dev", optional = true }
+eme_ui_widgets = { path = "../eme_ui_widgets", version = "0.20.0-dev" }
+eme_utils = { path = "../eme_utils", version = "0.20.0-dev", optional = true }
+eme_window = { path = "../eme_window", version = "0.20.0-dev" }
+eme_state = { path = "../eme_state", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev" }
+eme_mesh = { path = "../eme_mesh", version = "0.20.0-dev" }
+eme_world_serialization = { path = "../eme_world_serialization", version = "0.20.0-dev" }
+
+# other
+thiserror = { version = "2.0", default-features = false, optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+ron = { version = "0.12", optional = true }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Allow tests to depend on the names of systems.
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev", features = [
+  "debug",
+] }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+x264 = { version = "0.5.0", optional = true }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

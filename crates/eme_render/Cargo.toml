@@ -1,0 +1,165 @@
+[package]
+name = "eme_render"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Provides rendering functionality for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+multi_threaded = ["eme_tasks/multi_threaded", "eme_transform/multi_threaded"]
+
+morph = ["eme_mesh/morph"]
+
+shader_format_spirv = ["wgpu/spirv"]
+
+# Enable SPIR-V shader passthrough
+spirv_shader_passthrough = ["wgpu/spirv"]
+
+# Statically linked DXC shader compiler for DirectX 12
+# TODO: When wgpu switches to DirectX 12 instead of Vulkan by default on windows, make this a default feature
+statically-linked-dxc = ["wgpu/static-dxc"]
+
+# Forces the wgpu instance to be initialized using the raw Vulkan HAL, enabling additional configuration
+raw_vulkan_init = ["wgpu/vulkan"]
+
+trace = ["profiling"]
+tracing-tracy = ["dep:tracy-client"]
+ci_limits = []
+webgl = ["wgpu/webgl"]
+webgpu = ["wgpu/webgpu"]
+vulkan-portability = ["wgpu/vulkan-portability"]
+gles = ["wgpu/gles"]
+detailed_trace = []
+# Pre-populate buffer labels with buffer types for debugging.
+type_label_buffers = []
+# Enables collecting extra information for debugging.
+debug = ["type_label_buffers", "eme_utils/debug"]
+## Adds serialization support through `serde`.
+serialize = ["eme_mesh/serialize"]
+
+reflect_auto_register = ["eme_app/reflect_auto_register"]
+reflect_functions = ["eme_app/reflect_functions"]
+
+[dependencies]
+# eme
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_color = { path = "../eme_color", version = "0.20.0-dev", features = [
+  "serialize",
+  "wgpu-types",
+] }
+eme_derive = { path = "../eme_derive", version = "0.20.0-dev" }
+eme_diagnostic = { path = "../eme_diagnostic", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_encase_derive = { path = "../eme_encase_derive", version = "0.20.0-dev" }
+eme_extract = { path = "../eme_extract", version = "0.20.0-dev" }
+eme_extract_macros = { path = "../eme_extract/macros", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_material = { path = "../eme_material", version = "0.20.0-dev" }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+eme_material_macros = { path = "../eme_material/macros", version = "0.20.0-dev" }
+eme_render_macros = { path = "../eme_render/macros", version = "0.20.0-dev" }
+eme_shape = { path = "../eme_shape", version = "0.20.0-dev" }
+eme_time = { path = "../eme_time", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+eme_window = { path = "../eme_window", version = "0.20.0-dev" }
+eme_utils = { path = "../eme_utils", version = "0.20.0-dev" }
+eme_tasks = { path = "../eme_tasks", version = "0.20.0-dev" }
+eme_image = { path = "../eme_image", version = "0.20.0-dev" }
+eme_mesh = { path = "../eme_mesh", version = "0.20.0-dev" }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_shader = { path = "../eme_shader", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-features = false, features = [
+  "std",
+  "serialize",
+  "bytemuck",
+] }
+
+# rendering
+image = { version = "0.25.2", default-features = false }
+
+# misc
+# `fragile-send-sync-non-atomic-wasm` feature means we can't use Wasm threads for rendering
+# It is enabled for now to avoid having to do a significant overhaul of the renderer just for wasm.
+# When the 'atomics' feature is enabled `fragile-send-sync-non-atomic` does nothing
+# and Eme instead wraps `wgpu` types to verify they are not used off their origin thread.
+wgpu = { version = "30", default-features = false, features = [
+  "wgsl",
+  "dx12",
+  "metal",
+  "vulkan",
+  "fragile-send-sync-non-atomic-wasm",
+] }
+wgpu-types = { version = "30", default-features = false }
+bytemuck = { version = "1.5", features = ["derive", "must_cast"] }
+downcast-rs = { version = "2", default-features = false, features = ["std"] }
+thiserror = { version = "2", default-features = false }
+derive_more = { version = "2", default-features = false, features = ["from"] }
+encase = "0.12"
+glam = { version = "0.33.2", default-features = false, features = [
+  "std",
+  "encase",
+] }
+# For wgpu profiling using tracing. Use `RUST_LOG=info` to also capture the wgpu spans.
+profiling = { version = "1", features = [
+  "profile-with-tracing",
+], optional = true }
+async-channel = "2.3.0"
+nonmax = "0.5"
+smallvec = { version = "1", default-features = false, features = ["const_new"] }
+offset-allocator = "0.2"
+variadics_please = "2.0"
+tracy-client = { version = "0.19.0", optional = true }
+indexmap = { version = "2" }
+bitflags = "2"
+itertools = "0.14"
+weak-table = "0.4"
+tracing = "0.1"
+static_assertions = "1"
+
+[dev-dependencies]
+proptest = "1"
+proptest-derive = "0.8"
+# noop backend used for tests via test_utils.rs
+wgpu = { version = "30", default-features = false, features = ["noop"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_feature = "atomics"))'.dependencies]
+send_wrapper = { version = "0.6.0" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.83"
+web-sys = { version = "0.3.67", features = [
+  'Blob',
+  'Document',
+  'Element',
+  'HtmlElement',
+  'Node',
+  'Url',
+  'Window',
+] }
+wasm-bindgen = "0.2"
+# TODO: Assuming all wasm builds are for the browser. Require `no_std` support to break assumption.
+eme_app = { path = "../eme_app", version = "0.20.0-dev", default-features = false, features = [
+  "web",
+] }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-features = false, features = [
+  "web",
+] }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev", default-features = false, features = [
+  "web",
+] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

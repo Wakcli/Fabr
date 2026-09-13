@@ -1,0 +1,56 @@
+[package]
+name = "eme_core_pipeline"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Provides a core render pipeline for Eme Engine."
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+trace = []
+webgl = []
+webgpu = []
+tonemapping_luts = ["eme_image/ktx2", "eme_image/zstd"]
+
+[dependencies]
+# eme
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_color = { path = "../eme_color", version = "0.20.0-dev" }
+eme_derive = { path = "../eme_derive", version = "0.20.0-dev" }
+eme_diagnostic = { path = "../eme_diagnostic", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_extract = { path = "../eme_extract", version = "0.20.0-dev" }
+eme_image = { path = "../eme_image", version = "0.20.0-dev" }
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+eme_light = { path = "../eme_light", version = "0.20.0-dev" }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_shader = { path = "../eme_shader", version = "0.20.0-dev" }
+eme_render = { path = "../eme_render", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_utils = { path = "../eme_utils", version = "0.20.0-dev" }
+eme_window = { path = "../eme_window", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-features = false, features = [
+  "std",
+  "serialize",
+] }
+
+bitflags = "2.3"
+nonmax = "0.5"
+indexmap = "2"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true
+features = ["eme_image/zstd_rust"]

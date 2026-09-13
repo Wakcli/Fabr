@@ -1,0 +1,101 @@
+[package]
+name = "eme_winit"
+version = "0.20.0-dev"
+edition = "2024"
+description = "A winit window and input backend for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+default = ["x11"]
+trace = []
+wayland = ["winit/wayland", "winit/wayland-csd-adwaita"]
+x11 = ["winit/x11"]
+accesskit_unix = [
+  "accesskit_winit/accesskit_unix",
+  "accesskit_winit/async-io",
+  "eme_tasks/async-io",
+]
+
+serialize = [
+  "eme_input/serialize",
+  "eme_window/serialize",
+  "eme_platform/serialize",
+]
+android-native-activity = ["winit/android-native-activity"]
+android-game-activity = ["winit/android-game-activity"]
+custom_cursor = [
+  "eme_window/custom_cursor",
+  "eme_image",
+  "eme_asset",
+  "wgpu-types",
+  "bytemuck",
+]
+
+[dependencies]
+# eme
+eme_a11y = { path = "../eme_a11y", version = "0.20.0-dev" }
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_derive = { path = "../eme_derive", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_input = { path = "../eme_input", version = "0.20.0-dev" }
+eme_input_focus = { path = "../eme_input_focus", version = "0.20.0-dev" }
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_window = { path = "../eme_window", version = "0.20.0-dev" }
+eme_tasks = { path = "../eme_tasks", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-features = false, features = [
+  "std",
+] }
+
+# eme optional
+## used by custom_cursor
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev", optional = true }
+## used by custom_cursor
+eme_image = { path = "../eme_image", version = "0.20.0-dev", optional = true }
+## used by custom_cursor
+wgpu-types = { version = "30", optional = true }
+## used by custom_cursor
+bytemuck = { version = "1.5", optional = true }
+
+# other
+# feature rwh_06 refers to window_raw_handle@v0.6
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+accesskit_winit = { version = "0.33", default-features = false, features = [
+  "rwh_06",
+] }
+approx = { version = "0.5", default-features = false }
+accesskit = "0.24"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eme_android = { path = "../eme_android", version = "0.20.0-dev", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2" }
+web-sys = "0.3"
+js-sys = "0.3"
+# TODO: Assuming all wasm builds are for the browser. Require `no_std` support to break assumption.
+eme_app = { path = "../eme_app", version = "0.20.0-dev", default-features = false, features = [
+  "web",
+] }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-features = false, features = [
+  "web",
+] }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev", default-features = false, features = [
+  "web",
+] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

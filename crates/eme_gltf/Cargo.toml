@@ -1,0 +1,85 @@
+[package]
+name = "eme_gltf"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Eme Engine GLTF loading"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+pbr_transmission_textures = []
+pbr_multi_layer_material_textures = []
+pbr_anisotropy_texture = []
+pbr_specular_textures = []
+
+[dependencies]
+# eme
+eme_animation = { path = "../eme_animation", version = "0.20.0-dev", optional = true, features = [
+  "eme_mesh",
+] }
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_color = { path = "../eme_color", version = "0.20.0-dev" }
+eme_curve = { path = "../eme_curve", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_image = { path = "../eme_image", version = "0.20.0-dev" }
+eme_light = { path = "../eme_light", version = "0.20.0-dev" }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_mesh = { path = "../eme_mesh", version = "0.20.0-dev", features = [
+  "serialize",
+  "morph",
+  "eme_mikktspace",
+] }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_material = { path = "../eme_material", version = "0.20.0-dev" }
+eme_world_serialization = { path = "../eme_world_serialization", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+eme_tasks = { path = "../eme_tasks", version = "0.20.0-dev" }
+eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-features = false, features = [
+  "std",
+  "serialize",
+] }
+
+# other
+gltf = { version = "1.4.0", default-features = false, features = [
+  "KHR_lights_punctual",
+  "KHR_materials_transmission",
+  "KHR_materials_ior",
+  "KHR_materials_specular",
+  "KHR_materials_volume",
+  "KHR_materials_unlit",
+  "KHR_materials_emissive_strength",
+  "KHR_texture_transform",
+  "extras",
+  "extensions",
+  "names",
+  "utils",
+] }
+async-lock = { version = "3.0", default-features = false }
+thiserror = { version = "2", default-features = false }
+base64 = { version = "0.23.0", default-features = false, features = ["std"] }
+fixedbitset = "0.5"
+itertools = "0.14"
+percent-encoding = "2.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.140"
+smallvec = { version = "1", default-features = false }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+wgpu-types = { version = "30", default-features = false }
+
+[dev-dependencies]
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

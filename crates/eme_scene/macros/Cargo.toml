@@ -1,0 +1,20 @@
+[package]
+name = "eme_scene_macros"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Derive implementations for eme_scene"
+homepage = "https://bevyengine.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+eme_macro_utils = { path = "../../eme_macro_utils", version = "0.20.0-dev" }
+eme_ecs_macro_logic = { path = "../../eme_ecs/macro_logic", version = "0.20.0-dev" }
+
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }

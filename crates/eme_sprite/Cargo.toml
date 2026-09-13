@@ -1,0 +1,50 @@
+[package]
+name = "eme_sprite"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Provides sprite functionality for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+eme_picking = ["dep:eme_picking", "eme_window"]
+eme_text = ["dep:eme_text", "eme_window"]
+
+[dependencies]
+# eme
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_color = { path = "../eme_color", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_image = { path = "../eme_image", version = "0.20.0-dev" }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_mesh = { path = "../eme_mesh", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_picking = { path = "../eme_picking", version = "0.20.0-dev", optional = true }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+eme_window = { path = "../eme_window", version = "0.20.0-dev", optional = true }
+eme_derive = { path = "../eme_derive", version = "0.20.0-dev" }
+eme_text = { path = "../eme_text", version = "0.20.0-dev", optional = true }
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+
+# other
+radsort = "0.1"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+wgpu-types = { version = "30", default-features = false }
+
+[dev-dependencies]
+approx = "0.5.1"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

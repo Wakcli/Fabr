@@ -1,0 +1,52 @@
+[package]
+name = "eme_gizmos_render"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Provides gizmos rendering for Eme Engine"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme"]
+
+[features]
+webgl = []
+webgpu = []
+
+[dependencies]
+# Eme
+eme_pbr = { path = "../eme_pbr", version = "0.20.0-dev", optional = true }
+eme_sprite_render = { path = "../eme_sprite_render", version = "0.20.0-dev", optional = true }
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_gizmos = { path = "../eme_gizmos", version = "0.20.0-dev" }
+eme_camera = { path = "../eme_camera", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_extract = { path = "../eme_extract", version = "0.20.0-dev" }
+eme_image = { path = "../eme_image", version = "0.20.0-dev" }
+eme_mesh = { path = "../eme_mesh", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_shape = { path = "../eme_shape", version = "0.20.0-dev" }
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_shader = { path = "../eme_shader", version = "0.20.0-dev" }
+eme_render = { path = "../eme_render", version = "0.20.0-dev" }
+eme_utils = { path = "../eme_utils", version = "0.20.0-dev" }
+eme_core_pipeline = { path = "../eme_core_pipeline", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev" }
+eme_color = { path = "../eme_color", version = "0.20.0-dev" }
+eme_material = { path = "../eme_material", version = "0.20.0-dev" }
+eme_log = { path = "../eme_log", version = "0.20.0-dev" }
+
+# other
+bytemuck = "1.0"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true

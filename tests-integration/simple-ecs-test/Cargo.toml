@@ -1,0 +1,11 @@
+[package]
+name = "simple-ecs-test"
+edition = "2024"
+
+# We depend on eme in both normal and dev dependencies to verify that the proc macros still work.
+
+[dependencies]
+eme = { path = "../../" }
+
+[dev-dependencies]
+eme = { path = "../../" }

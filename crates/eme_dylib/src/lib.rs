@@ -1,0 +1,62 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![doc(
+    html_logo_url = "https://eme.org/assets/icon.png",
+    html_favicon_url = "https://eme.org/assets/icon.png"
+)]
+
+//! Forces dynamic linking of Eme.
+//!
+//! Dynamic linking causes Eme to be built and linked as a dynamic library. This will make
+//! incremental builds compile much faster.
+//!
+//! # Warning
+//!
+//! Do not enable this feature for release builds because this would require you to ship
+//! `libstd.so` and `libeme_dylib.so` with your game.
+//!
+//! # Enabling dynamic linking
+//!
+//! ## The recommended way
+//!
+//! The easiest way to enable dynamic linking is to use the `--features eme/dynamic_linking` flag when
+//! using the `cargo run` command:
+//!
+//! `cargo run --features eme/dynamic_linking`
+//!
+//! ## The unrecommended way
+//!
+//! It is also possible to enable the `dynamic_linking` feature inside of the `Cargo.toml` file. This is
+//! unrecommended because it requires you to remove this feature every time you want to create a
+//! release build to avoid having to ship additional files with your game.
+//!
+//! To enable dynamic linking inside of the `Cargo.toml` file add the `dynamic_linking` feature to the
+//! eme dependency:
+//!
+//! `features = ["dynamic_linking"]`
+//!
+//! ## The manual way
+//!
+//! Manually enabling dynamic linking is achieved by adding `eme_dylib` as a dependency and
+//! adding the following code to the `main.rs` file:
+//!
+//! ```
+//! #[allow(unused_imports)]
+//! use eme_dylib;
+//! ```
+//!
+//! It is recommended to disable the `eme_dylib` dependency in release mode by adding the
+//! following code to the `use` statement to avoid having to ship additional files with your game:
+//!
+//! ```
+//! #[allow(unused_imports)]
+//! #[cfg(debug_assertions)] // new
+//! use eme_dylib;
+//! ```
+
+// Force linking of the main eme crate
+#[expect(
+    unused_imports,
+    clippy::single_component_path_imports,
+    reason = "This links the main eme crate when using dynamic linking, and as such cannot be removed or changed without affecting dynamic linking."
+)]
+use eme_internal;

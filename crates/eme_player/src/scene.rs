@@ -1,0 +1,371 @@
+use core::fmt;
+use std::path::{Path, PathBuf};
+
+use eme::prelude::*;
+use eme_game_scene::{ObjectKind, ObjectTransform, SceneDoc};
+
+const SCENE_IN_CWD: &str = "scenes/main.ember";
+const SCENE_NEXT_TO_EXE: &str = "scene.ember";
+
+const CUBE: f32 = 1.0;
+const SPHERE_R: f32 = 0.5;
+const CYL_R: f32 = 0.5;
+const CYL_H: f32 = 1.0;
+const PLANE: f32 = 2.0;
+
+const DEFAULT_CAM: Vec3 = Vec3::new(7.0, 5.0, 7.0);
+const NEUTRAL: Color = Color::srgb(0.62, 0.62, 0.66);
+const SUN_ILLUMINANCE: f32 = 8_000.0;
+const POINT_INTENSITY: f32 = 800_000.0;
+const POINT_RANGE: f32 = 25.0;
+const AMBIENT: f32 = 200.0;
+const ROUGHNESS: f32 = 0.55;
+
+#[derive(Resource, Debug)]
+pub struct LoadedScene {
+    pub doc: SceneDoc,
+    pub path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct LoadError {
+    tried: Vec<(PathBuf, String)>,
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "no scene loaded")?;
+        for (path, err) in &self.tried {
+            write!(f, "\n  {}: {err}", path.display())?;
+        }
+        Ok(())
+    }
+}
+
+pub fn load(explicit: Option<&Path>) -> Result<LoadedScene, LoadError> {
+    let mut tried = Vec::new();
+    for path in candidates(explicit) {
+        match read(&path) {
+            Ok(doc) => return Ok(LoadedScene { doc, path }),
+            Err(err) => tried.push((path, err)),
+        }
+    }
+    Err(LoadError { tried })
+}
+
+fn read(path: &Path) -> Result<SceneDoc, String> {
+    let src = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
+    SceneDoc::from_ron(&src).map_err(|err| err.to_string())
+}
+
+fn candidates(explicit: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(path) = explicit {
+        return vec![path.to_path_buf()];
+    }
+    let mut out = Vec::new();
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        out.push(dir.join(SCENE_NEXT_TO_EXE));
+    }
+    out.push(PathBuf::from(SCENE_IN_CWD));
+    out
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Body {
+    Empty,
+    Shape(Shape),
+    PointLight,
+    Sun,
+    Camera,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shape {
+    Cube,
+    Sphere,
+    Cylinder,
+    Plane,
+}
+
+fn body(kind: ObjectKind) -> Body {
+    match kind {
+        ObjectKind::Empty => Body::Empty,
+        ObjectKind::Cube => Body::Shape(Shape::Cube),
+        ObjectKind::Sphere => Body::Shape(Shape::Sphere),
+        ObjectKind::Cylinder => Body::Shape(Shape::Cylinder),
+        ObjectKind::Plane => Body::Shape(Shape::Plane),
+        ObjectKind::PointLight => Body::PointLight,
+        ObjectKind::Sun => Body::Sun,
+        ObjectKind::Camera => Body::Camera,
+    }
+}
+
+impl Shape {
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn mesh(self) -> Mesh {
+        match self {
+            Shape::Cube => Cuboid::new(CUBE, CUBE, CUBE).into(),
+            Shape::Sphere => Sphere::new(SPHERE_R).mesh().ico(4).unwrap(),
+            Shape::Cylinder => Cylinder::new(CYL_R, CYL_H).into(),
+            Shape::Plane => Plane3d::default().mesh().size(PLANE, PLANE).into(),
+        }
+    }
+}
+
+fn to_transform(translation: [f32; 3], rotation: [f32; 4], scale: [f32; 3]) -> Transform {
+    Transform::from_translation(Vec3::from_array(translation))
+        .with_rotation(Quat::from_array(rotation))
+        .with_scale(Vec3::from_array(scale))
+}
+
+pub fn announce(scene: Res<LoadedScene>) {
+    if scene.doc.objects.is_empty() {
+        warn!(
+            "scene has no objects: {} will render an empty world",
+            scene.path.display()
+        );
+    }
+    info!(
+        "loaded {} objects from {}",
+        scene.doc.len(),
+        scene.path.display()
+    );
+}
+
+pub fn spawn_scene(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    scene: Res<LoadedScene>,
+) {
+    let mut view: Option<Transform> = None;
+    let mut cache: [Option<Handle<Mesh>>; 4] = [const { None }; 4];
+    // the editor viewport owns a shadow-casting sun; the player has none, so the
+    // first authored sun takes that job
+    let mut shadows = true;
+    let mut has_sun = false;
+
+    for obj in &scene.doc.objects {
+        let trs = to_transform(obj.translation, obj.rotation, obj.scale);
+        let name = Name::new(obj.name.clone());
+        match body(obj.kind) {
+            Body::Empty => {
+                commands.spawn((trs, name));
+            }
+            Body::Camera => {
+                view.get_or_insert(trs);
+            }
+            Body::PointLight => {
+                commands.spawn((
+                    PointLight {
+                        intensity: POINT_INTENSITY,
+                        range: POINT_RANGE,
+                        ..default()
+                    },
+                    trs,
+                    name,
+                ));
+            }
+            Body::Sun => {
+                commands.spawn((
+                    DirectionalLight {
+                        illuminance: SUN_ILLUMINANCE,
+                        shadow_maps_enabled: shadows,
+                        ..default()
+                    },
+                    trs,
+                    name,
+                ));
+                has_sun = true;
+                shadows = false;
+            }
+            Body::Shape(shape) => {
+                let mesh = cache[shape.index()]
+                    .get_or_insert_with(|| meshes.add(shape.mesh()))
+                    .clone();
+                let base = obj
+                    .color
+                    .map_or(NEUTRAL, |[r, g, b, a]| Color::linear_rgba(r, g, b, a));
+                let mut material = StandardMaterial::from(base);
+                material.perceptual_roughness = ROUGHNESS;
+                material.metallic = 0.0;
+                commands.spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(materials.add(material)),
+                    trs,
+                    name,
+                ));
+            }
+        }
+    }
+
+    if !has_sun {
+        commands.spawn((
+            DirectionalLight {
+                illuminance: SUN_ILLUMINANCE,
+                shadow_maps_enabled: true,
+                ..default()
+            },
+            Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+    }
+
+    let view = view.unwrap_or_else(|| {
+        Transform::from_translation(DEFAULT_CAM).looking_at(Vec3::ZERO, Vec3::Y)
+    });
+    commands.spawn((Camera3d::default(), view));
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::srgb(0.80, 0.85, 1.0),
+        brightness: AMBIENT,
+        ..default()
+    });
+}
+
+pub fn demo_doc() -> SceneDoc {
+    let mut doc = SceneDoc::new();
+    doc.add(
+        ObjectKind::Cube,
+        "Cube",
+        ObjectTransform::from_translation([-1.5, 0.5, 0.0]),
+    );
+    doc.add(
+        ObjectKind::Sphere,
+        "Sphere",
+        ObjectTransform::from_translation([0.0, 0.5, 0.0]),
+    );
+    let cylinder = doc.add(
+        ObjectKind::Cylinder,
+        "Cylinder",
+        ObjectTransform::from_translation([1.5, 0.5, 0.0]),
+    );
+    doc.get_mut(cylinder).unwrap().color = Some([0.20, 0.45, 0.55, 1.0]);
+    doc.add(
+        ObjectKind::Plane,
+        "Ground",
+        ObjectTransform::from_translation([0.0, 0.0, 0.0]).with_scale([4.0, 1.0, 4.0]),
+    );
+    doc.add(
+        ObjectKind::Sun,
+        "Sun",
+        ObjectTransform::from_translation([0.0, 4.0, 0.0])
+            .with_rotation((Quat::from_rotation_x(-0.9) * Quat::from_rotation_y(0.6)).to_array()),
+    );
+    doc.add(
+        ObjectKind::Camera,
+        "Camera",
+        ObjectTransform::from_translation(DEFAULT_CAM.to_array())
+            .with_rotation(look_at(DEFAULT_CAM).to_array()),
+    );
+    doc
+}
+
+fn look_at(eye: Vec3) -> Quat {
+    Transform::from_translation(eye)
+        .looking_at(Vec3::ZERO, Vec3::Y)
+        .rotation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eme_game_scene::FORMAT_VERSION;
+
+    #[test]
+    fn every_kind_has_a_body() {
+        let expected = [
+            (ObjectKind::Empty, Body::Empty),
+            (ObjectKind::Cube, Body::Shape(Shape::Cube)),
+            (ObjectKind::Sphere, Body::Shape(Shape::Sphere)),
+            (ObjectKind::Cylinder, Body::Shape(Shape::Cylinder)),
+            (ObjectKind::Plane, Body::Shape(Shape::Plane)),
+            (ObjectKind::PointLight, Body::PointLight),
+            (ObjectKind::Sun, Body::Sun),
+            (ObjectKind::Camera, Body::Camera),
+        ];
+        for (kind, want) in expected {
+            assert_eq!(body(kind), want, "{}", kind.label());
+        }
+        assert_eq!(expected.len(), ObjectKind::ALL.len());
+    }
+
+    #[test]
+    fn demo_scene_round_trips_through_ron() {
+        let doc = demo_doc();
+        let text = doc.to_ron().unwrap();
+        let back = SceneDoc::from_ron(&text).unwrap();
+        assert_eq!(back, doc);
+        assert_eq!(back.format_version, FORMAT_VERSION);
+        for kind in [
+            ObjectKind::Cube,
+            ObjectKind::Sphere,
+            ObjectKind::Cylinder,
+            ObjectKind::Plane,
+            ObjectKind::Sun,
+            ObjectKind::Camera,
+        ] {
+            assert!(
+                back.objects.iter().any(|obj| obj.kind == kind),
+                "{} missing from the demo scene",
+                kind.label()
+            );
+        }
+    }
+
+    #[test]
+    fn demo_camera_looks_at_the_origin() {
+        let rotation = look_at(DEFAULT_CAM);
+        let forward = rotation * Vec3::NEG_Z;
+        assert!(forward.dot(-DEFAULT_CAM.normalize()) > 0.99);
+    }
+
+    #[test]
+    fn explicit_path_replaces_the_default_chain() {
+        let explicit = Path::new("build/game.ember");
+        assert_eq!(candidates(Some(explicit)), vec![explicit.to_path_buf()]);
+    }
+
+    #[test]
+    fn defaults_end_in_cwd_and_try_next_to_the_exe_first() {
+        let default = candidates(None);
+        assert_eq!(default.last().unwrap(), Path::new(SCENE_IN_CWD));
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(
+            default.first().unwrap(),
+            &exe.parent().unwrap().join(SCENE_NEXT_TO_EXE)
+        );
+    }
+
+    #[test]
+    fn missing_scene_names_every_attempt() {
+        let err = load(Some(Path::new("definitely/missing.ember"))).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("definitely/missing.ember"), "{text}");
+        assert!(text.contains("no scene loaded"), "{text}");
+    }
+
+    #[test]
+    fn load_reads_an_explicit_scene() {
+        let path = std::env::temp_dir().join(format!("eme_player_{}.ember", std::process::id()));
+        std::fs::write(&path, demo_doc().to_ron().unwrap()).unwrap();
+        let loaded = load(Some(&path)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(loaded.path, path);
+        assert_eq!(loaded.doc, demo_doc());
+    }
+
+    #[test]
+    fn malformed_scene_reports_the_parser_error() {
+        let path =
+            std::env::temp_dir().join(format!("eme_player_bad_{}.ember", std::process::id()));
+        std::fs::write(&path, "not a scene").unwrap();
+        let err = load(Some(&path)).unwrap_err();
+        std::fs::remove_file(&path).unwrap();
+        assert!(err.to_string().contains("could not decode scene"), "{err}");
+    }
+}

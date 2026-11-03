@@ -1,0 +1,29 @@
+[package]
+name = "eme_editor"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Emberrly editor shell: renders editor core state with eme_feathers"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme", "editor"]
+rust-version = "1.96.0"
+
+[dependencies]
+eme = { path = "../..", version = "0.20.0-dev", default-features = false, features = [
+  "2d",
+  "3d",
+  "ui",
+  "eme_feathers",
+  "eme_dev_tools",
+  "render_dev_tools",
+] }
+eme_editor_core = { path = "../eme_editor_core", version = "0.20.0-dev" }
+eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }
+ron = "0.12"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

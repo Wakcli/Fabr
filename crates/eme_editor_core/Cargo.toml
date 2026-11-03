@@ -1,0 +1,20 @@
+[package]
+name = "eme_editor_core"
+version = "0.20.0-dev"
+edition = "2024"
+description = "UI-agnostic editor state: project hub, panel layout, undo history, selection, and themes"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme", "editor"]
+rust-version = "1.96.0"
+
+[dependencies]
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

@@ -1,0 +1,60 @@
+Split(
+    axis: Vertical,
+    ratio: 0.94,
+    first: Split(
+        axis: Horizontal,
+        ratio: 0.18,
+        first: Split(
+            axis: Vertical,
+            ratio: 0.82,
+            first: Panel(
+                id: PanelId(1),
+                kind: Hierarchy,
+            ),
+            second: Panel(
+                id: PanelId(2),
+                kind: Custom("Outline"),
+            ),
+        ),
+        second: Split(
+            axis: Horizontal,
+            ratio: 0.82,
+            first: Split(
+                axis: Vertical,
+                ratio: 0.7,
+                first: Panel(
+                    id: PanelId(3),
+                    kind: Scene,
+                ),
+                second: Split(
+                    axis: Horizontal,
+                    ratio: 0.5,
+                    first: Panel(
+                        id: PanelId(4),
+                        kind: Project,
+                    ),
+                    second: Panel(
+                        id: PanelId(5),
+                        kind: Console,
+                    ),
+                ),
+            ),
+            second: Split(
+                axis: Vertical,
+                ratio: 0.62,
+                first: Panel(
+                    id: PanelId(6),
+                    kind: Inspector,
+                ),
+                second: Panel(
+                    id: PanelId(7),
+                    kind: Custom("Stats"),
+                ),
+            ),
+        ),
+    ),
+    second: Panel(
+        id: PanelId(8),
+        kind: Custom("Status"),
+    ),
+)

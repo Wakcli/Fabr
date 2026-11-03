@@ -1,0 +1,22 @@
+[package]
+name = "eme_player"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Emberrly runtime player: loads an exported scene document and renders it"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme", "scene", "runtime", "player"]
+rust-version = "1.96.0"
+
+[dependencies]
+eme = { path = "../..", version = "0.20.0-dev", default-features = false, features = [
+  "3d",
+] }
+eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

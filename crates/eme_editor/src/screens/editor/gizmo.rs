@@ -20,6 +20,9 @@ use super::chrome::Part;
 use crate::orbit::ViewMode;
 use crate::scene::{SceneLink, SceneState};
 use crate::tokens;
+use crate::undo::Undo;
+use eme::math::ops;
+use eme_game_scene::ObjectTransform;
 
 /// Marks the toolbar button that switches to a gizmo mode.
 #[derive(Component, Clone, Copy, Default)]
@@ -90,7 +93,10 @@ fn gizmo_hotkeys(
     }
 }
 
-/// Moves the gizmo focus onto the selected object, and off the previous one.
+/// Moves the gizmo focus onto the primary selection, and off the previous one.
+///
+/// The engine gizmo runs on a `Single` focus entity: a second one silently
+/// disables hover and the gizmo mesh, so only the primary ever carries it.
 fn sync_focus(
     mut commands: Commands,
     state: Res<SceneState>,
@@ -101,7 +107,7 @@ fn sync_focus(
         None
     } else {
         state
-            .selected
+            .primary()
             .and_then(|id| state.entities.get(&id).copied())
     };
     if tag.0 == want {
@@ -120,7 +126,55 @@ fn sync_focus(
     tag.0 = want;
 }
 
-/// Mirrors the focused entity back into the document after the gizmo moved it.
+/// The transform `start` ends up at after the gizmo moved a body from `from` to `to`.
+fn moved_transform(start: &ObjectTransform, from: &Transform, to: &Transform) -> ObjectTransform {
+    let delta = to.translation - from.translation;
+    let spin = to.rotation * from.rotation.inverse();
+    let base = from.scale.to_array();
+    let want = to.scale.to_array();
+    let mut scale = start.scale;
+    for (i, b) in base.iter().enumerate() {
+        if ops::abs(*b) > f32::EPSILON {
+            scale[i] = start.scale[i] * want[i] / b;
+        }
+    }
+    ObjectTransform {
+        translation: [
+            start.translation[0] + delta.x,
+            start.translation[1] + delta.y,
+            start.translation[2] + delta.z,
+        ],
+        rotation: (spin * Quat::from_array(start.rotation)).to_array(),
+        scale,
+    }
+}
+
+/// Writes the gizmo's delta into every non-primary selected object's document.
+fn apply_to_selection(
+    state: &mut SceneState,
+    from: &Transform,
+    to: &Transform,
+    others: &[(u64, ObjectTransform)],
+) {
+    for (id, start) in others {
+        let want = moved_transform(start, from, to);
+        let Some(obj) = state.doc.get_mut(*id) else {
+            continue;
+        };
+        if obj.translation != want.translation {
+            obj.translation = want.translation;
+        }
+        if obj.rotation != want.rotation {
+            obj.rotation = want.rotation;
+        }
+        if obj.scale != want.scale {
+            obj.scale = want.scale;
+        }
+    }
+}
+
+/// Mirrors the focused entity back into the document after the gizmo moved it,
+/// and carries the same delta onto the rest of the selection.
 ///
 /// The document stays the source of truth: the entity is only a projection of it,
 /// so a drag has to be written back before the next reconcile overwrites the entity.
@@ -128,12 +182,29 @@ fn sync_doc(
     mut state: ResMut<SceneState>,
     gizmo: Res<TransformGizmoState>,
     focused: Query<(&SceneLink, &Transform), With<TransformGizmoFocus>>,
+    mut undo: ResMut<Undo>,
     mut was_active: Local<bool>,
+    mut others: Local<Vec<(u64, ObjectTransform)>>,
 ) {
     let was = *was_active;
     *was_active = gizmo.active;
 
+    if gizmo.active && !was {
+        undo.checkpoint(&state, "Transform");
+        others.clear();
+        let primary = state.primary();
+        for id in state.selected_ids().filter(|id| Some(*id) != primary) {
+            let Some(obj) = state.doc.get(id) else {
+                continue;
+            };
+            others.push((id, obj.transform()));
+        }
+    }
+
     let Ok((link, tf)) = focused.single() else {
+        if was && !gizmo.active {
+            state.touch();
+        }
         return;
     };
     let translation = tf.translation.to_array();
@@ -151,6 +222,10 @@ fn sync_doc(
     }
     if obj.scale != scale {
         obj.scale = scale;
+    }
+
+    if gizmo.active {
+        apply_to_selection(&mut state, &gizmo.start_transform, tf, &others);
     }
 
     if was && !gizmo.active {
@@ -256,5 +331,61 @@ fn tool_click(
     };
     if settings.mode != mode {
         settings.mode = mode;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eme_game_scene::ObjectKind;
+
+    #[test]
+    fn translation_delta_carries_to_a_second_object() {
+        let start = ObjectTransform::from_translation([2.0, 0.0, 0.0]);
+        let from = Transform::from_xyz(1.0, 0.0, 0.0);
+        let to = Transform::from_xyz(1.0, 0.0, 3.0);
+        let got = moved_transform(&start, &from, &to);
+        assert_eq!(got.translation, [2.0, 0.0, 3.0]);
+        assert_eq!(got.scale, [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn rotation_and_scale_deltas_carry_to_a_second_object() {
+        let start = ObjectTransform::default();
+        let from = Transform::IDENTITY;
+        let mut to = Transform::IDENTITY;
+        to.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        to.scale = Vec3::splat(2.0);
+
+        let got = moved_transform(&start, &from, &to);
+        let want = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert!(Quat::from_array(got.rotation).abs_diff_eq(want, 1e-5));
+        assert_eq!(got.scale, [2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn delta_lands_in_the_doc_of_every_other_selected_object() {
+        let mut state = SceneState::default();
+        let a = state.spawn(ObjectKind::Cube);
+        let b = state.spawn(ObjectKind::Cube);
+        state.select_many(&[a, b]);
+
+        let start = state.doc.get(b).unwrap().transform();
+        let before = state.doc.get(a).unwrap().translation;
+        let from = Transform::from_xyz(0.0, 0.5, 0.0);
+        let to = Transform::from_xyz(0.0, 2.0, 0.0);
+
+        apply_to_selection(&mut state, &from, &to, &[(b, start)]);
+
+        let got = state.doc.get(b).unwrap().translation;
+        assert_eq!(
+            got,
+            [
+                start.translation[0],
+                start.translation[1] + 1.5,
+                start.translation[2]
+            ]
+        );
+        assert_eq!(state.doc.get(a).unwrap().translation, before);
     }
 }

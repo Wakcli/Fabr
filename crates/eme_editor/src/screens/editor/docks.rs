@@ -1,6 +1,8 @@
 //! The Scene, `FileSystem`, Output, and History docks.
 
-use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeToken};
+use std::hash::{Hash, Hasher};
+
+use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor, ThemeToken};
 use eme::prelude::*;
 use eme::scene::bsn;
 use eme::ui_widgets::{Activate, Button};
@@ -11,6 +13,7 @@ use super::icons;
 use super::menu::{self, MenuState};
 use crate::scene::SceneState;
 use crate::tokens;
+use crate::undo::Undo;
 
 pub fn left_dock() -> Part {
     let scene = scene_dock();
@@ -186,20 +189,47 @@ fn kind_badge(kind: ObjectKind) -> Part {
     }
 }
 
-/// Rebuilds the scene rows whenever objects or selection change.
+/// Identity of the tree's contents: what the rows are built from, ignoring selection.
+fn doc_signature(state: &SceneState) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    state.doc.len().hash(&mut hasher);
+    for obj in &state.doc.objects {
+        obj.id.hash(&mut hasher);
+        obj.name.hash(&mut hasher);
+        obj.kind.index().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Background and text tokens for a row in the given selection state.
+fn row_colors(selected: bool) -> (ThemeToken, ThemeToken) {
+    if selected {
+        (tokens::SELECT, tokens::SELECT_TEXT)
+    } else {
+        (tokens::CLEAR, tokens::TEXT)
+    }
+}
+
+/// Rebuilds the scene rows when the document changes and repaints them when the
+/// selection does, so a Ctrl+click never respawns the tree.
 pub fn rebuild_scene_rows(
     mut commands: Commands,
     hosts: Query<Entity, With<SceneRows>>,
     state: Res<SceneState>,
+    rows: Query<(Entity, &SceneRow, &ThemeBackgroundColor, &Children)>,
+    texts: Query<&ThemeTextColor>,
     mut last: Local<Option<(Entity, u64)>>,
 ) {
+    paint_scene_rows(&state, &rows, &texts, &mut commands);
+
     let Ok(host) = hosts.single() else {
         return;
     };
-    if *last == Some((host, state.rev)) {
+    let sig = doc_signature(&state);
+    if *last == Some((host, sig)) {
         return;
     }
-    *last = Some((host, state.rev));
+    *last = Some((host, sig));
     commands.entity(host).despawn_children();
 
     if state.doc.is_empty() {
@@ -219,7 +249,7 @@ pub fn rebuild_scene_rows(
     }
 
     for obj in &state.doc.objects {
-        let selected = state.selected == Some(obj.id);
+        let (bg, fg) = row_colors(state.is_selected(obj.id));
         let id = obj.id;
         let row = bsn! {
             Node {
@@ -233,18 +263,14 @@ pub fn rebuild_scene_rows(
                 },
                 column_gap: px(6),
             }
-            ThemeBackgroundColor({if selected { tokens::SELECT } else { tokens::CLEAR }})
+            ThemeBackgroundColor(bg)
             Button
             SceneRow(id)
             ChildOf(host)
             Children [
                 {kind_badge(obj.kind)}
                 --
-                {text(
-                    obj.name.clone(),
-                    FONT_SIZE,
-                    if selected { tokens::SELECT_TEXT } else { tokens::TEXT },
-                )}
+                {text(obj.name.clone(), FONT_SIZE, fg)}
             ]
             on(select_row)
             on(open_row_menu)
@@ -253,14 +279,71 @@ pub fn rebuild_scene_rows(
     }
 }
 
-fn select_row(activate: On<Activate>, rows: Query<&SceneRow>, mut state: ResMut<SceneState>) {
+/// Repaints rows whose selection state no longer matches what is on screen.
+fn paint_scene_rows(
+    state: &SceneState,
+    rows: &Query<(Entity, &SceneRow, &ThemeBackgroundColor, &Children)>,
+    texts: &Query<&ThemeTextColor>,
+    commands: &mut Commands,
+) {
+    for (entity, row, bg, kids) in rows {
+        let (want_bg, want_fg) = row_colors(state.is_selected(row.0));
+        if bg.0 != want_bg {
+            commands
+                .entity(entity)
+                .insert(ThemeBackgroundColor(want_bg));
+        }
+        for child in kids.iter() {
+            let Ok(current) = texts.get(child) else {
+                continue;
+            };
+            if current.0 != want_fg {
+                commands
+                    .entity(child)
+                    .insert(ThemeTextColor(want_fg.clone()));
+            }
+        }
+    }
+}
+
+/// What a click on a row does to the selection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RowClick {
+    Replace,
+    Extend,
+    Toggle,
+}
+
+/// Plain click replaces, Shift extends from the anchor, Ctrl toggles one row.
+fn row_click(shift: bool, ctrl: bool) -> RowClick {
+    if shift {
+        RowClick::Extend
+    } else if ctrl {
+        RowClick::Toggle
+    } else {
+        RowClick::Replace
+    }
+}
+
+fn select_row(
+    activate: On<Activate>,
+    keys: Res<ButtonInput<KeyCode>>,
+    rows: Query<&SceneRow>,
+    mut state: ResMut<SceneState>,
+) {
     let Ok(row) = rows.get(activate.entity) else {
         return;
     };
-    state.select(Some(row.0));
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    match row_click(shift, ctrl) {
+        RowClick::Replace => state.select_only(row.0),
+        RowClick::Extend => state.extend_to(row.0),
+        RowClick::Toggle => state.toggle(row.0),
+    }
 }
 
-/// Right click selects the row and opens the object menu for it.
+/// Right click keeps an existing multi-selection and opens the object menu for it.
 fn open_row_menu(
     mut click: On<PointerClick>,
     rows: Query<&SceneRow>,
@@ -274,8 +357,10 @@ fn open_row_menu(
         return;
     };
     click.propagate(false);
-    state.select(Some(row.0));
-    menu::open(&mut menu, click.pointer.position, Some(row.0));
+    if !state.is_selected(row.0) {
+        state.select_only(row.0);
+    }
+    menu::open(&mut menu, click.pointer.position, state.primary());
 }
 
 /// Right click on the tree background opens the menu for the selection.
@@ -288,7 +373,7 @@ fn open_tree_menu(
         return;
     }
     click.propagate(false);
-    menu::open(&mut menu, click.pointer.position, state.selected);
+    menu::open(&mut menu, click.pointer.position, state.primary());
 }
 
 pub fn filesystem_dock() -> Part {
@@ -440,6 +525,62 @@ pub fn bottom_dock() -> Part {
     dock_frame(tabs, tail, body, tokens::PANEL)
 }
 
+/// Host for the undo history rows.
+#[derive(Component, Clone, Default)]
+pub struct HistoryRows;
+
+/// Rebuilds the history list when the undo stack changes, newest entry first.
+pub(crate) fn sync_history(
+    undo: &Undo,
+    hosts: &Query<Entity, With<HistoryRows>>,
+    commands: &mut Commands,
+    last: &mut Option<Vec<&'static str>>,
+) {
+    let names: Vec<&'static str> = undo.names().collect();
+    if last.as_ref() == Some(&names) {
+        return;
+    }
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    commands.entity(host).despawn_children();
+
+    if names.is_empty() {
+        let empty = bsn! {
+            Node {
+                height: px(TREE_ROW_H),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(8)),
+            }
+            ChildOf(host)
+            Children [ {text("No history", FONT_SIZE, tokens::TEXT_DIM)} ]
+        };
+        commands.spawn_scene(empty);
+        return;
+    }
+
+    for (i, label) in names.iter().enumerate() {
+        let (bg, fg) = row_colors(i == 0);
+        let row = bsn! {
+            Node {
+                height: px(TREE_ROW_H),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(8)),
+                column_gap: px(6),
+            }
+            ThemeBackgroundColor(bg)
+            ChildOf(host)
+            Children [ {text(*label, FONT_SIZE, fg)} ]
+        };
+        commands.spawn_scene(row);
+    }
+    *last = Some(names);
+}
+
 pub fn history_dock() -> Part {
     let tabs = vec![tab("Node", false), tab("History", true)];
     let tail = vec![
@@ -452,12 +593,53 @@ pub fn history_dock() -> Part {
             flex_grow: 1.0,
             min_height: px(0),
             display: Display::Flex,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            padding: UiRect { top: px(3) },
+            overflow: Overflow::clip(),
         }
         ThemeBackgroundColor(tokens::PANEL)
-        Children [ {text("No history", FONT_SIZE, tokens::TEXT_DIM)} ]
+        Children [
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+            }
+            HistoryRows
+        ]
     });
 
     dock_frame(tabs, tail, body, tokens::WINDOW)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_colors_follow_the_selection() {
+        assert!(row_colors(true) == (tokens::SELECT, tokens::SELECT_TEXT));
+        assert!(row_colors(false) == (tokens::CLEAR, tokens::TEXT));
+    }
+
+    #[test]
+    fn clicks_read_the_modifiers() {
+        assert!(row_click(false, false) == RowClick::Replace);
+        assert!(row_click(true, false) == RowClick::Extend);
+        assert!(row_click(false, true) == RowClick::Toggle);
+        assert!(row_click(true, true) == RowClick::Extend);
+    }
+
+    #[test]
+    fn signature_tracks_the_document_not_the_selection() {
+        let mut state = SceneState::default();
+        let a = state.spawn(ObjectKind::Cube);
+        let sig = doc_signature(&state);
+
+        state.select_only(a);
+        assert_eq!(doc_signature(&state), sig);
+
+        state.doc.rename(a, "Crate");
+        assert_ne!(doc_signature(&state), sig);
+    }
 }

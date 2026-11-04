@@ -6,10 +6,16 @@
 use core::fmt;
 use std::path::{Path, PathBuf};
 
+use eme::input_focus::InputFocus;
 use eme::prelude::*;
+use eme::text::EditableText;
 use eme_game_scene::{SceneDoc, SceneError};
 
+use crate::app::Screen;
+use crate::build::BuildState;
+use crate::clipboard::{self, Clipboard};
 use crate::scene::SceneState;
+use crate::undo::Undo;
 
 /// Where Ctrl+S writes and Ctrl+O reads.
 pub const SCENE_PATH: &str = "scenes/main.ember";
@@ -90,5 +96,66 @@ pub fn scene_shortcuts(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<SceneS
     }
     if keys.just_pressed(KeyCode::KeyO) {
         open_into(&mut state);
+    }
+}
+
+/// Undo, redo, and the clipboard shortcuts.
+///
+/// Runs only on the editor screen, and never while a text field owns the keyboard
+/// or the build dialog is up.
+pub fn edit_shortcuts(
+    keys: Res<ButtonInput<KeyCode>>,
+    screen: Res<Screen>,
+    build: Res<BuildState>,
+    focus: Res<InputFocus>,
+    texts: Query<(), With<EditableText>>,
+    mut undo: ResMut<Undo>,
+    mut clip: ResMut<Clipboard>,
+    mut state: ResMut<SceneState>,
+) {
+    if *screen != Screen::Editor || build.open {
+        return;
+    }
+    if let Some(entity) = focus.get()
+        && texts.contains(entity)
+    {
+        return;
+    }
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !ctrl {
+        return;
+    }
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+
+    if keys.just_pressed(KeyCode::KeyZ) {
+        if shift {
+            if undo.can_redo() {
+                undo.redo(&mut state);
+            }
+        } else if undo.can_undo() {
+            undo.undo(&mut state);
+        }
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyY) {
+        if undo.can_redo() {
+            undo.redo(&mut state);
+        }
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        clipboard::copy_selection(&state, &mut clip);
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyX) {
+        clipboard::cut_selection(&mut state, &mut clip, &mut undo);
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyV) {
+        clipboard::paste(&mut state, &clip, &mut undo);
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyD) {
+        clipboard::duplicate_selection(&mut state, &mut undo);
     }
 }

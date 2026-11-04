@@ -1,6 +1,6 @@
 //! Emberrly editor shell.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use eme::asset::AssetPlugin;
 use eme::feathers::{dark_theme::create_dark_theme, theme::UiTheme, FeathersPlugins};
@@ -11,12 +11,15 @@ use eme_editor_core::{HubState, Layout, Project, ProjectId, Theme, EDITOR_VERSIO
 
 mod app;
 mod build;
+mod clipboard;
 mod orbit;
 mod persist;
 mod scene;
 mod screens;
+mod selection_outline;
 mod theme_bridge;
 mod tokens;
+mod undo;
 
 const TITLE: &str = "Emberrly";
 const THEME_PATH: &str = "editor/theme.ron";

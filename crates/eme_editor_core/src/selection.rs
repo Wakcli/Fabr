@@ -48,9 +48,31 @@ impl<T: Copy + PartialEq> Selection<T> {
         }
     }
 
+    /// Replaces the selected items; the last one becomes the primary.
+    pub fn set_items(&mut self, items: Vec<T>) {
+        self.primary = items.last().copied();
+        self.items = items;
+    }
+
+    /// Drops items `keep` rejects, moving the primary to the last survivor.
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
+        self.items.retain(|it| keep(it));
+        self.primary = self.items.last().copied();
+    }
+
     /// Whether `item` is selected.
     pub fn contains(&self, item: &T) -> bool {
         self.items.iter().any(|it| it == item)
+    }
+
+    /// Number of selected items.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Every selected item, in selection order.
+    pub fn iter(&self) -> impl Iterator<Item = T> + '_ {
+        self.items.iter().copied()
     }
 
     /// Drops every selected item.
@@ -107,6 +129,32 @@ mod tests {
         sel.clear();
         assert!(sel.is_empty());
         assert!(!sel.contains(&9));
+        assert_eq!(sel.primary, None);
+    }
+
+    #[test]
+    fn set_items_keeps_one_primary() {
+        let mut sel = Selection::single(1);
+        sel.set_items(vec![4, 5, 6]);
+        assert_eq!(sel.len(), 3);
+        assert_eq!(sel.iter().collect::<Vec<_>>(), vec![4, 5, 6]);
+        assert_eq!(sel.primary, Some(6));
+
+        sel.set_items(Vec::new());
+        assert!(sel.is_empty());
+        assert_eq!(sel.primary, None);
+    }
+
+    #[test]
+    fn retain_moves_the_primary_to_a_survivor() {
+        let mut sel = Selection::empty();
+        sel.set_items(vec![1, 2, 3]);
+        sel.retain(|it| *it != 3);
+        assert_eq!(sel.items, vec![1, 2]);
+        assert_eq!(sel.primary, Some(2));
+
+        sel.retain(|_| false);
+        assert!(sel.is_empty());
         assert_eq!(sel.primary, None);
     }
 }

@@ -12,13 +12,15 @@ use eme::scene::bsn;
 use eme::text::{EditableText, TextEdit};
 use eme::ui::InteractionDisabled;
 use eme::ui_widgets::{Activate, Button, SelectAllOnFocus};
-use eme_game_scene::{ObjectKind, ObjectTransform};
+use eme_game_scene::ObjectKind;
 
 use super::chrome::*;
 use super::icons;
+use crate::clipboard::{self, Clipboard};
 use crate::persist;
 use crate::scene::{self, SceneState};
 use crate::tokens;
+use crate::undo::Undo;
 
 /// Menu row height, tight enough for a full object menu.
 const ROW_H: f32 = 24.0;
@@ -33,6 +35,7 @@ enum Act {
     Save,
     Open,
     Copy,
+    Cut,
     Paste,
     Rename,
     Duplicate,
@@ -96,14 +99,6 @@ struct Open {
     page: Page,
 }
 
-/// A copied object, ready to paste at an offset.
-#[derive(Clone)]
-struct Clip {
-    kind: ObjectKind,
-    name: String,
-    transform: ObjectTransform,
-}
-
 /// An in-flight rename popup.
 #[derive(Clone)]
 struct Rename {
@@ -111,11 +106,10 @@ struct Rename {
     seed: String,
 }
 
-/// Open menu, clipboard, and rename popup state.
+/// Open menu and rename popup state.
 #[derive(Resource, Default)]
 pub struct MenuState {
     open: Option<Open>,
-    clipboard: Option<Clip>,
     rename: Option<Rename>,
 }
 
@@ -194,7 +188,7 @@ fn empty_icon() -> Part {
     menu_icon(icons::EMPTY)
 }
 
-fn entries(state: &MenuState, open: Open) -> Vec<Entry> {
+fn entries(has_clip: bool, open: Open) -> Vec<Entry> {
     let has_target = open.target.is_some();
     match open.page {
         Page::Root => vec![
@@ -202,7 +196,8 @@ fn entries(state: &MenuState, open: Open) -> Vec<Entry> {
             Entry::row("Open Scene", Act::Open, true, None),
             Entry::Divider,
             Entry::row("Copy", Act::Copy, has_target, None),
-            Entry::row("Paste", Act::Paste, state.clipboard.is_some(), None),
+            Entry::row("Cut", Act::Cut, has_target, None),
+            Entry::row("Paste", Act::Paste, has_clip, None),
             Entry::row("Rename", Act::Rename, has_target, Some(rename_icon)),
             Entry::row(
                 "Duplicate",
@@ -283,6 +278,7 @@ fn page_header(label: &'static str) -> Vec<Entry> {
 pub fn sync_menu(
     mut commands: Commands,
     state: Res<MenuState>,
+    clip: Res<Clipboard>,
     roots: Query<Entity, With<MenuRoot>>,
 ) {
     if !state.is_changed() {
@@ -292,14 +288,14 @@ pub fn sync_menu(
         commands.entity(root).despawn();
     }
     if let Some(open) = state.open {
-        spawn_menu(&mut commands, &state, open);
+        spawn_menu(&mut commands, &clip, open);
     }
     if let Some(rename) = state.rename.clone() {
         spawn_rename(&mut commands, &rename);
     }
 }
 
-fn spawn_menu(commands: &mut Commands, state: &MenuState, open: Open) {
+fn spawn_menu(commands: &mut Commands, clip: &Clipboard, open: Open) {
     let root = commands.spawn_scene(root_layer()).id();
     commands.entity(root).insert(MenuRoot);
     let backdrop = commands
@@ -309,7 +305,7 @@ fn spawn_menu(commands: &mut Commands, state: &MenuState, open: Open) {
     let panel = commands.spawn_scene(menu_panel(open.pos)).id();
     commands.entity(panel).insert(ChildOf(root));
 
-    for entry in entries(state, open) {
+    for entry in entries(!clip.0.is_empty(), open) {
         match entry {
             Entry::Divider => {
                 commands.spawn_scene(divider(panel));
@@ -549,6 +545,8 @@ fn activate_row(
     rows: Query<&MenuRow>,
     mut menu: ResMut<MenuState>,
     mut scene: ResMut<SceneState>,
+    mut clip: ResMut<Clipboard>,
+    mut undo: ResMut<Undo>,
 ) {
     let Ok(MenuRow(act)) = rows.get(activate.entity) else {
         return;
@@ -571,36 +569,27 @@ fn activate_row(
             menu.open = None;
         }
         Act::Copy => {
-            let Some(clip) = clip_of(&scene, target) else {
-                return;
-            };
-            menu.clipboard = Some(clip);
+            clipboard::copy_selection(&scene, &mut clip);
+            menu.open = None;
+        }
+        Act::Cut => {
+            clipboard::cut_selection(&mut scene, &mut clip, &mut undo);
             menu.open = None;
         }
         Act::Paste => {
-            let Some(clip) = menu.clipboard.clone() else {
-                return;
-            };
-            let mut transform = clip.transform;
-            transform.translation[0] += 1.0;
-            let id = scene.spawn_at(clip.kind, transform, clip.name);
-            scene.select(Some(id));
+            clipboard::paste(&mut scene, &clip, &mut undo);
             menu.open = None;
         }
         Act::Duplicate => {
-            let Some(id) = target else {
-                return;
-            };
-            if let Some(new_id) = scene.duplicate(id) {
-                scene.select(Some(new_id));
-            }
+            clipboard::duplicate_selection(&mut scene, &mut undo);
             menu.open = None;
         }
         Act::Delete => {
-            let Some(id) = target else {
+            if target.is_none() {
                 return;
-            };
-            scene.despawn(id);
+            }
+            undo.checkpoint(&scene, "Delete");
+            scene.despawn_selected();
             menu.open = None;
         }
         Act::Rename => {
@@ -617,8 +606,9 @@ fn activate_row(
             menu.open = None;
         }
         Act::Create(kind) => {
+            undo.checkpoint(&scene, "Create");
             let id = scene.spawn(kind);
-            scene.select(Some(id));
+            scene.select_only(id);
             menu.open = None;
         }
         Act::Page(page) => {
@@ -626,16 +616,6 @@ fn activate_row(
         }
         Act::Close => {}
     }
-}
-
-fn clip_of(scene: &SceneState, target: Option<u64>) -> Option<Clip> {
-    let id = target?;
-    let obj = scene.object(id)?;
-    Some(Clip {
-        kind: obj.kind,
-        name: obj.name.clone(),
-        transform: obj.transform(),
-    })
 }
 
 /// Seeds the popup input with the current name and gives it the keyboard.
@@ -712,7 +692,7 @@ fn open_create_menu(press: On<PointerPress>, mut menu: ResMut<MenuState>, scene:
     if press.button != PointerButton::Primary {
         return;
     }
-    open(&mut menu, press.pointer.position, scene.selected);
+    open(&mut menu, press.pointer.position, scene.primary());
 }
 
 /// Right press origin, so a camera orbit is not mistaken for a menu click.
@@ -747,7 +727,7 @@ pub fn viewport_menu(
     if click.pointer.position.distance(start) > DRAG_SLOP {
         return;
     }
-    open(&mut menu, start, scene.selected);
+    open(&mut menu, start, scene.primary());
 }
 
 /// A right click on an object asks for the menu for that object.
@@ -763,5 +743,46 @@ pub fn close_on_teardown(
     if panels.is_empty() {
         menu.open = None;
         menu.rename = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enabled(rows: &[Entry], label: &str) -> Option<bool> {
+        rows.iter().find_map(|entry| match entry {
+            Entry::Row {
+                label: row,
+                enabled,
+                ..
+            } if *row == label => Some(*enabled),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn clipboard_and_target_rows_follow_the_selection() {
+        let empty = Open {
+            pos: Vec2::ZERO,
+            target: None,
+            page: Page::Root,
+        };
+        let rows = entries(false, empty);
+        assert_eq!(enabled(&rows, "Paste"), Some(false));
+        assert_eq!(enabled(&rows, "Copy"), Some(false));
+        assert_eq!(enabled(&rows, "Cut"), Some(false));
+        assert_eq!(enabled(&rows, "Delete"), Some(false));
+
+        let with_target = Open {
+            target: Some(4),
+            ..empty
+        };
+        let rows = entries(true, with_target);
+        assert_eq!(enabled(&rows, "Paste"), Some(true));
+        assert_eq!(enabled(&rows, "Copy"), Some(true));
+        assert_eq!(enabled(&rows, "Cut"), Some(true));
+        assert_eq!(enabled(&rows, "Delete"), Some(true));
+        assert_eq!(enabled(&rows, "Rename"), Some(true));
     }
 }

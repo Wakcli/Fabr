@@ -11,6 +11,7 @@ use super::docks;
 use super::icons;
 use crate::scene::SceneState;
 use crate::tokens;
+use crate::undo::Undo;
 
 /// Which transform row an inspector field reflects.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -369,12 +370,28 @@ fn degrees(rotation: [f32; 4]) -> [f32; 3] {
     [x.to_degrees(), y.to_degrees(), z.to_degrees()]
 }
 
-/// Keeps the inspector header and transform fields in step with the selection.
+/// Header text for a selection of `count` objects, named by its primary.
+fn selection_title(count: usize, name: Option<&str>) -> String {
+    match (count, name) {
+        (0, _) | (1, None) => "No selection".into(),
+        (1, Some(name)) => name.into(),
+        (n, _) => format!("{n} Objects"),
+    }
+}
+
+/// Keeps the inspector header and transform fields in step with the selection,
+/// and the history dock beneath it in step with the undo stack.
 pub fn sync_inspector(
     state: Res<SceneState>,
+    undo: Res<Undo>,
+    hosts: Query<Entity, With<docks::HistoryRows>>,
+    mut commands: Commands,
     mut values: Query<(&AxisValue, &mut Text), Without<ObjectTitle>>,
     mut titles: Query<&mut Text, (With<ObjectTitle>, Without<AxisValue>)>,
+    mut last_history: Local<Option<Vec<&'static str>>>,
 ) {
+    docks::sync_history(&undo, &hosts, &mut commands, &mut last_history);
+
     let selected = state.selected_object();
 
     for (seat, mut value) in &mut values {
@@ -390,10 +407,23 @@ pub fn sync_inspector(
         }
     }
 
-    let title = selected.map_or("No selection", |obj| obj.name.as_str());
+    let title = selection_title(state.selection.len(), selected.map(|obj| obj.name.as_str()));
     for mut text in &mut titles {
         if text.0 != title {
-            text.0 = title.into();
+            text.0 = title.clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn titles_name_one_object_and_count_many() {
+        assert_eq!(selection_title(0, None), "No selection");
+        assert_eq!(selection_title(1, Some("Cube 1")), "Cube 1");
+        assert_eq!(selection_title(1, None), "No selection");
+        assert_eq!(selection_title(3, Some("Cube 1")), "3 Objects");
     }
 }

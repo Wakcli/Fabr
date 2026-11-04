@@ -22,9 +22,11 @@ mod menu;
 mod viewport;
 
 use crate::build;
+use crate::clipboard;
 use crate::orbit;
 use crate::persist;
 use crate::scene;
+use crate::undo;
 use chrome::*;
 
 /// Editor frame scene.
@@ -282,6 +284,8 @@ impl Plugin for EditorPlugin {
         viewport::plugins(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
+            .init_resource::<undo::Undo>()
+            .init_resource::<clipboard::Clipboard>()
             .init_resource::<viewport::ViewportRes>()
             .init_resource::<orbit::OrbitCamera>()
             .init_resource::<orbit::FlyCam>()
@@ -304,6 +308,7 @@ impl Plugin for EditorPlugin {
                     scene::face_viewport_camera,
                     scene::keyboard_edit,
                     scene::draw_camera_frusta,
+                    crate::selection_outline::sync_outlines,
                     orbit::toggle_mode,
                     orbit::fly_move.before(orbit::apply_camera),
                     orbit::apply_camera,
@@ -321,6 +326,7 @@ impl Plugin for EditorPlugin {
                     menu::style_menu_rows,
                     menu::close_on_teardown,
                     persist::scene_shortcuts,
+                    persist::edit_shortcuts,
                     build::poll_build,
                     build_dialog::sync_modal,
                     build_dialog::style_buttons,
@@ -329,6 +335,7 @@ impl Plugin for EditorPlugin {
                 ),
             )
             .add_systems(Startup, autoload_scene)
+            .add_systems(Startup, crate::selection_outline::init_outline_material)
             .add_systems(PostUpdate, scene::reconcile_scene);
     }
 }

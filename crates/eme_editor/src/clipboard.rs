@@ -35,38 +35,29 @@ pub fn cut_selection(state: &mut SceneState, clip: &mut Clipboard, undo: &mut Un
     copied
 }
 
-/// Pastes the clipboard one unit along X and Z; the copies become the selection.
+/// Pastes the clipboard at the original positions; the copies become the selection.
 pub fn paste(state: &mut SceneState, clip: &Clipboard, undo: &mut Undo) -> usize {
-    insert(state, clip, [1.0, 0.0, 1.0], undo, "Paste")
+    insert(state, clip, undo, "Paste")
 }
 
-/// Copies the selection and pastes the copies one unit along X, in place.
+/// Copies the selection and pastes the copies on top of it, in one undo step.
 pub fn duplicate_selection(state: &mut SceneState, undo: &mut Undo) -> usize {
     let mut clip = Clipboard::default();
     if copy_selection(state, &mut clip) == 0 {
         return 0;
     }
-    insert(state, &clip, [1.0, 0.0, 0.0], undo, "Duplicate")
+    insert(state, &clip, undo, "Duplicate")
 }
 
-fn insert(
-    state: &mut SceneState,
-    clip: &Clipboard,
-    offset: [f32; 3],
-    undo: &mut Undo,
-    label: &'static str,
-) -> usize {
+fn insert(state: &mut SceneState, clip: &Clipboard, undo: &mut Undo, label: &'static str) -> usize {
     if clip.0.is_empty() {
         return 0;
     }
     undo.checkpoint(state, label);
     let mut ids = Vec::with_capacity(clip.0.len());
     for src in &clip.0 {
-        let mut transform = src.transform();
-        transform.translation[0] += offset[0];
-        transform.translation[2] += offset[2];
         let name = state.next_name(src.kind);
-        let id = state.doc.add(src.kind, name, transform);
+        let id = state.doc.add(src.kind, name, src.transform());
         if let Some(obj) = state.doc.get_mut(id) {
             obj.color = src.color;
         }
@@ -127,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_steps_one_cell_on_x_and_z() {
+    fn paste_lands_on_the_source_translation() {
         let (mut state, a, _) = state_with_two();
         state.select_only(a);
         let mut clip = Clipboard::default();
@@ -138,9 +129,7 @@ mod tests {
         paste(&mut state, &clip, &mut undo);
         let copy = state.primary().unwrap();
         let got = state.doc.get(copy).unwrap().translation;
-        assert_eq!(got[0], src[0] + 1.0);
-        assert_eq!(got[1], src[1]);
-        assert_eq!(got[2], src[2] + 1.0);
+        assert_eq!(got, src);
     }
 
     #[test]
@@ -162,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_offsets_x_only_and_selects_the_copies() {
+    fn duplicate_lands_on_the_source_translation_and_selects_the_copies() {
         let (mut state, a, _) = state_with_two();
         state.select_only(a);
         let mut undo = Undo::default();
@@ -172,8 +161,7 @@ mod tests {
         let copy = state.primary().unwrap();
         assert_ne!(copy, a);
         let got = state.doc.get(copy).unwrap().translation;
-        assert_eq!(got[0], src[0] + 1.0);
-        assert_eq!(got[2], src[2]);
+        assert_eq!(got, src);
         assert_eq!(state.doc.get(copy).unwrap().name, "Cube 2");
     }
 

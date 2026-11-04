@@ -18,7 +18,7 @@ use super::viewport::ViewportPanel;
 
 use super::chrome::Part;
 use crate::orbit::ViewMode;
-use crate::scene::{SceneLink, SceneState};
+use crate::scene::{propagate_edits, SceneLink, SceneState};
 use crate::tokens;
 use crate::undo::Undo;
 use eme::math::ops;
@@ -149,18 +149,21 @@ fn moved_transform(start: &ObjectTransform, from: &Transform, to: &Transform) ->
     }
 }
 
-/// Writes the gizmo's delta into every non-primary selected object's document.
+/// Writes the gizmo's delta into every non-primary selected object's document,
+/// recording each transform as it stood before the write.
 fn apply_to_selection(
     state: &mut SceneState,
     from: &Transform,
     to: &Transform,
     others: &[(u64, ObjectTransform)],
+    written: &mut Vec<(u64, ObjectTransform)>,
 ) {
     for (id, start) in others {
         let want = moved_transform(start, from, to);
         let Some(obj) = state.doc.get_mut(*id) else {
             continue;
         };
+        let before = obj.transform();
         if obj.translation != want.translation {
             obj.translation = want.translation;
         }
@@ -170,6 +173,7 @@ fn apply_to_selection(
         if obj.scale != want.scale {
             obj.scale = want.scale;
         }
+        written.push((*id, before));
     }
 }
 
@@ -178,6 +182,7 @@ fn apply_to_selection(
 ///
 /// The document stays the source of truth: the entity is only a projection of it,
 /// so a drag has to be written back before the next reconcile overwrites the entity.
+/// Every id written here then carries its own change onto its descendants.
 fn sync_doc(
     mut state: ResMut<SceneState>,
     gizmo: Res<TransformGizmoState>,
@@ -185,7 +190,9 @@ fn sync_doc(
     mut undo: ResMut<Undo>,
     mut was_active: Local<bool>,
     mut others: Local<Vec<(u64, ObjectTransform)>>,
+    mut written: Local<Vec<(u64, ObjectTransform)>>,
 ) {
+    written.clear();
     let was = *was_active;
     *was_active = gizmo.active;
 
@@ -214,6 +221,7 @@ fn sync_doc(
     let Some(obj) = state.doc.get_mut(link.id) else {
         return;
     };
+    let before = obj.transform();
     if obj.translation != translation {
         obj.translation = translation;
     }
@@ -223,10 +231,19 @@ fn sync_doc(
     if obj.scale != scale {
         obj.scale = scale;
     }
+    written.push((link.id, before));
 
     if gizmo.active {
-        apply_to_selection(&mut state, &gizmo.start_transform, tf, &others);
+        apply_to_selection(
+            &mut state,
+            &gizmo.start_transform,
+            tf,
+            &others,
+            &mut written,
+        );
     }
+
+    propagate_edits(&mut state.doc, &written);
 
     if was && !gizmo.active {
         state.touch();
@@ -375,7 +392,7 @@ mod tests {
         let from = Transform::from_xyz(0.0, 0.5, 0.0);
         let to = Transform::from_xyz(0.0, 2.0, 0.0);
 
-        apply_to_selection(&mut state, &from, &to, &[(b, start)]);
+        apply_to_selection(&mut state, &from, &to, &[(b, start)], &mut Vec::new());
 
         let got = state.doc.get(b).unwrap().translation;
         assert_eq!(

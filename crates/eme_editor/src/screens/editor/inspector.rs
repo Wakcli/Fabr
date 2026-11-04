@@ -5,6 +5,7 @@ use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColo
 use eme::prelude::*;
 use eme::scene::bsn;
 use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
+use eme::ui_widgets::{Activate, Button};
 
 use super::chrome::*;
 use super::docks;
@@ -28,6 +29,71 @@ pub struct AxisValue(pub Prop, pub u8);
 /// Marks the inspector header label so it shows the selected object.
 #[derive(Component, Clone, Default)]
 pub struct ObjectTitle;
+
+/// An inspector section whose body can be collapsed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Section {
+    #[default]
+    Transform,
+    Visibility,
+    Script,
+}
+
+/// Which inspector sections are open. All sections start open.
+#[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct InspectorSections {
+    pub transform: bool,
+    pub visibility: bool,
+    pub script: bool,
+}
+
+impl Default for InspectorSections {
+    fn default() -> Self {
+        Self {
+            transform: true,
+            visibility: true,
+            script: true,
+        }
+    }
+}
+
+impl InspectorSections {
+    /// Whether the body of `section` is visible.
+    pub fn is_open(&self, section: Section) -> bool {
+        match section {
+            Section::Transform => self.transform,
+            Section::Visibility => self.visibility,
+            Section::Script => self.script,
+        }
+    }
+
+    /// Shows or hides the body of `section`.
+    pub fn set_open(&mut self, section: Section, open: bool) {
+        match section {
+            Section::Transform => self.transform = open,
+            Section::Visibility => self.visibility = open,
+            Section::Script => self.script = open,
+        }
+    }
+
+    /// Flips `section` between open and closed.
+    pub fn toggle(&mut self, section: Section) {
+        let open = !self.is_open(section);
+        self.set_open(section, open);
+    }
+}
+
+/// Marks a section header row; activating it toggles the section.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SectionHeader(pub Section);
+
+/// Marks the container holding a section's body rows.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SectionBody(pub Section);
+
+/// One of the two carets a section header shows; `true` is the open glyph.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SectionCaret(pub Section, pub bool);
 
 pub fn right_dock() -> Part {
     let inspector = inspector_dock();
@@ -81,11 +147,11 @@ fn inspector_dock() -> Part {
         Children [
             {object_row()}
             --
-            {section("Transform", transform_rows())}
+            {section(Section::Transform, "Transform", transform_rows())}
             --
-            {section("Visibility", vec![visibility_row()])}
+            {section(Section::Visibility, "Visibility", vec![visibility_row()])}
             --
-            {section("Script", vec![script_row()])}
+            {section(Section::Script, "Script", vec![script_row()])}
             --
             {spacer()}
         ]
@@ -160,8 +226,22 @@ fn value_text(value: String, seat: AxisValue) -> Part {
     })
 }
 
-fn section(title: &str, rows: Vec<Part>) -> Part {
-    let mut kids = vec![Box::new(bsn! {
+fn section(id: Section, title: &str, rows: Vec<Part>) -> Part {
+    let body = Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+        }
+        SectionBody(id)
+        Children [ {rows} ]
+    }) as Part;
+
+    col(0.0, vec![section_header(id, title), body])
+}
+
+fn section_header(id: Section, title: &str) -> Part {
+    Box::new(bsn! {
         Node {
             height: px(PROPERTY_ROW_H),
             display: Display::Flex,
@@ -171,15 +251,41 @@ fn section(title: &str, rows: Vec<Part>) -> Part {
             column_gap: px(6),
         }
         ThemeBackgroundColor(tokens::CATEGORY)
+        Button
+        SectionHeader(id)
         Children [
-            {icons::caret(true)}
+            {caret_slot(id, true)}
+            --
+            {caret_slot(id, false)}
             --
             {text(title, FONT_SIZE, tokens::SECTION_TEXT)}
         ]
-    }) as Part];
-    kids.extend(rows);
+        on(toggle_section)
+    })
+}
 
-    col(0.0, kids)
+fn caret_slot(id: Section, open: bool) -> Part {
+    let glyph = icons::caret(open);
+    let display = if open { Display::Flex } else { Display::None };
+    Box::new(bsn! {
+        SectionCaret(id, open)
+        Node { display: {display} }
+        Children [ {glyph} ]
+    })
+}
+
+/// Flips the section whose header was activated.
+fn toggle_section(
+    activate: On<Activate>,
+    headers: Query<&SectionHeader>,
+    mut sections: Option<ResMut<InspectorSections>>,
+) {
+    let Ok(header) = headers.get(activate.entity) else {
+        return;
+    };
+    if let Some(sections) = sections.as_mut() {
+        sections.toggle(header.0);
+    }
 }
 
 fn transform_rows() -> Vec<Part> {
@@ -386,11 +492,35 @@ pub fn sync_inspector(
     undo: Res<Undo>,
     hosts: Query<Entity, With<docks::HistoryRows>>,
     mut commands: Commands,
+    sections: Option<ResMut<InspectorSections>>,
     mut values: Query<(&AxisValue, &mut Text), Without<ObjectTitle>>,
     mut titles: Query<&mut Text, (With<ObjectTitle>, Without<AxisValue>)>,
+    mut slots: Query<
+        (&mut Node, Option<&SectionBody>, Option<&SectionCaret>),
+        Or<(With<SectionBody>, With<SectionCaret>)>,
+    >,
     mut last_history: Local<Option<Vec<&'static str>>>,
 ) {
     docks::sync_history(&undo, &hosts, &mut commands, &mut last_history);
+    let open = match sections.as_deref() {
+        Some(sections) => *sections,
+        None => {
+            commands.init_resource::<InspectorSections>();
+            InspectorSections::default()
+        }
+    };
+
+    for (mut node, body, caret) in &mut slots {
+        let want = match (body, caret) {
+            (Some(body), _) => open.is_open(body.0),
+            (_, Some(caret)) => caret.1 == open.is_open(caret.0),
+            _ => continue,
+        };
+        let display = if want { Display::Flex } else { Display::None };
+        if node.display != display {
+            node.display = display;
+        }
+    }
 
     let selected = state.selected_object();
 
@@ -425,5 +555,25 @@ mod tests {
         assert_eq!(selection_title(1, Some("Cube 1")), "Cube 1");
         assert_eq!(selection_title(1, None), "No selection");
         assert_eq!(selection_title(3, Some("Cube 1")), "3 Objects");
+    }
+
+    #[test]
+    fn toggling_a_section_flips_only_that_section() {
+        let mut sections = InspectorSections::default();
+        for section in [Section::Transform, Section::Visibility, Section::Script] {
+            assert!(sections.is_open(section));
+        }
+
+        sections.toggle(Section::Visibility);
+        assert!(!sections.is_open(Section::Visibility));
+        assert!(sections.is_open(Section::Transform));
+        assert!(sections.is_open(Section::Script));
+
+        sections.toggle(Section::Visibility);
+        assert!(sections.is_open(Section::Visibility));
+
+        sections.set_open(Section::Script, false);
+        assert!(!sections.is_open(Section::Script));
+        assert!(sections.is_open(Section::Transform));
     }
 }

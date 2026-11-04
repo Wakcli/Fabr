@@ -264,9 +264,14 @@ impl SceneDoc {
         }
     }
 
-    /// Reparents an object, refusing self-parents and unknown parents.
+    /// Reparents an object, refusing self-parents, unknown parents and cycles.
     pub fn set_parent(&mut self, id: u64, parent: Option<u64>) -> bool {
-        if parent == Some(id) || parent.is_some_and(|p| self.get(p).is_none()) {
+        if parent == Some(id) {
+            return false;
+        }
+        if let Some(target) = parent
+            && (self.get(target).is_none() || self.is_ancestor(id, target))
+        {
             return false;
         }
         match self.get_mut(id) {
@@ -276,6 +281,64 @@ impl SceneDoc {
             }
             None => false,
         }
+    }
+
+    /// Direct children of `id`, in document order.
+    pub fn children(&self, id: u64) -> impl Iterator<Item = &SceneObject> {
+        self.objects.iter().filter(move |obj| obj.parent == Some(id))
+    }
+
+    /// Whether `ancestor` sits anywhere above `of` in the tree.
+    pub fn is_ancestor(&self, ancestor: u64, of: u64) -> bool {
+        let mut current = self.get(of).and_then(|obj| obj.parent);
+        let mut guard = 0;
+        while let Some(id) = current {
+            if id == ancestor {
+                return true;
+            }
+            guard += 1;
+            if guard > self.objects.len() {
+                return false;
+            }
+            current = self.get(id).and_then(|obj| obj.parent);
+        }
+        false
+    }
+
+    /// Every id below `id`, depth first.
+    pub fn descendants(&self, id: u64) -> Vec<u64> {
+        let mut out = Vec::new();
+        let mut stack: Vec<u64> = self.children(id).map(|obj| obj.id).collect();
+        while let Some(next) = stack.pop() {
+            if out.contains(&next) {
+                continue;
+            }
+            out.push(next);
+            stack.extend(self.children(next).map(|obj| obj.id));
+        }
+        out
+    }
+
+    /// Depth of `id` in the tree; roots are 0.
+    pub fn depth(&self, id: u64) -> usize {
+        let mut depth = 0;
+        let mut current = self.get(id).and_then(|obj| obj.parent);
+        while let Some(parent) = current {
+            depth += 1;
+            if depth > self.objects.len() {
+                break;
+            }
+            current = self.get(parent).and_then(|obj| obj.parent);
+        }
+        depth
+    }
+
+    /// Objects that hang off the root: no parent, or a parent that no longer exists.
+    pub fn roots(&self) -> impl Iterator<Item = &SceneObject> {
+        self.objects.iter().filter(|obj| match obj.parent {
+            None => true,
+            Some(id) => self.get(id).is_none(),
+        })
     }
 
     /// Encodes the document as pretty RON.
@@ -454,5 +517,66 @@ mod tests {
             SceneDoc::from_ron(&doc.to_ron().unwrap()),
             Err(SceneError::DuplicateId(1))
         );
+    }
+
+    #[test]
+    fn parenting_refuses_cycles_and_self() {
+        let mut doc = authored();
+        let cube = doc.objects[0].id;
+        let sphere = doc.objects[1].id;
+        let light = doc.objects[2].id;
+
+        assert!(doc.set_parent(sphere, Some(cube)));
+        assert!(doc.set_parent(light, Some(sphere)));
+        assert!(!doc.set_parent(cube, Some(light)), "grandparent cycle slipped through");
+        assert!(!doc.set_parent(cube, Some(cube)), "self-parent slipped through");
+        assert!(!doc.set_parent(cube, Some(999)), "unknown parent slipped through");
+        assert_eq!(doc.get(cube).unwrap().parent, None);
+    }
+
+    #[test]
+    fn tree_walks_report_children_descendants_and_depth() {
+        let mut doc = authored();
+        let cube = doc.objects[0].id;
+        let sphere = doc.objects[1].id;
+        let light = doc.objects[2].id;
+        let sun = doc.objects[3].id;
+
+        doc.set_parent(sphere, Some(cube));
+        doc.set_parent(light, Some(sphere));
+        doc.set_parent(sun, Some(cube));
+
+        let mut kids: Vec<u64> = doc.children(cube).map(|obj| obj.id).collect();
+        kids.sort();
+        let mut want = vec![sphere, sun];
+        want.sort();
+        assert_eq!(kids, want);
+
+        let mut below = doc.descendants(cube);
+        below.sort();
+        let mut want_below = vec![sphere, light, sun];
+        want_below.sort();
+        assert_eq!(below, want_below);
+
+        assert_eq!(doc.depth(cube), 0);
+        assert_eq!(doc.depth(sphere), 1);
+        assert_eq!(doc.depth(light), 2);
+        assert!(doc.is_ancestor(cube, light));
+        assert!(doc.is_ancestor(sphere, light));
+        assert!(!doc.is_ancestor(light, cube));
+    }
+
+    #[test]
+    fn removing_a_parent_promotes_its_children_to_roots() {
+        let mut doc = authored();
+        let cube = doc.objects[0].id;
+        let sphere = doc.objects[1].id;
+        doc.set_parent(sphere, Some(cube));
+
+        doc.remove(cube);
+
+        assert_eq!(doc.get(sphere).unwrap().parent, None);
+        let roots: Vec<u64> = doc.roots().map(|obj| obj.id).collect();
+        assert!(roots.contains(&sphere));
     }
 }

@@ -244,6 +244,15 @@ impl SceneState {
         Some(new_id)
     }
 
+    /// Reparents an object, refusing cycles. Transforms are absolute, so nothing moves.
+    pub fn reparent(&mut self, id: u64, parent: Option<u64>) -> bool {
+        if !self.doc.set_parent(id, parent) {
+            return false;
+        }
+        self.touch();
+        true
+    }
+
     /// Removes an object, dropping it from the selection when it was selected.
     #[cfg(test)]
     pub fn despawn(&mut self, id: u64) -> bool {
@@ -507,6 +516,78 @@ pub fn reconcile_scene(
     }
 }
 
+/// Carries the change `before` → current on `id` onto every descendant of `id`.
+///
+/// Document transforms are absolute, so a child follows a parent by moving with the
+/// parent's delta: its offset from the parent's old origin is scaled by the change in
+/// parent scale, spun by the change in parent rotation, then the parent's translation
+/// delta is added. Ids in `skip` are left where they are, for callers that wrote those
+/// objects directly in the same frame.
+///
+/// Non-uniform parent scale combined with a rotated child shears that child; the
+/// approximation above ignores the shear rather than giving objects a shear axis.
+pub fn propagate(doc: &mut SceneDoc, id: u64, before: ObjectTransform, skip: &[u64]) {
+    let Some(now) = doc.get(id).map(SceneObject::transform) else {
+        return;
+    };
+    if before == now {
+        return;
+    }
+    let below = doc.descendants(id);
+    if below.is_empty() {
+        return;
+    }
+
+    let pivot = Vec3::from_array(before.translation);
+    let delta = Vec3::from_array(now.translation) - pivot;
+    let spin = Quat::from_array(now.rotation) * Quat::from_array(before.rotation).inverse();
+    let factor = Vec3::new(
+        factor_of(before.scale[0], now.scale[0]),
+        factor_of(before.scale[1], now.scale[1]),
+        factor_of(before.scale[2], now.scale[2]),
+    );
+
+    for child_id in below {
+        if skip.contains(&child_id) {
+            continue;
+        }
+        let Some(child) = doc.get_mut(child_id) else {
+            continue;
+        };
+        let offset = Vec3::from_array(child.translation) - pivot;
+        child.translation = (pivot + delta + spin * (offset * factor)).to_array();
+        child.rotation = (spin * Quat::from_array(child.rotation)).to_array();
+        child.scale = (Vec3::from_array(child.scale) * factor).to_array();
+    }
+}
+
+/// Propagates a frame's batch of direct transform writes onto their descendants.
+///
+/// A write that already sits below another write in the batch is covered by that
+/// ancestor's propagation, so its own subtree is left to the value written directly;
+/// walking both would move shared descendants twice.
+pub fn propagate_edits(doc: &mut SceneDoc, edits: &[(u64, ObjectTransform)]) {
+    let ids: Vec<u64> = edits.iter().map(|(id, _)| *id).collect();
+    for (id, before) in edits {
+        if ids
+            .iter()
+            .any(|other| other != id && doc.is_ancestor(*other, *id))
+        {
+            continue;
+        }
+        propagate(doc, *id, *before, &ids);
+    }
+}
+
+/// Scale ratio to carry onto a child, with a collapsed source axis left alone.
+fn factor_of(before: f32, now: f32) -> f32 {
+    if ops::abs(before) < f32::EPSILON {
+        1.0
+    } else {
+        now / before
+    }
+}
+
 fn spawn_entity(
     commands: &mut Commands,
     assets: &mut SceneAssets,
@@ -730,14 +811,16 @@ pub fn keyboard_edit(
     }
 
     undo.checkpoint(&state, "Nudge");
+    let mut written: Vec<(u64, ObjectTransform)> = Vec::new();
     for id in ids {
-        let Some(obj) = state.doc.get(id) else {
+        let Some(before) = state.doc.get(id).map(SceneObject::transform) else {
             continue;
         };
-        let mut translation = obj.translation;
+        let mut translation = before.translation;
         translation[0] += step.x;
         translation[2] += step.y;
         state.doc.set_translation(id, translation);
+        written.push((id, before));
         let Some(&entity) = state.entities.get(&id) else {
             continue;
         };
@@ -746,6 +829,7 @@ pub fn keyboard_edit(
             transform.translation.z = translation[2];
         }
     }
+    propagate_edits(&mut state.doc, &written);
     state.touch();
 }
 
@@ -917,9 +1001,14 @@ fn drag_object(
         return;
     }
 
+    let mut written: Vec<(u64, ObjectTransform)> = Vec::new();
     for (id, start) in &grab.items {
+        let Some(before) = state.doc.get(*id).map(SceneObject::transform) else {
+            continue;
+        };
         let translation = [start[0] + delta.x, start[1], start[2] + delta.y];
         state.doc.set_translation(*id, translation);
+        written.push((*id, before));
         let Some(&other) = state.entities.get(id) else {
             continue;
         };
@@ -928,6 +1017,7 @@ fn drag_object(
             transform.translation.z = translation[2];
         }
     }
+    propagate_edits(&mut state.doc, &written);
 }
 
 /// Spawns the demo scene used by headless captures when `EME_EDITOR_DEMO=1`.
@@ -1166,5 +1256,142 @@ mod tests {
         let before = state.epoch();
         state.replace_doc(SceneDoc::new());
         assert_ne!(state.epoch(), before);
+    }
+
+    fn nested(parent_at: [f32; 3], child_at: [f32; 3]) -> (SceneDoc, u64, u64) {
+        let mut doc = SceneDoc::new();
+        let parent = doc.add(
+            ObjectKind::Cube,
+            "Parent",
+            ObjectTransform::from_translation(parent_at),
+        );
+        let child = doc.add(
+            ObjectKind::Cube,
+            "Child",
+            ObjectTransform::from_translation(child_at),
+        );
+        doc.set_parent(child, Some(parent));
+        (doc, parent, child)
+    }
+
+    fn close(got: [f32; 3], want: [f32; 3]) {
+        for i in 0..3 {
+            assert!(ops::abs(got[i] - want[i]) < 1e-5, "{got:?} is not {want:?}");
+        }
+    }
+
+    #[test]
+    fn parent_translation_carries_the_child() {
+        let (mut doc, parent, child) = nested([0.0; 3], [2.0, 0.0, 0.0]);
+        let before = doc.get(parent).unwrap().transform();
+        doc.set_translation(parent, [3.0, 0.0, 0.0]);
+        propagate(&mut doc, parent, before, &[]);
+        close(doc.get(child).unwrap().translation, [5.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn parent_rotation_spins_the_child() {
+        let (mut doc, parent, child) = nested([0.0; 3], [2.0, 0.0, 0.0]);
+        let before = doc.get(parent).unwrap().transform();
+        let spin = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        doc.get_mut(parent).unwrap().rotation = spin.to_array();
+        propagate(&mut doc, parent, before, &[]);
+        close(doc.get(child).unwrap().translation, [0.0, 0.0, -2.0]);
+        assert!(
+            Quat::from_array(doc.get(child).unwrap().rotation).abs_diff_eq(spin, 1e-5),
+            "child keeps the parent's spin"
+        );
+    }
+
+    #[test]
+    fn parent_scale_grows_the_child() {
+        let (mut doc, parent, child) = nested([0.0; 3], [2.0, 0.0, 0.0]);
+        let before = doc.get(parent).unwrap().transform();
+        doc.get_mut(parent).unwrap().scale = [2.0, 2.0, 2.0];
+        propagate(&mut doc, parent, before, &[]);
+        close(doc.get(child).unwrap().translation, [4.0, 0.0, 0.0]);
+        close(doc.get(child).unwrap().scale, [2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn propagate_skips_listed_descendants() {
+        let (mut doc, parent, child) = nested([0.0; 3], [2.0, 0.0, 0.0]);
+        let other = doc.add(
+            ObjectKind::Cube,
+            "Other",
+            ObjectTransform::from_translation([2.0, 1.0, 0.0]),
+        );
+        doc.set_parent(other, Some(parent));
+        let before = doc.get(parent).unwrap().transform();
+        doc.set_translation(parent, [3.0, 0.0, 0.0]);
+        propagate(&mut doc, parent, before, &[child]);
+        close(doc.get(child).unwrap().translation, [2.0, 0.0, 0.0]);
+        close(doc.get(other).unwrap().translation, [5.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn propagate_without_descendants_is_a_no_op() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Cube,
+            "Lonely",
+            ObjectTransform::from_translation([1.0, 2.0, 3.0]),
+        );
+        let before = doc.get(id).unwrap().transform();
+        doc.set_translation(id, [9.0, 2.0, 3.0]);
+        let want = doc.clone();
+        propagate(&mut doc, id, before, &[]);
+        assert_eq!(doc, want);
+    }
+
+    #[test]
+    fn a_child_moving_leaves_its_parent_alone() {
+        let (mut doc, parent, child) = nested([1.0, 0.0, 0.0], [3.0, 0.0, 0.0]);
+        let leaf = doc.add(
+            ObjectKind::Cube,
+            "Leaf",
+            ObjectTransform::from_translation([4.0, 0.0, 0.0]),
+        );
+        doc.set_parent(leaf, Some(child));
+        let before = doc.get(child).unwrap().transform();
+        doc.set_translation(child, [3.0, 0.0, 2.0]);
+        propagate(&mut doc, child, before, &[]);
+        close(doc.get(parent).unwrap().translation, [1.0, 0.0, 0.0]);
+        close(doc.get(leaf).unwrap().translation, [4.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn a_batch_moves_shared_descendants_once() {
+        let (mut doc, parent, child) = nested([0.0; 3], [2.0, 0.0, 0.0]);
+        let leaf = doc.add(
+            ObjectKind::Cube,
+            "Leaf",
+            ObjectTransform::from_translation([4.0, 0.0, 0.0]),
+        );
+        doc.set_parent(leaf, Some(child));
+        let parent_before = doc.get(parent).unwrap().transform();
+        let child_before = doc.get(child).unwrap().transform();
+        doc.set_translation(parent, [3.0, 0.0, 0.0]);
+        doc.set_translation(child, [5.0, 0.0, 0.0]);
+        propagate_edits(&mut doc, &[(parent, parent_before), (child, child_before)]);
+        close(doc.get(leaf).unwrap().translation, [7.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn moving_a_parent_keeps_the_selection_and_anchor() {
+        let mut state = SceneState::default();
+        let parent = state.spawn(ObjectKind::Cube);
+        let child = state.spawn(ObjectKind::Cube);
+        assert!(state.reparent(child, Some(parent)));
+        state.select_many(&[parent, child]);
+        let before = state.doc.get(parent).unwrap().transform();
+        state.doc.set_translation(parent, [4.0, 0.0, 0.0]);
+        propagate(&mut state.doc, parent, before, &[]);
+        assert_eq!(
+            state.selected_ids().collect::<Vec<_>>(),
+            vec![parent, child]
+        );
+        assert_eq!(state.primary(), Some(child));
+        assert_eq!(state.anchor, Some(parent));
     }
 }

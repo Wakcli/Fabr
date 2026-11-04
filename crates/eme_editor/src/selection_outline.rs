@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use eme::light::NotShadowCaster;
+use eme::mesh::VertexAttributeValues;
 use eme::prelude::*;
 use eme::render::render_resource::Face;
 
@@ -17,8 +18,10 @@ pub struct SelectionOutline;
 #[derive(Resource, Clone)]
 pub struct OutlineMaterial(pub Handle<StandardMaterial>);
 
-/// Local scale of a hull relative to the mesh it wraps.
-const HULL_SCALE: f32 = 1.04;
+/// Local scale limit for tiny objects, so a hairline mesh cannot explode its hull.
+const HULL_SCALE_MAX: f32 = 4.0;
+/// World-space distance the hull sits outside the mesh it wraps.
+const HULL_GAP: f32 = 0.02;
 /// Selection orange.
 const HULL_COLOR: Color = Color::srgb(1.0, 0.62, 0.16);
 
@@ -46,7 +49,9 @@ pub fn sync_outlines(
     state: Res<SceneState>,
     outline: Option<Res<OutlineMaterial>>,
     meshes: Query<&Mesh3d, Without<SelectionOutline>>,
-    mut hulls: Query<(Entity, &ChildOf, &mut Mesh3d), With<SelectionOutline>>,
+    assets: Res<Assets<Mesh>>,
+    worlds: Query<&GlobalTransform>,
+    mut hulls: Query<(Entity, &ChildOf, &mut Mesh3d, &mut Transform), With<SelectionOutline>>,
     mut wanted: Local<HashSet<Entity>>,
     mut covered: Local<HashSet<Entity>>,
 ) {
@@ -62,7 +67,7 @@ pub fn sync_outlines(
     }
 
     covered.clear();
-    for (hull, child_of, mut drawn) in &mut hulls {
+    for (hull, child_of, mut drawn, mut shell) in &mut hulls {
         let parent = child_of.parent();
         let Ok(mesh) = meshes.get(parent) else {
             commands.entity(hull).despawn();
@@ -75,22 +80,51 @@ pub fn sync_outlines(
         if drawn.0 != mesh.0 {
             drawn.0 = mesh.0.clone();
         }
+        let want = hull_scale(&mesh.0, &assets, worlds.get(parent).ok());
+        if shell.scale != Vec3::splat(want) {
+            shell.scale = Vec3::splat(want);
+        }
     }
 
     for parent in wanted.iter().copied().filter(|it| !covered.contains(it)) {
         let Ok(mesh) = meshes.get(parent) else {
             continue;
         };
+        let scale = hull_scale(&mesh.0, &assets, worlds.get(parent).ok());
         commands.spawn((
             SelectionOutline,
             Mesh3d(mesh.0.clone()),
             MeshMaterial3d(outline.0.clone()),
-            Transform::from_scale(Vec3::splat(HULL_SCALE)),
+            Transform::from_scale(Vec3::splat(scale)),
             Pickable::IGNORE,
             NotShadowCaster,
             ChildOf(parent),
         ));
     }
+}
+
+/// Hull scale that puts the shell [`HULL_GAP`] world units outside the mesh,
+/// whatever the object's own scale is.
+fn hull_scale(mesh: &Handle<Mesh>, assets: &Assets<Mesh>, world: Option<&GlobalTransform>) -> f32 {
+    let radius = assets.get(mesh).and_then(mesh_radius).unwrap_or(0.0);
+    let parent = world
+        .map(|transform| transform.scale().abs().max_element())
+        .unwrap_or(1.0);
+    if radius <= f32::EPSILON || parent <= f32::EPSILON {
+        return 1.0 + HULL_GAP;
+    }
+    (1.0 + HULL_GAP / (radius * parent)).min(HULL_SCALE_MAX)
+}
+
+/// Distance from the mesh origin to its farthest vertex, in local space.
+fn mesh_radius(mesh: &Mesh) -> Option<f32> {
+    let VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)? else {
+        return None;
+    };
+    points
+        .iter()
+        .map(|point| Vec3::from_array(*point).length())
+        .reduce(f32::max)
 }
 
 #[cfg(test)]
@@ -230,5 +264,38 @@ mod tests {
         app.update();
 
         assert!(hulls(&mut app).is_empty());
+    }
+
+    #[test]
+    fn hull_offset_stays_constant_when_the_object_scales() {
+        let mut app = app();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::default());
+        let assets = app.world().resource::<Assets<Mesh>>();
+        let unit = GlobalTransform::default();
+        let big = GlobalTransform::from_scale(Vec3::splat(4.0));
+
+        let small = hull_scale(&mesh, assets, Some(&unit));
+        let large = hull_scale(&mesh, assets, Some(&big));
+        let radius = mesh_radius(assets.get(&mesh).unwrap()).unwrap();
+
+        assert!((radius * (small - 1.0) - HULL_GAP).abs() < 1e-5);
+        assert!((radius * 4.0 * (large - 1.0) - HULL_GAP).abs() < 1e-5);
+        assert!(large < small, "a bigger object needs a smaller local hull scale");
+    }
+
+    #[test]
+    fn hull_offset_survives_a_missing_world_transform() {
+        let mut app = app();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::default());
+        let assets = app.world().resource::<Assets<Mesh>>();
+        let unscaled = hull_scale(&mesh, assets, None);
+        let unit = hull_scale(&mesh, assets, Some(&GlobalTransform::default()));
+        assert!((unscaled - unit).abs() < 1e-6);
     }
 }

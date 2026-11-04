@@ -452,13 +452,14 @@ fn activate(
     actions: Query<&Action>,
     mut state: ResMut<BuildState>,
     scene: Res<SceneState>,
+    scenes: Res<crate::tabs::OpenScenes>,
 ) {
     let Ok(action) = actions.get(activate.entity) else {
         return;
     };
     match action.0 {
         Verb::Close => state.close(),
-        Verb::Start => state.start(scene.doc.clone()),
+        Verb::Start => state.start(scene.doc.clone(), scenes.path().to_string()),
         Verb::Run => run_game(&mut state),
     }
 }

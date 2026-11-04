@@ -108,8 +108,8 @@ impl BuildState {
         self.rev += 1;
     }
 
-    /// Starts a background build of `doc`; ignored while one is running.
-    pub fn start(&mut self, doc: SceneDoc) {
+    /// Starts a background build of `doc`, saved to `path`; ignored while one is running.
+    pub fn start(&mut self, doc: SceneDoc, path: String) {
         if self.running {
             return;
         }
@@ -125,7 +125,7 @@ impl BuildState {
         self.rev += 1;
         let (tx, rx) = mpsc::channel();
         self.rx = Some(Mutex::new(rx));
-        thread::spawn(move || run(doc, tx));
+        thread::spawn(move || run(doc, path, tx));
     }
 
     /// Appends one log line, dropping the oldest past [`MAX_LINES`].
@@ -181,8 +181,8 @@ pub fn poll_build(mut state: ResMut<BuildState>) {
     }
 }
 
-fn run(doc: SceneDoc, tx: Sender<Msg>) {
-    match package(&doc, &tx) {
+fn run(doc: SceneDoc, path: String, tx: Sender<Msg>) {
+    match package(&doc, &path, &tx) {
         Ok(dir) => {
             let abs = std::fs::canonicalize(&dir).unwrap_or(dir);
             say(&tx, Level::Done, format!("game folder {}", abs.display()));
@@ -195,8 +195,8 @@ fn run(doc: SceneDoc, tx: Sender<Msg>) {
     }
 }
 
-fn package(doc: &SceneDoc, tx: &Sender<Msg>) -> Result<PathBuf, String> {
-    let scene = persist::save(doc).map_err(|err| format!("could not save scene: {err}"))?;
+fn package(doc: &SceneDoc, path: &str, tx: &Sender<Msg>) -> Result<PathBuf, String> {
+    let scene = persist::save_to(doc, path).map_err(|err| format!("could not save scene: {err}"))?;
     say(tx, Level::Step, format!("saved scene {}", scene.display()));
 
     let target = target_dir();

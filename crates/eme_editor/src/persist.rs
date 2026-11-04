@@ -49,11 +49,6 @@ fn io(path: &Path, err: std::io::Error) -> PersistError {
     PersistError::Io(format!("{}: {err}", path.display()))
 }
 
-/// Writes `doc` to [`SCENE_PATH`], creating the `scenes` folder if needed.
-pub fn save(doc: &SceneDoc) -> Result<PathBuf, PersistError> {
-    save_to(doc, SCENE_PATH)
-}
-
 /// Writes `doc` to `path`, creating its folder if needed.
 pub fn save_to(doc: &SceneDoc, path: &str) -> Result<PathBuf, PersistError> {
     let path = PathBuf::from(path);

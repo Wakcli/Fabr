@@ -26,6 +26,7 @@ use crate::clipboard;
 use crate::orbit;
 use crate::persist;
 use crate::scene;
+use crate::tabs;
 use crate::undo;
 use chrome::*;
 
@@ -286,6 +287,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()
             .init_resource::<clipboard::Clipboard>()
+            .init_resource::<tabs::OpenScenes>()
             .init_resource::<viewport::ViewportRes>()
             .init_resource::<orbit::OrbitCamera>()
             .init_resource::<orbit::FlyCam>()
@@ -304,6 +306,7 @@ impl Plugin for EditorPlugin {
                     viewport::sync_game_world,
                     viewport::sync_editor_ui,
                     sync_view_tabs,
+                    tabs::sync,
                     scene::tint_selection,
                     scene::face_viewport_camera,
                     scene::keyboard_edit,

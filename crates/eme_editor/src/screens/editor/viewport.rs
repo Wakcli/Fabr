@@ -11,15 +11,17 @@ use eme::math::Rot2;
 use eme::prelude::*;
 use eme::render::render_resource::TextureFormat;
 use eme::scene::bsn;
-use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
+use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextColor, TextFont};
 use eme::ui::widget::ViewportNode;
-use eme::ui::UiTransform;
+use eme::ui::{BackgroundColor, UiTransform};
+use eme::ui_widgets::Button;
 
 use super::chrome::*;
-use super::gizmo::{tool_button, GizmoPlugin, ToolModeText};
+use super::gizmo::{tool_button, toolbar_button, GizmoPlugin, ToolModeText, ToolbarToggleKind};
 use super::{docks, icons, menu};
 use crate::orbit::{orbit_drag, orbit_scroll};
 use crate::scene;
+use crate::tabs::{self, SceneTab, SceneTabLabel};
 use crate::tokens;
 
 /// Camera position for the editor's perspective view.
@@ -72,13 +74,13 @@ pub fn center() -> Part {
 }
 
 fn scene_tabs() -> Part {
-    let kids = vec![
-        scene_tab("main.scene", true),
-        scene_tab("player.scene", false),
-        spacer(),
-        icon_button(icons::add(), 24.0),
-        icon_button(icons::dock_menu(), 20.0),
-    ];
+    let mut items = Vec::new();
+    for (index, tab) in tabs::TABS.iter().enumerate() {
+        items.push(scene_tab(index, tab.label));
+    }
+    items.push(spacer());
+    items.push(icon_button(icons::add(), 24.0));
+    items.push(icon_button(icons::dock_menu(), 20.0));
 
     Box::new(bsn! {
         Node {
@@ -91,11 +93,11 @@ fn scene_tabs() -> Part {
         }
         ThemeBackgroundColor(tokens::WINDOW)
         ThemeBorderColor(tokens::BORDER)
-        Children [ {kids} ]
+        Children [ {items} ]
     })
 }
 
-fn scene_tab(label: &str, active: bool) -> Part {
+fn scene_tab(index: usize, label: &str) -> Part {
     Box::new(bsn! {
         Node {
             height: percent(100),
@@ -103,16 +105,32 @@ fn scene_tab(label: &str, active: bool) -> Part {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             padding: UiRect::horizontal(px(11)),
-            border: UiRect { bottom: px(if active { 2.0 } else { 0.0 }) },
+            border: UiRect { bottom: px(0) },
             column_gap: px(6),
         }
-        ThemeBackgroundColor({if active { tokens::PANEL } else { tokens::WINDOW }})
+        BackgroundColor(Color::NONE)
         ThemeBorderColor(tokens::TAB_HIGHLIGHT)
+        Button
+        SceneTab(index)
         Children [
             {icons::badge(icons::SCENE)}
             --
-            {text(label, FONT_SIZE, if active { tokens::TEXT } else { tokens::TEXT_DIM })}
+            {scene_tab_label(index, label)}
         ]
+        on(tabs::tab_click)
+    })
+}
+
+fn scene_tab_label(index: usize, label: &str) -> Part {
+    Box::new(bsn! {
+        Text(label)
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        TextColor(Color::NONE)
+        SceneTabLabel(index)
     })
 }
 
@@ -163,7 +181,10 @@ fn overlay(kids: Vec<Part>) -> Part {
 
 fn transform_toolbar() -> Part {
     let kids = vec![
-        icon_button(icons::mono(icons::TOOL_SELECT, tokens::ICON), 26.0),
+        toolbar_button(
+            icons::mono(icons::TOOL_SELECT, tokens::ICON),
+            ToolbarToggleKind::Select,
+        ),
         vline(14.0, tokens::BORDER),
         tool_button(
             icons::mono(icons::TOOL_MOVE, tokens::ICON),
@@ -178,8 +199,14 @@ fn transform_toolbar() -> Part {
             TransformGizmoMode::Scale,
         ),
         vline(14.0, tokens::BORDER),
-        icon_button(icons::mono(icons::SNAP, tokens::ICON), 26.0),
-        icon_button(icons::mono(icons::TOOL_TRANSFORM, tokens::ICON), 26.0),
+        toolbar_button(
+            icons::mono(icons::SNAP, tokens::ICON),
+            ToolbarToggleKind::Snap,
+        ),
+        toolbar_button(
+            icons::mono(icons::TOOL_TRANSFORM, tokens::ICON),
+            ToolbarToggleKind::Space,
+        ),
         vline(14.0, tokens::BORDER),
         mode_readout(),
     ];

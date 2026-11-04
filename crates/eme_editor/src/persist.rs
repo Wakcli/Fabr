@@ -15,10 +15,11 @@ use crate::app::Screen;
 use crate::build::BuildState;
 use crate::clipboard::{self, Clipboard};
 use crate::scene::SceneState;
+use crate::tabs::{self, OpenScenes};
 use crate::undo::Undo;
 
-/// Where Ctrl+S writes and Ctrl+O reads.
-pub const SCENE_PATH: &str = "scenes/main.ember";
+/// The main scene tab's path, and the scene Ctrl+O reads by default.
+pub const SCENE_PATH: &str = tabs::TABS[0].path;
 
 /// Why a scene file could not be written or read back.
 #[derive(Debug)]
@@ -50,7 +51,12 @@ fn io(path: &Path, err: std::io::Error) -> PersistError {
 
 /// Writes `doc` to [`SCENE_PATH`], creating the `scenes` folder if needed.
 pub fn save(doc: &SceneDoc) -> Result<PathBuf, PersistError> {
-    let path = PathBuf::from(SCENE_PATH);
+    save_to(doc, SCENE_PATH)
+}
+
+/// Writes `doc` to `path`, creating its folder if needed.
+pub fn save_to(doc: &SceneDoc, path: &str) -> Result<PathBuf, PersistError> {
+    let path = PathBuf::from(path);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|err| io(dir, err))?;
     }
@@ -61,7 +67,12 @@ pub fn save(doc: &SceneDoc) -> Result<PathBuf, PersistError> {
 
 /// Reads [`SCENE_PATH`], or `None` when no scene has been saved yet.
 pub fn load() -> Result<Option<SceneDoc>, PersistError> {
-    let path = Path::new(SCENE_PATH);
+    load_from(SCENE_PATH)
+}
+
+/// Reads `path`, or `None` when no scene has been saved there yet.
+pub fn load_from(path: &str) -> Result<Option<SceneDoc>, PersistError> {
+    let path = Path::new(path);
     if !path.exists() {
         return Ok(None);
     }
@@ -69,33 +80,38 @@ pub fn load() -> Result<Option<SceneDoc>, PersistError> {
     Ok(Some(SceneDoc::from_ron(&src)?))
 }
 
-/// Replaces the editor document with the saved scene, if it exists.
-pub fn open_into(state: &mut SceneState) {
-    match load() {
+/// Replaces the editor document with the saved scene at `path`, if it exists.
+pub fn open_path_into(state: &mut SceneState, path: &str) {
+    match load_from(path) {
         Ok(Some(doc)) => {
             let count = doc.len();
             state.replace_doc(doc);
-            info!("loaded {count} objects from {SCENE_PATH}");
+            info!("loaded {count} objects from {path}");
         }
-        Ok(None) => warn!("no scene at {SCENE_PATH}"),
-        Err(err) => error!("could not load {SCENE_PATH}: {err}"),
+        Ok(None) => warn!("no scene at {path}"),
+        Err(err) => error!("could not load {path}: {err}"),
     }
 }
 
-/// Ctrl+S saves the document, Ctrl+O loads it from disk.
-pub fn scene_shortcuts(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<SceneState>) {
+/// Ctrl+S saves the active tab, Ctrl+O reloads it from disk.
+pub fn scene_shortcuts(
+    keys: Res<ButtonInput<KeyCode>>,
+    scenes: Res<OpenScenes>,
+    mut state: ResMut<SceneState>,
+) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     if !ctrl {
         return;
     }
     if keys.just_pressed(KeyCode::KeyS) {
-        match save(&state.doc) {
+        let path = scenes.path();
+        match save_to(&state.doc, path) {
             Ok(path) => info!("saved scene to {}", path.display()),
-            Err(err) => error!("could not save {SCENE_PATH}: {err}"),
+            Err(err) => error!("could not save {path}: {err}"),
         }
     }
     if keys.just_pressed(KeyCode::KeyO) {
-        open_into(&mut state);
+        open_path_into(&mut state, scenes.path());
     }
 }
 

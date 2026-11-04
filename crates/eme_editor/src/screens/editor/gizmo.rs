@@ -4,10 +4,11 @@
 use eme::feathers::theme::UiTheme;
 use eme::gizmos::transform_gizmo::{
     TransformGizmoCursor, TransformGizmoFocus, TransformGizmoMode, TransformGizmoPlugin,
-    TransformGizmoSettings, TransformGizmoState, TransformGizmoSystems,
+    TransformGizmoSettings, TransformGizmoSpace, TransformGizmoState, TransformGizmoSystems,
 };
 use eme::input_focus::InputFocus;
 use eme::math::Rect;
+use eme::picking::hover::Hovered;
 use eme::prelude::*;
 use eme::text::EditableText;
 use eme::ui::BackgroundColor;
@@ -28,9 +29,44 @@ use eme_game_scene::ObjectTransform;
 #[derive(Component, Clone, Copy, Default)]
 pub struct ToolButton(pub TransformGizmoMode);
 
+/// The preferences the non-mode toolbar buttons toggle.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ToolbarToggleKind {
+    /// Hide the gizmo without leaving the mode, or show it again.
+    #[default]
+    Select,
+    /// Snap handles to fixed increments.
+    Snap,
+    /// Use world axes or the object's local axes.
+    Space,
+}
+
+/// Marks a toolbar button that toggles a gizmo preference.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ToolbarToggle(pub ToolbarToggleKind);
+
 /// Marks the label that names the active gizmo mode.
 #[derive(Component, Clone, Copy, Default)]
 pub struct ToolModeText;
+
+/// Whether the transform gizmo is attached to the selection.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct GizmoVisible(pub bool);
+
+impl Default for GizmoVisible {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// Toolbar button box side, matching the mode buttons.
+const TOOL_BUTTON: f32 = 26.0;
+/// Translation increment while snapping is on.
+const SNAP_TRANSLATE: f32 = 0.5;
+/// Rotation increment while snapping is on, fifteen degrees in radians.
+const SNAP_ROTATE: f32 = core::f32::consts::PI / 12.0;
+/// Scale increment while snapping is on.
+const SNAP_SCALE: f32 = 0.1;
 
 fn mode_label(mode: TransformGizmoMode) -> &'static str {
     match mode {
@@ -50,6 +86,7 @@ impl Plugin for GizmoPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(TransformGizmoPlugin)
             .init_resource::<FocusTag>()
+            .init_resource::<GizmoVisible>()
             .add_systems(
                 Update,
                 (gizmo_hotkeys, sync_focus, sync_toolbar, sync_pointer).chain(),
@@ -70,6 +107,7 @@ fn gizmo_hotkeys(
     focus: Res<InputFocus>,
     texts: Query<(), With<EditableText>>,
     mut settings: ResMut<TransformGizmoSettings>,
+    mut visible: ResMut<GizmoVisible>,
 ) {
     if mouse.pressed(MouseButton::Right) {
         return;
@@ -88,9 +126,18 @@ fn gizmo_hotkeys(
     } else {
         return;
     };
-    if settings.mode != mode {
-        settings.mode = mode;
+    if settings.mode != mode || !visible.0 {
+        choose_mode(&mut settings, &mut visible, mode);
     }
+}
+
+fn choose_mode(
+    settings: &mut TransformGizmoSettings,
+    visible: &mut GizmoVisible,
+    mode: TransformGizmoMode,
+) {
+    settings.mode = mode;
+    visible.0 = true;
 }
 
 /// Moves the gizmo focus onto the primary selection, and off the previous one.
@@ -101,9 +148,10 @@ fn sync_focus(
     mut commands: Commands,
     state: Res<SceneState>,
     view: Res<ViewMode>,
+    visible: Res<GizmoVisible>,
     mut tag: ResMut<FocusTag>,
 ) {
-    let want = if *view == ViewMode::Game {
+    let want = if *view == ViewMode::Game || !visible.0 {
         None
     } else {
         state
@@ -277,23 +325,26 @@ fn sync_pointer(
     };
 }
 
-/// Paints the active mode onto its toolbar button and the mode label.
+/// Paints the live toggle on each toolbar button and names the active mode.
 fn sync_toolbar(
     settings: Res<TransformGizmoSettings>,
+    visible: Res<GizmoVisible>,
     theme: Res<UiTheme>,
-    mut buttons: Query<(&ToolButton, &mut BackgroundColor)>,
+    mut modes: Query<(&ToolButton, &mut BackgroundColor, &Hovered)>,
+    mut toggles: Query<(&ToolbarToggle, &mut BackgroundColor, &Hovered), Without<ToolButton>>,
     mut labels: Query<&mut Text, With<ToolModeText>>,
 ) {
-    let active = theme.color(&tokens::ACCENT);
-    for (button, mut bg) in &mut buttons {
-        let want = if button.0 == settings.mode {
-            active
-        } else {
-            Color::NONE
+    for (button, mut bg, hover) in &mut modes {
+        let active = visible.0 && button.0 == settings.mode;
+        paint(&mut bg, &theme, active, hover.get());
+    }
+    for (toggle, mut bg, hover) in &mut toggles {
+        let active = match toggle.0 {
+            ToolbarToggleKind::Select => !visible.0,
+            ToolbarToggleKind::Snap => snapping(&settings),
+            ToolbarToggleKind::Space => settings.space == TransformGizmoSpace::Local,
         };
-        if bg.0 != want {
-            bg.0 = want;
-        }
+        paint(&mut bg, &theme, active, hover.get());
     }
     let label = mode_label(settings.mode);
     for mut text in &mut labels {
@@ -303,12 +354,48 @@ fn sync_toolbar(
     }
 }
 
+fn paint(bg: &mut BackgroundColor, theme: &UiTheme, active: bool, hovered: bool) {
+    let want = if active {
+        theme.color(&tokens::ACCENT)
+    } else if hovered {
+        theme.color(&tokens::PANEL)
+    } else {
+        theme.color(&tokens::CLEAR)
+    };
+    if bg.0 != want {
+        bg.0 = want;
+    }
+}
+
+fn snapping(settings: &TransformGizmoSettings) -> bool {
+    settings.snap_translate.is_some()
+}
+
+fn toggle_snap(settings: &mut TransformGizmoSettings) {
+    if snapping(settings) {
+        settings.snap_translate = None;
+        settings.snap_rotate = None;
+        settings.snap_scale = None;
+    } else {
+        settings.snap_translate = Some(SNAP_TRANSLATE);
+        settings.snap_rotate = Some(SNAP_ROTATE);
+        settings.snap_scale = Some(SNAP_SCALE);
+    }
+}
+
+fn toggle_space(settings: &mut TransformGizmoSettings) {
+    settings.space = match settings.space {
+        TransformGizmoSpace::World => TransformGizmoSpace::Local,
+        TransformGizmoSpace::Local => TransformGizmoSpace::World,
+    };
+}
+
 /// The toolbar button for a mode: icon plus the accent when it is the live one.
 pub fn tool_button(icon: Part, mode: TransformGizmoMode) -> Part {
     Box::new(bsn! {
         Node {
-            width: px(26),
-            height: px(26),
+            width: px(TOOL_BUTTON),
+            height: px(TOOL_BUTTON),
             display: Display::Flex,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
@@ -316,10 +403,45 @@ pub fn tool_button(icon: Part, mode: TransformGizmoMode) -> Part {
         }
         BackgroundColor(Color::NONE)
         Button
+        Hovered
         ToolButton(mode)
         Children [ {icon} ]
         on(tool_click)
     })
+}
+
+/// A toolbar button for a gizmo preference, with the same shell as a mode button.
+pub fn toolbar_button(icon: Part, toggle: ToolbarToggleKind) -> Part {
+    Box::new(bsn! {
+        Node {
+            width: px(TOOL_BUTTON),
+            height: px(TOOL_BUTTON),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            border_radius: px(3),
+        }
+        BackgroundColor(Color::NONE)
+        Button
+        Hovered
+        ToolbarToggle(toggle)
+        Children [ {icon} ]
+        on(toggle_click)
+    })
+}
+
+fn nearest<T: Component + Copy>(
+    mut entity: Entity,
+    markers: &Query<&T>,
+    parents: &Query<&ChildOf>,
+) -> Option<T> {
+    loop {
+        if let Ok(marker) = markers.get(entity) {
+            return Some(*marker);
+        }
+        let parent = parents.get(entity).ok()?;
+        entity = parent.parent();
+    }
 }
 
 fn tool_click(
@@ -327,27 +449,34 @@ fn tool_click(
     buttons: Query<&ToolButton>,
     parents: Query<&ChildOf>,
     mut settings: ResMut<TransformGizmoSettings>,
+    mut visible: ResMut<GizmoVisible>,
 ) {
     if click.button != PointerButton::Primary {
         return;
     }
-    let mut entity = click.entity;
-    let mut mode = None;
-    loop {
-        if let Ok(button) = buttons.get(entity) {
-            mode = Some(button.0);
-            break;
-        }
-        let Ok(parent) = parents.get(entity) else {
-            break;
-        };
-        entity = parent.parent();
-    }
-    let Some(mode) = mode else {
+    let Some(mode) = nearest(click.entity, &buttons, &parents) else {
         return;
     };
-    if settings.mode != mode {
-        settings.mode = mode;
+    choose_mode(&mut settings, &mut visible, mode.0);
+}
+
+fn toggle_click(
+    click: On<PointerClick>,
+    buttons: Query<&ToolbarToggle>,
+    parents: Query<&ChildOf>,
+    mut settings: ResMut<TransformGizmoSettings>,
+    mut visible: ResMut<GizmoVisible>,
+) {
+    if click.button != PointerButton::Primary {
+        return;
+    }
+    let Some(toggle) = nearest(click.entity, &buttons, &parents) else {
+        return;
+    };
+    match toggle.0 {
+        ToolbarToggleKind::Select => visible.0 = !visible.0,
+        ToolbarToggleKind::Snap => toggle_snap(&mut settings),
+        ToolbarToggleKind::Space => toggle_space(&mut settings),
     }
 }
 
@@ -404,5 +533,75 @@ mod tests {
             ]
         );
         assert_eq!(state.doc.get(a).unwrap().translation, before);
+    }
+
+    #[test]
+    fn snap_toggle_sets_and_clears_exactly_three_increments() {
+        let mut settings = TransformGizmoSettings::default();
+        assert!(!snapping(&settings));
+
+        toggle_snap(&mut settings);
+        assert_eq!(settings.snap_translate, Some(SNAP_TRANSLATE));
+        assert_eq!(settings.snap_rotate, Some(SNAP_ROTATE));
+        assert_eq!(settings.snap_scale, Some(SNAP_SCALE));
+        assert!(snapping(&settings));
+
+        toggle_snap(&mut settings);
+        assert_eq!(settings.snap_translate, None);
+        assert_eq!(settings.snap_rotate, None);
+        assert_eq!(settings.snap_scale, None);
+        assert!(!snapping(&settings));
+    }
+
+    #[test]
+    fn space_toggle_round_trips_world_local_world() {
+        let mut settings = TransformGizmoSettings::default();
+        assert_eq!(settings.space, TransformGizmoSpace::World);
+
+        toggle_space(&mut settings);
+        assert_eq!(settings.space, TransformGizmoSpace::Local);
+
+        toggle_space(&mut settings);
+        assert_eq!(settings.space, TransformGizmoSpace::World);
+    }
+
+    #[test]
+    fn choosing_a_mode_restores_a_hidden_gizmo() {
+        let mut settings = TransformGizmoSettings::default();
+        let mut visible = GizmoVisible(false);
+
+        choose_mode(&mut settings, &mut visible, TransformGizmoMode::Rotate);
+
+        assert_eq!(settings.mode, TransformGizmoMode::Rotate);
+        assert!(visible.0);
+    }
+
+    #[test]
+    fn hiding_the_gizmo_detaches_focus_and_showing_restores_it() {
+        let mut app = App::new();
+        app.init_resource::<SceneState>()
+            .init_resource::<ViewMode>()
+            .init_resource::<GizmoVisible>()
+            .init_resource::<FocusTag>()
+            .add_systems(Update, sync_focus);
+
+        let entity = app.world_mut().spawn_empty().id();
+        {
+            let mut state = app.world_mut().resource_mut::<SceneState>();
+            let id = state.spawn(ObjectKind::Cube);
+            state.entities.insert(id, entity);
+            state.select_only(id);
+        }
+
+        app.update();
+        assert!(app.world().entity(entity).contains::<TransformGizmoFocus>());
+
+        app.world_mut().resource_mut::<GizmoVisible>().0 = false;
+        app.update();
+        assert!(!app.world().entity(entity).contains::<TransformGizmoFocus>());
+
+        app.world_mut().resource_mut::<GizmoVisible>().0 = true;
+        app.update();
+        assert!(app.world().entity(entity).contains::<TransformGizmoFocus>());
     }
 }

@@ -17,6 +17,7 @@ mod persist;
 mod scene;
 mod screens;
 mod selection_outline;
+mod tabs;
 mod theme_bridge;
 mod tokens;
 mod undo;

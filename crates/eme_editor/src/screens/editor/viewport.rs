@@ -140,6 +140,7 @@ fn viewport() -> Part {
         on(orbit_scroll)
         on(menu::arm_viewport_menu)
         on(menu::viewport_menu)
+        on(clear_selection_click)
         ThemeBackgroundColor(tokens::VIEWPORT_BOTTOM)
         Children [
             {tools}
@@ -151,6 +152,27 @@ fn viewport() -> Part {
             {look_hint()}
         ]
     })
+}
+
+/// A plain left click on the viewport background drops the selection.
+pub fn clear_selection_click(
+    click: On<PointerClick>,
+    targets: Query<(), Or<(With<ViewportPanel>, With<InfiniteGrid>)>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut state: ResMut<scene::SceneState>,
+) {
+    if click.button != PointerButton::Primary {
+        return;
+    }
+    if targets.get(click.entity).is_err() {
+        return;
+    }
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if shift || ctrl {
+        return;
+    }
+    state.clear_selection();
 }
 
 fn look_hint() -> Part {
@@ -498,6 +520,7 @@ pub fn setup_viewport(
                 ..default()
             },
         ))
+        .observe(clear_selection_click)
         .id();
 
     view.camera = Some(camera);

@@ -318,6 +318,7 @@ impl Plugin for EditorPlugin {
                     orbit::reset_orbit,
                     docks::rebuild_scene_rows,
                     inspector::sync_inspector,
+                    inspector::typing_guard.before(scene::keyboard_edit),
                 ),
             )
             .add_systems(
@@ -339,7 +340,8 @@ impl Plugin for EditorPlugin {
             )
             .add_systems(Startup, autoload_scene)
             .add_systems(Startup, crate::selection_outline::init_outline_material)
-            .add_systems(PostUpdate, scene::reconcile_scene);
+            .add_systems(PostUpdate, scene::reconcile_scene)
+            .add_systems(Last, scene::purge_stale);
     }
 }
 

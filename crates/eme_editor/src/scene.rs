@@ -432,6 +432,30 @@ fn to_transform(transform: &ObjectTransform) -> Transform {
     .with_scale(Vec3::from_array(transform.scale))
 }
 
+/// Marks a scene entity whose document object is gone.
+///
+/// Despawning it right away races engine systems that queue commands against the
+/// entity in the same frame (a point light's frustum `Sphere` is inserted after
+/// the editor reconciles), so the actual despawn waits for the end of the frame.
+#[derive(Component, Clone, Copy, Default)]
+pub struct StaleScene;
+
+/// Removes entities marked [`StaleScene`], after every deferred command has run.
+pub fn purge_stale(
+    mut commands: Commands,
+    stale: Query<Entity, With<StaleScene>>,
+    glyphs: Query<(Entity, &GlyphOwner)>,
+) {
+    for entity in &stale {
+        for (glyph, owner) in &glyphs {
+            if owner.0 == entity {
+                commands.entity(glyph).despawn();
+            }
+        }
+        commands.entity(entity).despawn();
+    }
+}
+
 /// Brings the entity mirror in line with the document after a `rev` change.
 pub fn reconcile_scene(
     mut commands: Commands,
@@ -442,7 +466,6 @@ pub fn reconcile_scene(
     asset_server: Res<AssetServer>,
     theme: Res<UiTheme>,
     links: Query<&SceneLink>,
-    glyphs: Query<(Entity, &GlyphOwner)>,
 ) {
     let state = state.into_inner();
     let ids: Vec<u64> = state.doc.objects.iter().map(|obj| obj.id).collect();
@@ -454,12 +477,7 @@ pub fn reconcile_scene(
         .map(|(id, entity)| (*id, *entity))
         .collect();
     for (id, entity) in stale {
-        for (glyph, owner) in &glyphs {
-            if owner.0 == entity {
-                commands.entity(glyph).despawn();
-            }
-        }
-        commands.entity(entity).despawn();
+        commands.entity(entity).insert(StaleScene);
         state.entities.remove(&id);
     }
 
@@ -479,7 +497,7 @@ pub fn reconcile_scene(
                     .insert((to_transform(&transform), Name::new(name)));
             }
             Some(entity) => {
-                commands.entity(entity).despawn();
+                commands.entity(entity).insert(StaleScene);
                 state.entities.remove(&id);
                 let entity = spawn_entity(
                     &mut commands,

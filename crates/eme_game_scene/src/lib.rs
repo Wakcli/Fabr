@@ -264,6 +264,31 @@ impl SceneDoc {
         }
     }
 
+    /// Replaces an object's rotation; false when the id is unknown.
+    pub fn set_rotation(&mut self, id: u64, rotation: [f32; 4]) -> bool {
+        match self.get_mut(id) {
+            Some(obj) => {
+                obj.rotation = rotation;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Replaces an object's scale; false when the id is unknown.
+    ///
+    /// The caller owns validity: this stores the array as given, so scale
+    /// clamping stays with the editor that authored the value.
+    pub fn set_scale(&mut self, id: u64, scale: [f32; 3]) -> bool {
+        match self.get_mut(id) {
+            Some(obj) => {
+                obj.scale = scale;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Reparents an object, refusing self-parents, unknown parents and cycles.
     pub fn set_parent(&mut self, id: u64, parent: Option<u64>) -> bool {
         if parent == Some(id) {
@@ -489,6 +514,20 @@ mod tests {
         assert_eq!(doc.get(2).unwrap().translation, [4.0, 5.0, 6.0]);
         assert!(!doc.rename(99, "Nope"));
         assert!(!doc.set_translation(99, [0.0; 3]));
+    }
+
+    #[test]
+    fn rotation_and_scale_setters_only_touch_existing_objects() {
+        let mut doc = authored();
+        let cube = doc.get(1).unwrap().clone();
+        assert!(doc.set_rotation(1, [0.0, 0.0, 0.0, 0.5]));
+        assert_eq!(doc.get(1).unwrap().rotation, [0.0, 0.0, 0.0, 0.5]);
+        assert_eq!(doc.get(1).unwrap().translation, cube.translation);
+        assert_eq!(doc.get(1).unwrap().scale, cube.scale);
+        assert!(doc.set_scale(1, [2.0, 3.0, 4.0]));
+        assert_eq!(doc.get(1).unwrap().scale, [2.0, 3.0, 4.0]);
+        assert!(!doc.set_rotation(99, [0.0, 0.0, 0.0, 1.0]));
+        assert!(!doc.set_scale(99, [1.0; 3]));
     }
 
     #[test]

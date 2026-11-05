@@ -44,6 +44,7 @@ png! {
     GEAR => "gear",
     INSTANCE => "instance",
     LINK => "link",
+    LOOK => "look",
     LOCK => "lock",
     MENU_DOTS => "menu_dots",
     NETWORK => "network",
@@ -110,6 +111,11 @@ pub const MESH: Badge = Badge::new(CLASS_MESH, tokens::CLASS_MESH);
 /// A class badge in the tree, the inspector header, or a scene tab.
 pub fn badge(badge: Badge) -> Part {
     mono(badge.glyph, badge.tint)
+}
+
+/// The right-drag look hint, drawn larger than the chrome glyphs.
+pub fn look(size: f32) -> Part {
+    image(LOOK, size, None)
 }
 
 pub fn logo() -> Part {

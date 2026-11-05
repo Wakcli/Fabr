@@ -14,6 +14,7 @@ use eme::scene::bsn;
 use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
 use eme::ui::widget::ViewportNode;
 use eme::ui::UiTransform;
+use eme::window::{PrimaryWindow, Window};
 
 use super::chrome::*;
 use super::gizmo::{tool_button, toolbar_button, GizmoPlugin, ToolModeText, ToolbarToggleKind};
@@ -25,9 +26,18 @@ use crate::tokens;
 /// Camera position for the editor's perspective view.
 const CAMERA: Vec3 = Vec3::new(7.0, 5.0, 7.0);
 
+/// Size of the right-drag look glyph, in logical pixels.
+const LOOK_HINT_SIZE: f32 = 56.0;
+/// Distance the glyph sits below and right of the pointer.
+const LOOK_HINT_OFFSET: f32 = 14.0;
+
 /// Marks the viewport panel so the 3D camera attaches once the node exists.
 #[derive(Component, Clone, Copy, Default)]
 pub struct ViewportPanel;
+
+/// The eye glyph that follows the pointer while right-dragging to look around.
+#[derive(Component, Clone, Copy, Default)]
+pub struct LookHint;
 
 /// UI that is only shown while editing, not in the Game view.
 #[derive(Component, Clone, Copy, Default)]
@@ -139,8 +149,58 @@ fn viewport() -> Part {
             {perspective}
             --
             {gizmo}
+            --
+            {look_hint()}
         ]
     })
+}
+
+fn look_hint() -> Part {
+    Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0),
+            top: px(0),
+            width: px(LOOK_HINT_SIZE),
+            height: px(LOOK_HINT_SIZE),
+            display: Display::None,
+        }
+        LookHint
+        GlobalZIndex(20)
+        Pickable::IGNORE
+        Children [ {icons::look(LOOK_HINT_SIZE)} ]
+    })
+}
+
+/// Follows the pointer with the look glyph while the right button is held.
+pub fn sync_look_hint(
+    mouse: Res<ButtonInput<MouseButton>>,
+    view: Res<crate::orbit::ViewMode>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    panels: Query<(&ComputedNode, &UiGlobalTransform), With<ViewportPanel>>,
+    mut hints: Query<&mut Node, With<LookHint>>,
+) {
+    let Ok((panel, global)) = panels.single() else {
+        return;
+    };
+    let rect = Rect::from_center_size(global.translation.trunc(), panel.size());
+    let pointer = window.cursor_position().map(|pos| pos * window.scale_factor());
+    let inside = pointer.is_some_and(|pos| rect.contains(pos));
+    let show = mouse.pressed(MouseButton::Right)
+        && inside
+        && *view == crate::orbit::ViewMode::Editor;
+
+    for mut node in &mut hints {
+        let want = if show { Display::Flex } else { Display::None };
+        if node.display != want {
+            node.display = want;
+        }
+        if let (true, Some(pos)) = (show, pointer) {
+            let local = pos - rect.min;
+            node.left = px(local.x + LOOK_HINT_OFFSET);
+            node.top = px(local.y + LOOK_HINT_OFFSET);
+        }
+    }
 }
 
 fn overlay(kids: Vec<Part>) -> Part {

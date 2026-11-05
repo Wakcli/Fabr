@@ -306,7 +306,7 @@ impl Plugin for EditorPlugin {
                     viewport::setup_viewport,
                     viewport::teardown_viewport,
                     viewport::sync_game_world,
-                    viewport::sync_editor_ui,
+                    (viewport::sync_editor_ui, viewport::sync_look_hint),
                     sync_view_tabs,
                     scene::tint_selection,
                     scene::face_viewport_camera,

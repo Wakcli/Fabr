@@ -13,10 +13,10 @@ use eme_editor_core::{Layout, EDITOR_VERSION};
 use crate::tokens;
 
 mod build_dialog;
-mod chrome;
+pub(crate) mod chrome;
 mod docks;
 mod gizmo;
-mod icons;
+pub(crate) mod icons;
 mod inspector;
 mod menu;
 mod viewport;
@@ -193,7 +193,7 @@ fn top_bar() -> Part {
     let right = vec![
         build_dialog::top_bar_button(),
         hgap(6.0),
-        icon_button(icons::play(), 24.0),
+        crate::play::button(),
         icon_button(icons::play_scene(), 24.0),
         icon_button(icons::dropdown(), 20.0),
         vline(16.0, tokens::BORDER),
@@ -287,6 +287,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<undo::Undo>()
             .init_resource::<clipboard::Clipboard>()
             .init_resource::<viewport::ViewportRes>()
+            .init_resource::<crate::play::PlayState>()
             .init_resource::<orbit::OrbitCamera>()
             .init_resource::<orbit::FlyCam>()
             .init_resource::<orbit::CameraMode>()
@@ -309,6 +310,8 @@ impl Plugin for EditorPlugin {
                     scene::keyboard_edit,
                     scene::draw_camera_frusta,
                     crate::selection_outline::sync_outlines,
+                    crate::play::poll,
+                    crate::play::sync_button,
                     orbit::toggle_mode,
                     orbit::fly_move.before(orbit::apply_camera),
                     orbit::apply_camera,

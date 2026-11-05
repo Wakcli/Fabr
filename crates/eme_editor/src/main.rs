@@ -14,6 +14,7 @@ mod build;
 mod clipboard;
 mod orbit;
 mod persist;
+mod play;
 mod scene;
 mod screens;
 mod selection_outline;

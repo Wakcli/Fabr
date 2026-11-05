@@ -343,6 +343,16 @@ fn set_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The freshest runtime player binary, if one has been built.
+pub fn player_binary() -> Option<PathBuf> {
+    candidates(&target_dir()).into_iter().find(|path| path.is_file())
+}
+
+/// Workspace root, used as the working directory for anything the editor spawns.
+pub fn workspace_dir() -> PathBuf {
+    workspace()
+}
+
 /// Cargo's target directory, honoring `CARGO_TARGET_DIR` and `.cargo/config.toml`.
 fn target_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {

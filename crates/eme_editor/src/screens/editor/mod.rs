@@ -50,6 +50,8 @@ pub fn screen(_layout: Layout) -> impl Scene {
             {body}
             --
             {status}
+            --
+            {crate::play::flyout()}
         ]
     }
 }
@@ -288,6 +290,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<clipboard::Clipboard>()
             .init_resource::<viewport::ViewportRes>()
             .init_resource::<crate::play::PlayState>()
+            .init_resource::<crate::play::PlayHover>()
             .init_resource::<orbit::OrbitCamera>()
             .init_resource::<orbit::FlyCam>()
             .init_resource::<orbit::CameraMode>()
@@ -312,6 +315,7 @@ impl Plugin for EditorPlugin {
                     crate::selection_outline::sync_outlines,
                     crate::play::poll,
                     crate::play::sync_button,
+                    (crate::play::sync_flyout, crate::play::place_flyout),
                     orbit::toggle_mode,
                     orbit::fly_move.before(orbit::apply_camera),
                     orbit::apply_camera,

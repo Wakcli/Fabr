@@ -8,6 +8,7 @@ use eme::mesh::VertexAttributeValues;
 use eme::prelude::*;
 use eme::render::render_resource::Face;
 
+use crate::orbit::ViewMode;
 use crate::scene::SceneState;
 
 /// Marks a hull entity that draws the outline of its selected parent.
@@ -47,6 +48,7 @@ pub fn init_outline_material(
 pub fn sync_outlines(
     mut commands: Commands,
     state: Res<SceneState>,
+    view: Option<Res<ViewMode>>,
     outline: Option<Res<OutlineMaterial>>,
     meshes: Query<&Mesh3d, Without<SelectionOutline>>,
     assets: Res<Assets<Mesh>>,
@@ -60,7 +62,7 @@ pub fn sync_outlines(
     };
 
     wanted.clear();
-    for id in state.selected_ids() {
+    for id in state.selected_ids().filter(|_| !matches!(view.as_deref(), Some(ViewMode::Game))) {
         if let Some(&entity) = state.entities.get(&id) {
             wanted.insert(entity);
         }

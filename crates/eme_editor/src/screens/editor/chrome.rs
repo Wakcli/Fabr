@@ -16,8 +16,6 @@ pub type Part = Box<dyn SceneList>;
 
 /// The editor body size.
 pub const FONT_SIZE: f32 = 15.0;
-/// The main screen buttons run two pixels above the body size.
-pub const FONT_SIZE_MAIN_SCREEN: f32 = FONT_SIZE + 2.0;
 /// The log body size.
 pub const FONT_SIZE_OUTPUT: f32 = 13.0;
 
@@ -231,28 +229,6 @@ pub fn menu_item(label: &str) -> Part {
             border_radius: px(3),
         }
         Children [ {text(label, FONT_SIZE, tokens::TEXT)} ]
-    })
-}
-
-/// `MainScreenButton`: the active screen is accent text on a panel fill, the
-/// rest recede into the menu bar.
-pub fn main_screen_button(label: &str, selected: bool) -> Part {
-    Box::new(bsn! {
-        Node {
-            height: percent(100),
-            display: Display::Flex,
-            align_items: AlignItems::Center,
-            padding: UiRect::horizontal(px(9)),
-            border_radius: px(3),
-        }
-        ThemeBackgroundColor({if selected { tokens::PANEL } else { tokens::CLEAR }})
-        Children [ {
-            text_bold(
-                label,
-                FONT_SIZE_MAIN_SCREEN,
-                if selected { tokens::ACCENT } else { tokens::TEXT_MEDIUM },
-            )
-        } ]
     })
 }
 

@@ -8,18 +8,20 @@ use eme::feathers::{
 };
 use eme::gizmos::transform_gizmo::{TransformGizmoCamera, TransformGizmoMode};
 use eme::math::Rot2;
+use eme::picking::hover::Hovered;
 use eme::prelude::*;
 use eme::render::render_resource::TextureFormat;
 use eme::scene::bsn;
-use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
+use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextColor, TextFont};
 use eme::ui::widget::ViewportNode;
-use eme::ui::UiTransform;
+use eme::ui::{BackgroundColor, UiTransform};
+use eme::ui_widgets::Button;
 use eme::window::{CursorOptions, PrimaryWindow, Window};
 
 use super::chrome::*;
 use super::gizmo::{tool_button, toolbar_button, GizmoPlugin, ToolModeText, ToolbarToggleKind};
 use super::{docks, icons, menu};
-use crate::orbit::{orbit_drag, orbit_scroll};
+use crate::orbit::{orbit_drag, orbit_scroll, ViewMode};
 use crate::scene;
 use crate::tokens;
 
@@ -28,6 +30,13 @@ const CAMERA: Vec3 = Vec3::new(7.0, 5.0, 7.0);
 
 /// Size of the right-drag look glyph, in logical pixels.
 const LOOK_HINT_SIZE: f32 = 32.0;
+
+/// Distance from the viewport's top edge to the view switch.
+const VIEW_SWITCH_TOP: f32 = 8.0;
+/// Height of the view switch shell, matching the tool strip's overlay.
+const VIEW_SWITCH_H: f32 = 26.0;
+/// Height of one segment inside the view switch.
+const VIEW_SEGMENT_H: f32 = 20.0;
 
 /// Marks the viewport panel so the 3D camera attaches once the node exists.
 #[derive(Component, Clone, Copy, Default)]
@@ -125,6 +134,7 @@ fn scene_tab(label: &str) -> Part {
 
 fn viewport() -> Part {
     let tools = transform_toolbar();
+    let switch = view_switch();
     let perspective = perspective_control();
     let gizmo = axis_gizmo();
 
@@ -144,6 +154,8 @@ fn viewport() -> Part {
         ThemeBackgroundColor(tokens::VIEWPORT_BOTTOM)
         Children [
             {tools}
+            --
+            {switch}
             --
             {perspective}
             --
@@ -195,7 +207,7 @@ fn look_hint() -> Part {
 /// Follows the pointer with the look glyph while the right button is held.
 pub fn sync_look_hint(
     mouse: Res<ButtonInput<MouseButton>>,
-    view: Res<crate::orbit::ViewMode>,
+    view: Res<ViewMode>,
     window: Single<&Window, With<PrimaryWindow>>,
     panels: Query<(&ComputedNode, &UiGlobalTransform), With<ViewportPanel>>,
     mut cursor: Single<&mut CursorOptions>,
@@ -208,7 +220,7 @@ pub fn sync_look_hint(
     let pointer = window.cursor_position().map(|pos| pos * window.scale_factor());
     let inside = pointer.is_some_and(|pos| rect.contains(pos));
     let show =
-        mouse.pressed(MouseButton::Right) && inside && *view == crate::orbit::ViewMode::Editor;
+        mouse.pressed(MouseButton::Right) && inside && *view == ViewMode::Editor;
     let hide_cursor = show && window.focused;
 
     if cursor.visible == hide_cursor {
@@ -360,6 +372,139 @@ fn perspective_control() -> Part {
     })
 }
 
+/// Marks a segment of the viewport's view switch.
+#[derive(Component, Clone, Copy, Default)]
+pub(crate) struct ViewTab(ViewMode);
+
+/// Marks the label inside a view switch segment.
+#[derive(Component, Clone, Copy, Default)]
+pub(crate) struct ViewTabLabel(ViewMode);
+
+/// The `3D | Game` switch, floating at the top centre of the viewport.
+///
+/// It is the one viewport overlay that has to stay on screen in both modes, so
+/// it cannot live in either editor-only toolbar; centring it keeps the top-left
+/// tools and the top-right perspective control clear.
+fn view_switch() -> Part {
+    let pill = Box::new(bsn! {
+        Node {
+            height: px(VIEW_SWITCH_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: px(2),
+            column_gap: px(1),
+            border: px(1),
+            border_radius: px(4),
+        }
+        ThemeBackgroundColor(tokens::WINDOW)
+        ThemeBorderColor(tokens::BORDER)
+        Children [
+            {view_segment("3D", ViewMode::Editor)}
+            --
+            {view_segment("Game", ViewMode::Game)}
+        ]
+    });
+
+    Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0),
+            right: px(0),
+            top: px(VIEW_SWITCH_TOP),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::Center,
+        }
+        Pickable::IGNORE
+        Children [ {pill} ]
+    })
+}
+
+fn view_segment(label: &str, mode: ViewMode) -> Part {
+    let value = label.to_string();
+    Box::new(bsn! {
+        Node {
+            height: px(VIEW_SEGMENT_H),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::horizontal(px(11)),
+            border_radius: px(3),
+        }
+        BackgroundColor(Color::NONE)
+        Button
+        Hovered
+        ViewTab(mode)
+        Children [
+            Text(value)
+            TextFont {
+                font: FontSourceTemplate::Handle(fonts::BOLD),
+                font_size: FontSize::Px(12.0),
+                weight: FontWeight::NORMAL,
+            }
+            TextColor(Color::WHITE)
+            ViewTabLabel(mode)
+        ]
+        on(view_tab_click)
+    })
+}
+
+fn view_tab_click(
+    click: On<PointerClick>,
+    tabs: Query<&ViewTab>,
+    parents: Query<&ChildOf>,
+    mut mode: ResMut<ViewMode>,
+) {
+    if click.button != PointerButton::Primary {
+        return;
+    }
+    let mut entity = click.entity;
+    loop {
+        if let Ok(tab) = tabs.get(entity) {
+            if *mode != tab.0 {
+                *mode = tab.0;
+            }
+            return;
+        }
+        let Ok(parent) = parents.get(entity) else {
+            return;
+        };
+        entity = parent.parent();
+    }
+}
+
+/// Paints the live segment with the accent fill the tool buttons use.
+pub(crate) fn sync_view_tabs(
+    theme: Res<UiTheme>,
+    mode: Res<ViewMode>,
+    mut tabs: Query<(&ViewTab, &mut BackgroundColor, &Hovered)>,
+    mut labels: Query<(&ViewTabLabel, &mut TextColor)>,
+) {
+    for (tab, mut bg, hover) in &mut tabs {
+        let want = if tab.0 == *mode {
+            theme.color(&tokens::ACCENT)
+        } else if hover.get() {
+            theme.color(&tokens::PANEL)
+        } else {
+            theme.color(&tokens::CLEAR)
+        };
+        if bg.0 != want {
+            bg.0 = want;
+        }
+    }
+    for (tab, mut fg) in &mut labels {
+        let want = if tab.0 == *mode {
+            theme.color(&tokens::ACCENT_TEXT)
+        } else {
+            theme.color(&tokens::TEXT_MEDIUM)
+        };
+        if fg.0 != want {
+            fg.0 = want;
+        }
+    }
+}
+
 fn label_at(value: &str, x: f32, y: f32, token: ThemeToken) -> Part {
     Box::new(bsn! {
         Node {
@@ -430,11 +575,11 @@ fn dot(size: f32, left: f32, top: f32, token: ThemeToken) -> Part {
 
 /// Hides the grid and camera glyph while the Game view is active.
 pub fn sync_game_world(
-    view: Res<crate::orbit::ViewMode>,
+    view: Res<ViewMode>,
     mut glyphs: Query<&mut Visibility, (With<scene::CameraGlyph>, Without<InfiniteGrid>)>,
     mut grids: Query<&mut Visibility, (With<InfiniteGrid>, Without<scene::CameraGlyph>)>,
 ) {
-    let want = if *view == crate::orbit::ViewMode::Game {
+    let want = if *view == ViewMode::Game {
         Visibility::Hidden
     } else {
         Visibility::Inherited
@@ -453,10 +598,10 @@ pub fn sync_game_world(
 
 /// Shows the editor-only overlays outside Game view.
 pub fn sync_editor_ui(
-    view: Res<crate::orbit::ViewMode>,
+    view: Res<ViewMode>,
     mut nodes: Query<&mut Node, With<EditorOnly>>,
 ) {
-    let want = if *view == crate::orbit::ViewMode::Game {
+    let want = if *view == ViewMode::Game {
         Display::None
     } else {
         Display::Flex

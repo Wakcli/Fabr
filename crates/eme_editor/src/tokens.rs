@@ -27,6 +27,8 @@ pub const TEXT_DIM: ThemeToken = ThemeToken::new_static("editor.text.dim");
 pub const TEXT_MEDIUM: ThemeToken = ThemeToken::new_static("editor.text.medium");
 /// The single brand accent: active screen, active tab underline, focus rings.
 pub const ACCENT: ThemeToken = ThemeToken::new_static("editor.accent");
+/// Label text and glyphs drawn on top of [`ACCENT`].
+pub const ACCENT_TEXT: ThemeToken = ThemeToken::new_static("editor.accent.text");
 /// The two pixel underline under the active tab.
 pub const TAB_HIGHLIGHT: ThemeToken = ThemeToken::new_static("editor.tab.highlight");
 /// Tree row selection: the accent at low strength over [`INSET`].
@@ -100,6 +102,7 @@ pub const ALL: &[(&str, ThemeToken)] = &[
     ("editor.text.dim", TEXT_DIM),
     ("editor.text.medium", TEXT_MEDIUM),
     ("editor.accent", ACCENT),
+    ("editor.accent.text", ACCENT_TEXT),
     ("editor.tab.highlight", TAB_HIGHLIGHT),
     ("editor.select", SELECT),
     ("editor.scrim", SCRIM),

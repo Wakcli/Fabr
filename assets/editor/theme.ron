@@ -29,6 +29,7 @@
         "editor.text.dim": "#7A7A7A",
         "editor.text.medium": "#A6A6A6",
         "editor.accent": "#E8743B",
+        "editor.accent.text": "#1A0F08",
         "editor.tab.highlight": "#E8743B",
         "editor.select": "#4A2A1A",
         "editor.scrim": "#00000099",

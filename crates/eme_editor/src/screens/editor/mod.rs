@@ -1,13 +1,8 @@
 //! The editor frame: a docked layout, monochrome chrome, and a perspective viewport.
 
-use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, UiTheme};
+use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor};
 use eme::prelude::*;
 use eme::scene::{bsn, Scene};
-use eme::text::TextColor;
-use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
-use eme::ui::widget::Text;
-use eme::ui::BackgroundColor;
-use eme::ui_widgets::Button;
 use eme_editor_core::{Layout, EDITOR_VERSION};
 
 use crate::tokens;
@@ -82,91 +77,6 @@ fn body() -> Part {
     })
 }
 
-/// A main-screen tab that switches the viewport between Editor and Game.
-#[derive(Component, Clone, Copy, Default)]
-struct ViewTab(orbit::ViewMode);
-
-#[derive(Component, Clone, Copy, Default)]
-struct ViewTabLabel(orbit::ViewMode);
-
-fn view_tab(label: &str, mode: orbit::ViewMode) -> Part {
-    Box::new(bsn! {
-        Node {
-            height: percent(100),
-            display: Display::Flex,
-            align_items: AlignItems::Center,
-            padding: UiRect::horizontal(px(9)),
-            border_radius: px(3),
-        }
-        Button
-        ViewTab(mode)
-        BackgroundColor(Color::NONE)
-        Children [ {view_tab_label(label, mode)} ]
-        on(view_tab_click)
-    })
-}
-
-fn view_tab_label(label: &str, mode: orbit::ViewMode) -> Part {
-    let value = label.to_string();
-    Box::new(bsn! {
-        Text(value)
-        TextFont {
-            font: FontSourceTemplate::Handle(eme::feathers::constants::fonts::BOLD),
-            font_size: FontSize::Px(FONT_SIZE_MAIN_SCREEN),
-            weight: FontWeight::NORMAL,
-        }
-        TextColor(Color::WHITE)
-        ViewTabLabel(mode)
-    })
-}
-
-fn view_tab_click(
-    click: On<PointerClick>,
-    tabs: Query<&ViewTab>,
-    parents: Query<&ChildOf>,
-    mut mode: ResMut<orbit::ViewMode>,
-) {
-    if click.button != PointerButton::Primary {
-        return;
-    }
-    let mut entity = click.entity;
-    loop {
-        if let Ok(tab) = tabs.get(entity) {
-            if *mode != tab.0 {
-                *mode = tab.0;
-            }
-            return;
-        }
-        let Ok(parent) = parents.get(entity) else {
-            return;
-        };
-        entity = parent.parent();
-    }
-}
-
-fn sync_view_tabs(
-    theme: Res<UiTheme>,
-    mode: Res<orbit::ViewMode>,
-    mut buttons: Query<(&ViewTab, &mut BackgroundColor)>,
-    mut labels: Query<(&ViewTabLabel, &mut TextColor)>,
-) {
-    let panel = theme.color(&tokens::PANEL);
-    let accent = theme.color(&tokens::ACCENT);
-    let dim = theme.color(&tokens::TEXT_MEDIUM);
-    for (tab, mut bg) in &mut buttons {
-        let want = if tab.0 == *mode { panel } else { Color::NONE };
-        if bg.0 != want {
-            bg.0 = want;
-        }
-    }
-    for (tab, mut fg) in &mut labels {
-        let want = if tab.0 == *mode { accent } else { dim };
-        if fg.0 != want {
-            fg.0 = want;
-        }
-    }
-}
-
 fn top_bar() -> Part {
     let mut left = vec![
         icon_button(icons::logo(), 28.0),
@@ -176,20 +86,6 @@ fn top_bar() -> Part {
     ];
     for item in ["Scene", "Project", "Debug", "Editor", "Help"] {
         left.push(menu_item(item));
-    }
-
-    let mut center = Vec::new();
-    for (label, mode) in [
-        ("2D", None),
-        ("3D", Some(orbit::ViewMode::Editor)),
-        ("Script", None),
-        ("Game", Some(orbit::ViewMode::Game)),
-        ("AssetLib", None),
-    ] {
-        match mode {
-            Some(mode) => center.push(view_tab(label, mode)),
-            None => center.push(main_screen_button(label, false)),
-        }
     }
 
     let right = vec![
@@ -228,14 +124,6 @@ fn top_bar() -> Part {
                 column_gap: px(2),
             }
             Children [ {left} ]
-            --
-            Node {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Center,
-                column_gap: px(2),
-            }
-            Children [ {center} ]
             --
             Node {
                 flex_grow: 1.0,
@@ -307,7 +195,7 @@ impl Plugin for EditorPlugin {
                     viewport::teardown_viewport,
                     viewport::sync_game_world,
                     (viewport::sync_editor_ui, viewport::sync_look_hint),
-                    sync_view_tabs,
+                    viewport::sync_view_tabs,
                     scene::tint_selection,
                     scene::face_viewport_camera,
                     scene::keyboard_edit,

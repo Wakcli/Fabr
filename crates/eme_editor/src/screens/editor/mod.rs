@@ -14,6 +14,7 @@ mod gizmo;
 pub(crate) mod icons;
 mod inspector;
 mod menu;
+pub(crate) mod tabs;
 mod viewport;
 
 use crate::build;
@@ -177,6 +178,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<undo::Undo>()
             .init_resource::<clipboard::Clipboard>()
             .init_resource::<viewport::ViewportRes>()
+            .init_resource::<tabs::Tabs>()
             .init_resource::<crate::play::PlayState>()
             .init_resource::<crate::play::PlayHover>()
             .init_resource::<orbit::OrbitCamera>()
@@ -195,7 +197,7 @@ impl Plugin for EditorPlugin {
                     viewport::teardown_viewport,
                     viewport::sync_game_world,
                     (viewport::sync_editor_ui, viewport::sync_look_hint),
-                    viewport::sync_view_tabs,
+                    tabs::rebuild_strip,
                     scene::tint_selection,
                     scene::face_viewport_camera,
                     scene::keyboard_edit,

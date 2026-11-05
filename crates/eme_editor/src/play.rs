@@ -28,6 +28,7 @@ use crate::orbit::ViewMode;
 use crate::scene::SceneState;
 use crate::screens::editor::chrome::{self, Part, FONT_SIZE_OUTPUT};
 use crate::screens::editor::icons;
+use crate::screens::editor::tabs::Tabs;
 use crate::tokens;
 
 /// Snapshot the windowed player reads, relative to the cache root.
@@ -73,11 +74,13 @@ impl PlayState {
         }
     }
 
-    /// Freezes `state` as the play baseline and switches the viewport to Game.
-    pub fn start_embedded(&mut self, state: &mut SceneState, view: &mut ViewMode) {
+    /// Freezes `state` as the play baseline, opens the instance tab, and
+    /// switches the viewport to Game.
+    pub fn start_embedded(&mut self, state: &mut SceneState, view: &mut ViewMode, tabs: &mut Tabs) {
         if self.embedded.is_some() {
             return;
         }
+        tabs.open_instance(1);
         self.embedded = Some(Snapshot {
             doc: state.doc.clone(),
             selection: state.selection.clone(),
@@ -86,11 +89,13 @@ impl PlayState {
         *view = ViewMode::Game;
     }
 
-    /// Restores the baseline captured by [`Self::start_embedded`].
-    pub fn stop_embedded(&mut self, state: &mut SceneState, view: &mut ViewMode) {
+    /// Restores the baseline captured by [`Self::start_embedded`] and closes the
+    /// instance tab.
+    pub fn stop_embedded(&mut self, state: &mut SceneState, view: &mut ViewMode, tabs: &mut Tabs) {
         let Some(snap) = self.embedded.take() else {
             return;
         };
+        tabs.close_instances();
         state.replace_doc(snap.doc);
         state.selection = snap.selection;
         state.anchor = snap.anchor;
@@ -145,13 +150,14 @@ pub fn toggle(
     mut play: ResMut<PlayState>,
     mut scene: ResMut<SceneState>,
     mut view: ResMut<ViewMode>,
+    mut tabs: ResMut<Tabs>,
     mut hover: ResMut<PlayHover>,
 ) {
     hover.dismissed = true;
     match next(play.child.is_some(), play.embedded.is_some()) {
         Toggle::StopWindowed => play.stop(),
-        Toggle::StopEmbedded => play.stop_embedded(&mut scene, &mut view),
-        Toggle::StartEmbedded => play.start_embedded(&mut scene, &mut view),
+        Toggle::StopEmbedded => play.stop_embedded(&mut scene, &mut view, &mut tabs),
+        Toggle::StartEmbedded => play.start_embedded(&mut scene, &mut view, &mut tabs),
     }
 }
 
@@ -161,9 +167,10 @@ fn play_in_window_row(
     mut play: ResMut<PlayState>,
     mut scene: ResMut<SceneState>,
     mut view: ResMut<ViewMode>,
+    mut tabs: ResMut<Tabs>,
     mut hover: ResMut<PlayHover>,
 ) {
-    play.stop_embedded(&mut scene, &mut view);
+    play.stop_embedded(&mut scene, &mut view, &mut tabs);
     play.play_in_window(&scene);
     hover.dismissed = true;
 }
@@ -385,6 +392,7 @@ pub fn flyout() -> Part {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screens::editor::tabs::TabKind;
     use eme_game_scene::ObjectKind;
 
     fn scene() -> SceneState {
@@ -421,9 +429,10 @@ mod tests {
         let mut state = scene();
         let before = state.doc.to_ron().unwrap();
         let mut view = ViewMode::Editor;
+        let mut tabs = Tabs::default();
         let mut play = PlayState::default();
 
-        play.start_embedded(&mut state, &mut view);
+        play.start_embedded(&mut state, &mut view, &mut tabs);
         assert_eq!(view, ViewMode::Game);
         assert!(play.running());
 
@@ -431,7 +440,7 @@ mod tests {
         state.doc.rename(1, "Edited while playing");
         assert_ne!(state.doc.to_ron().unwrap(), before);
 
-        play.stop_embedded(&mut state, &mut view);
+        play.stop_embedded(&mut state, &mut view, &mut tabs);
         assert_eq!(state.doc.to_ron().unwrap(), before);
         assert_eq!(view, ViewMode::Editor);
         assert!(!play.running());
@@ -442,16 +451,86 @@ mod tests {
         let mut state = scene();
         state.select_many(&[1, 2]);
         let mut view = ViewMode::Editor;
+        let mut tabs = Tabs::default();
         let mut play = PlayState::default();
 
-        play.start_embedded(&mut state, &mut view);
+        play.start_embedded(&mut state, &mut view, &mut tabs);
         state.clear_selection();
         state.select_only(2);
-        play.stop_embedded(&mut state, &mut view);
+        play.stop_embedded(&mut state, &mut view, &mut tabs);
 
         assert_eq!(state.selection.items, vec![1, 2]);
         assert_eq!(state.selection.primary, Some(2));
         assert_eq!(state.anchor, Some(1));
+    }
+
+    #[test]
+    fn starting_embedded_play_opens_and_selects_the_instance_tab() {
+        let mut state = scene();
+        let mut view = ViewMode::Editor;
+        let mut tabs = Tabs::default();
+        let mut play = PlayState::default();
+
+        play.start_embedded(&mut state, &mut view, &mut tabs);
+
+        assert_eq!(tabs.entries.len(), 2);
+        assert_eq!(tabs.entries[1].label, "Instance 1#");
+        assert_eq!(tabs.entries[1].kind, TabKind::Instance(1));
+        assert_eq!(tabs.active, 1);
+        assert_eq!(view, ViewMode::Game);
+    }
+
+    #[test]
+    fn stopping_embedded_play_closes_the_instance_tab() {
+        let mut state = scene();
+        let mut view = ViewMode::Editor;
+        let mut tabs = Tabs::default();
+        let mut play = PlayState::default();
+
+        play.start_embedded(&mut state, &mut view, &mut tabs);
+        play.stop_embedded(&mut state, &mut view, &mut tabs);
+
+        assert_eq!(tabs.entries.len(), 1);
+        assert_eq!(tabs.entries[0].kind, TabKind::Scene);
+        assert_eq!(tabs.active, 0);
+        assert_eq!(view, ViewMode::Editor);
+    }
+
+    #[test]
+    fn the_scene_tab_can_be_viewed_while_the_session_runs() {
+        let mut state = scene();
+        let mut view = ViewMode::Editor;
+        let mut tabs = Tabs::default();
+        let mut play = PlayState::default();
+
+        play.start_embedded(&mut state, &mut view, &mut tabs);
+        let scene = tabs.scene_index().unwrap();
+        tabs.switch_to(scene, &mut view);
+
+        assert!(play.running());
+        assert_eq!(view, ViewMode::Editor);
+
+        tabs.switch_to(1, &mut view);
+        assert_eq!(view, ViewMode::Game);
+        assert!(play.running());
+    }
+
+    #[test]
+    fn starting_twice_does_not_duplicate_the_instance_tab() {
+        let mut state = scene();
+        let mut view = ViewMode::Editor;
+        let mut tabs = Tabs::default();
+        let mut play = PlayState::default();
+
+        play.start_embedded(&mut state, &mut view, &mut tabs);
+        play.start_embedded(&mut state, &mut view, &mut tabs);
+
+        let count = tabs
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == TabKind::Instance(1))
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]

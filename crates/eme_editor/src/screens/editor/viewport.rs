@@ -14,7 +14,7 @@ use eme::scene::bsn;
 use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
 use eme::ui::widget::ViewportNode;
 use eme::ui::UiTransform;
-use eme::window::{PrimaryWindow, Window};
+use eme::window::{CursorOptions, PrimaryWindow, Window};
 
 use super::chrome::*;
 use super::gizmo::{tool_button, toolbar_button, GizmoPlugin, ToolModeText, ToolbarToggleKind};
@@ -27,9 +27,7 @@ use crate::tokens;
 const CAMERA: Vec3 = Vec3::new(7.0, 5.0, 7.0);
 
 /// Size of the right-drag look glyph, in logical pixels.
-const LOOK_HINT_SIZE: f32 = 56.0;
-/// Distance the glyph sits below and right of the pointer.
-const LOOK_HINT_OFFSET: f32 = 14.0;
+const LOOK_HINT_SIZE: f32 = 32.0;
 
 /// Marks the viewport panel so the 3D camera attaches once the node exists.
 #[derive(Component, Clone, Copy, Default)]
@@ -178,6 +176,7 @@ pub fn sync_look_hint(
     view: Res<crate::orbit::ViewMode>,
     window: Single<&Window, With<PrimaryWindow>>,
     panels: Query<(&ComputedNode, &UiGlobalTransform), With<ViewportPanel>>,
+    mut cursor: Single<&mut CursorOptions>,
     mut hints: Query<&mut Node, With<LookHint>>,
 ) {
     let Ok((panel, global)) = panels.single() else {
@@ -186,9 +185,13 @@ pub fn sync_look_hint(
     let rect = Rect::from_center_size(global.translation.trunc(), panel.size());
     let pointer = window.cursor_position().map(|pos| pos * window.scale_factor());
     let inside = pointer.is_some_and(|pos| rect.contains(pos));
-    let show = mouse.pressed(MouseButton::Right)
-        && inside
-        && *view == crate::orbit::ViewMode::Editor;
+    let show =
+        mouse.pressed(MouseButton::Right) && inside && *view == crate::orbit::ViewMode::Editor;
+    let hide_cursor = show && window.focused;
+
+    if cursor.visible == hide_cursor {
+        cursor.visible = !hide_cursor;
+    }
 
     for mut node in &mut hints {
         let want = if show { Display::Flex } else { Display::None };
@@ -197,8 +200,8 @@ pub fn sync_look_hint(
         }
         if let (true, Some(pos)) = (show, pointer) {
             let local = pos - rect.min;
-            node.left = px(local.x + LOOK_HINT_OFFSET);
-            node.top = px(local.y + LOOK_HINT_OFFSET);
+            node.left = px(local.x - LOOK_HINT_SIZE / 2.0);
+            node.top = px(local.y - LOOK_HINT_SIZE / 2.0);
         }
     }
 }

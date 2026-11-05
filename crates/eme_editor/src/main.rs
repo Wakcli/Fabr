@@ -1,4 +1,4 @@
-//! Emberrly editor shell.
+//! Fabr editor shell.
 
 use std::path::PathBuf;
 
@@ -22,7 +22,10 @@ mod theme_bridge;
 mod tokens;
 mod undo;
 
-const TITLE: &str = "Emberrly";
+/// Product name shown in the window title, the chrome, and the hub.
+pub const PRODUCT: &str = "Fabr";
+
+const TITLE: &str = PRODUCT;
 const THEME_PATH: &str = "editor/theme.ron";
 const LAYOUT_PATH: &str = "editor/layout.ron";
 /// The editor assets live in the workspace root, not in this crate, and cargo
@@ -155,7 +158,7 @@ fn load_layout() -> Layout {
 
 fn sample_hub() -> HubState {
     let mut hub = HubState::new();
-    for (id, name) in [(1, "Emberrly"), (2, "Lumen Fields"), (3, "Ashfall")] {
+    for (id, name) in [(1, PRODUCT), (2, "Lumen Fields"), (3, "Ashfall")] {
         let slug = name.to_lowercase().replace(' ', "-");
         hub.add_or_touch(Project {
             id: ProjectId(id),

@@ -39,7 +39,7 @@ pub fn screen(hub: HubState) -> impl Scene {
                     Node { width: px(23), height: px(22) }
                     ImageNode { image: "editor/logo.png" }
                     --
-                    Text("Emberrly")
+                    Text({ crate::PRODUCT })
                     TextFont {
                         font: FontSourceTemplate::Handle(fonts::BOLD),
                         font_size: FontSize::Px(17.0),

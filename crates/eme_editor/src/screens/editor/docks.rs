@@ -821,9 +821,14 @@ pub fn bottom_dock() -> Part {
         icon_button(icons::dock_menu(), 20.0),
     ];
 
+    let banner = format!(
+        "{} Engine v0.20.0-dev (c) 2026 {} Contributors.",
+        crate::PRODUCT,
+        crate::PRODUCT
+    );
     let mut lines = Vec::new();
     for line in [
-        "Emberrly Engine v0.20.0-dev (c) 2026 Emberrly Contributors.",
+        banner.as_str(),
         "Vulkan 1.3.280 - Clustered Forward - Device #0",
         "Loaded project: project://project.ember",
     ] {

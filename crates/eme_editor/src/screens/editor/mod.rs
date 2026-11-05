@@ -153,7 +153,7 @@ fn status_bar() -> Part {
         ThemeBackgroundColor(tokens::WINDOW)
         ThemeBorderColor(tokens::BORDER)
         Children [
-            {text(format!("Emberrly {EDITOR_VERSION}"), FONT_SIZE, tokens::TEXT_DIM)}
+            {text(format!("{} {EDITOR_VERSION}", crate::PRODUCT), FONT_SIZE, tokens::TEXT_DIM)}
             --
             {spacer()}
             --

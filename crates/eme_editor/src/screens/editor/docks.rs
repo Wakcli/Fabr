@@ -723,18 +723,7 @@ pub fn filesystem_dock() -> Part {
         folders.push(folder_cell(name));
     }
 
-    let mut files = Vec::new();
-    for name in [
-        "project.ember",
-        "main.scene",
-        "player.scene",
-        "world.scene",
-        "player.rs",
-        "world.material",
-        "icon.svg",
-    ] {
-        files.push(file_row(name));
-    }
+    let files = vec![file_row("main.scene")];
 
     let body = Box::new(bsn! {
         Node {

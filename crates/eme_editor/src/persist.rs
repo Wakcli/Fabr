@@ -15,11 +15,10 @@ use crate::app::Screen;
 use crate::build::BuildState;
 use crate::clipboard::{self, Clipboard};
 use crate::scene::SceneState;
-use crate::tabs::{self, OpenScenes};
 use crate::undo::Undo;
 
 /// The main scene tab's path, and the scene Ctrl+O reads by default.
-pub const SCENE_PATH: &str = tabs::TABS[0].path;
+pub const SCENE_PATH: &str = "scenes/main.ember";
 
 /// Why a scene file could not be written or read back.
 #[derive(Debug)]
@@ -89,24 +88,20 @@ pub fn open_path_into(state: &mut SceneState, path: &str) {
 }
 
 /// Ctrl+S saves the active tab, Ctrl+O reloads it from disk.
-pub fn scene_shortcuts(
-    keys: Res<ButtonInput<KeyCode>>,
-    scenes: Res<OpenScenes>,
-    mut state: ResMut<SceneState>,
-) {
+pub fn scene_shortcuts(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<SceneState>) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     if !ctrl {
         return;
     }
     if keys.just_pressed(KeyCode::KeyS) {
-        let path = scenes.path();
+        let path = SCENE_PATH;
         match save_to(&state.doc, path) {
             Ok(path) => info!("saved scene to {}", path.display()),
             Err(err) => error!("could not save {path}: {err}"),
         }
     }
     if keys.just_pressed(KeyCode::KeyO) {
-        open_path_into(&mut state, scenes.path());
+        open_path_into(&mut state, SCENE_PATH);
     }
 }
 

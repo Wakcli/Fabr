@@ -19,7 +19,6 @@ use super::icons;
 use crate::clipboard::{self, Clipboard};
 use crate::persist;
 use crate::scene::{self, SceneState};
-use crate::tabs::OpenScenes;
 use crate::tokens;
 use crate::undo::Undo;
 
@@ -548,7 +547,6 @@ fn activate_row(
     mut scene: ResMut<SceneState>,
     mut clip: ResMut<Clipboard>,
     mut undo: ResMut<Undo>,
-    scenes: Res<OpenScenes>,
 ) {
     let Ok(MenuRow(act)) = rows.get(activate.entity) else {
         return;
@@ -560,14 +558,14 @@ fn activate_row(
 
     match *act {
         Act::Save => {
-            match persist::save_to(&scene.doc, scenes.path()) {
+            match persist::save_to(&scene.doc, persist::SCENE_PATH) {
                 Ok(path) => info!("saved scene to {}", path.display()),
                 Err(err) => error!("could not save scene: {err}"),
             }
             menu.open = None;
         }
         Act::Open => {
-            persist::open_path_into(&mut scene, scenes.path());
+            persist::open_path_into(&mut scene, persist::SCENE_PATH);
             menu.open = None;
         }
         Act::Copy => {

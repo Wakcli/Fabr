@@ -70,8 +70,8 @@ pub struct FlyMove {
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CameraMode {
     #[default]
-    Orbit,
     Fly,
+    Orbit,
 }
 
 /// Editor preview vs the scene camera's game view.
@@ -406,6 +406,19 @@ mod tests {
         assert!((cam.pitch + PITCH_LIMIT).abs() < 1e-6);
         look(&mut cam, Vec2::new(0.0, -200_000.0));
         assert!((cam.pitch - PITCH_LIMIT).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_editor_starts_in_first_person() {
+        assert_eq!(CameraMode::default(), CameraMode::Fly);
+    }
+
+    #[test]
+    fn looking_never_slides_the_eye() {
+        let mut cam = FlyCam::default();
+        let eye = cam.eye;
+        look(&mut cam, Vec2::new(120.0, -40.0));
+        assert_eq!(cam.eye, eye, "turning moved the eye instead of the view");
     }
 
     #[test]

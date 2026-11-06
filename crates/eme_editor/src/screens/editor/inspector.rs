@@ -120,46 +120,9 @@ pub struct SectionBody(pub Section);
 #[derive(Component, Clone, Copy, Default)]
 pub struct SectionCaret(pub Section, pub bool);
 
-pub fn right_dock() -> Part {
-    let inspector = inspector_dock();
-    let history = docks::history_dock();
-
+/// Inspector panel body: the object header and the property sections.
+pub fn body() -> Part {
     Box::new(bsn! {
-        Node {
-            width: px(RIGHT_DOCK_W),
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Stretch,
-        }
-        Children [
-            Node {
-                flex_grow: 0.68,
-                flex_basis: px(0),
-                min_height: px(0),
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-            }
-            Children [ {inspector} ]
-            --
-            {splitter(false)}
-            --
-            Node {
-                flex_grow: 0.32,
-                flex_basis: px(0),
-                min_height: px(0),
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-            }
-            Children [ {history} ]
-        ]
-    })
-}
-
-fn inspector_dock() -> Part {
-    let tabs = vec![tab("Inspector", true)];
-    let tail = vec![icon_button(icons::dock_menu(), 20.0)];
-
-    let body = Box::new(bsn! {
         Node {
             flex_grow: 1.0,
             min_height: px(0),
@@ -181,21 +144,6 @@ fn inspector_dock() -> Part {
             {section(Section::Script, "Script", vec![script_row()])}
             --
             {spacer()}
-        ]
-    });
-
-    Box::new(bsn! {
-        Node {
-            flex_grow: 1.0,
-            min_height: px(0),
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Stretch,
-        }
-        Children [
-            {tab_strip(tabs, tail, tokens::WINDOW)}
-            --
-            {body}
         ]
     })
 }

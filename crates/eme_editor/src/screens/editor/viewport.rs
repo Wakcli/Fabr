@@ -2,6 +2,7 @@
 
 use eme::camera::RenderTarget;
 use eme::dev_tools::infinite_grid::{InfiniteGrid, InfiniteGridPlugin, InfiniteGridSettings};
+use eme::ecs::entity::Entities;
 use eme::feathers::{
     constants::fonts,
     theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor, ThemeToken, UiTheme},
@@ -18,7 +19,7 @@ use eme::window::{CursorOptions, PrimaryWindow, Window};
 
 use super::chrome::*;
 use super::gizmo::{tool_button, toolbar_button, GizmoPlugin, ToolModeText, ToolbarToggleKind};
-use super::{docks, icons, menu, tabs};
+use super::{icons, menu, tabs};
 use crate::orbit::{orbit_drag, orbit_scroll, ViewMode};
 use crate::scene;
 use crate::tokens;
@@ -48,15 +49,15 @@ pub struct ViewportRes {
     props: Vec<Entity>,
 }
 
-pub fn center() -> Part {
+/// Scene panel body: the document tab strip over the perspective viewport.
+pub fn body() -> Part {
     let strip = tabs::strip();
     let view = viewport();
-    let bottom = docks::bottom_dock();
 
     Box::new(bsn! {
         Node {
             flex_grow: 1.0,
-            min_width: px(0),
+            min_height: px(0),
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Stretch,
@@ -65,16 +66,6 @@ pub fn center() -> Part {
             {strip}
             --
             {view}
-            --
-            {splitter(false)}
-            --
-            Node {
-                height: px(BOTTOM_DOCK_H),
-                min_height: px(0),
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-            }
-            Children [ {bottom} ]
         ]
     })
 }
@@ -428,6 +419,7 @@ pub fn sync_editor_ui(
 pub fn setup_viewport(
     mut commands: Commands,
     panels: Query<Entity, (With<ViewportPanel>, Without<ViewportNode>)>,
+    entities: &Entities,
     mut view: ResMut<ViewportRes>,
     mut images: ResMut<Assets<Image>>,
     theme: Res<UiTheme>,
@@ -436,6 +428,11 @@ pub fn setup_viewport(
     let Ok(panel) = panels.single() else {
         return;
     };
+
+    if let Some(camera) = view.camera.filter(|camera| entities.contains(*camera)) {
+        commands.entity(panel).insert(ViewportNode::new(camera));
+        return;
+    }
 
     let image = Image::new_target_texture(0, 0, TextureFormat::Bgra8UnormSrgb, None);
     let handle = images.add(image);

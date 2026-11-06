@@ -308,12 +308,9 @@ struct FileRow {
     is_dir: bool,
 }
 
-/// The `FileSystem` dock.
-pub fn filesystem_dock() -> Part {
-    let tabs = vec![tab("FileSystem", true)];
-    let tail = vec![refresh_menu()];
-
-    let body = Box::new(bsn! {
+/// Project panel body: the breadcrumb and the scrolling file tree.
+pub fn body() -> Part {
+    Box::new(bsn! {
         Node {
             flex_grow: 1.0,
             flex_basis: px(0),
@@ -338,22 +335,6 @@ pub fn filesystem_dock() -> Part {
             }
             ScrollArea
             Children [ {file_rows()} ]
-        ]
-    });
-
-    Box::new(bsn! {
-        Node {
-            flex_grow: 1.0,
-            flex_basis: px(0),
-            min_height: px(0),
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Stretch,
-        }
-        Children [
-            {tab_strip(tabs, tail, tokens::WINDOW)}
-            --
-            {body}
         ]
     })
 }
@@ -390,7 +371,7 @@ fn file_rows() -> Part {
     })
 }
 
-fn refresh_menu() -> Part {
+pub(crate) fn refresh_button() -> Part {
     Box::new(bsn! {
         Node {
             width: px(20),

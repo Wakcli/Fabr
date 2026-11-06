@@ -9,6 +9,7 @@ use crate::tokens;
 
 mod build_dialog;
 pub(crate) mod chrome;
+mod dock;
 mod docks;
 pub(crate) mod files;
 mod gizmo;
@@ -26,11 +27,10 @@ use crate::scene;
 use crate::undo;
 use chrome::*;
 
-/// Editor frame scene.
-pub fn screen(_layout: Layout) -> impl Scene {
+/// Editor frame scene: the top bar over a dock tree built from `layout`.
+pub fn screen(layout: Layout) -> impl Scene {
     let bar = top_bar();
-    let body = body();
-    let status = status_bar();
+    let tree = dock::tree(&layout);
 
     bsn! {
         Node {
@@ -44,39 +44,11 @@ pub fn screen(_layout: Layout) -> impl Scene {
         Children [
             {bar}
             --
-            {body}
-            --
-            {status}
+            {tree}
             --
             {crate::play::flyout()}
         ]
     }
-}
-
-fn body() -> Part {
-    let left = docks::left_dock();
-    let center = viewport::center();
-    let right = inspector::right_dock();
-
-    Box::new(bsn! {
-        Node {
-            flex_grow: 1.0,
-            display: Display::Flex,
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Stretch,
-        }
-        Children [
-            {left}
-            --
-            {splitter(true)}
-            --
-            {center}
-            --
-            {splitter(true)}
-            --
-            {right}
-        ]
-    })
 }
 
 fn top_bar() -> Part {
@@ -141,7 +113,7 @@ fn top_bar() -> Part {
     })
 }
 
-fn status_bar() -> Part {
+pub(crate) fn status_bar() -> Part {
     Box::new(bsn! {
         Node {
             height: px(STATUS_H),
@@ -235,6 +207,7 @@ impl Plugin for EditorPlugin {
                     menu::sync_menu,
                     menu::style_menu_rows,
                     menu::close_on_teardown,
+                    dock::sync,
                     persist::scene_shortcuts,
                     persist::edit_shortcuts,
                     build::poll_build,

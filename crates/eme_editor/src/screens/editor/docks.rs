@@ -18,66 +18,8 @@ use crate::scene::SceneState;
 use crate::tokens;
 use crate::undo::Undo;
 
-pub fn left_dock() -> Part {
-    let scene = scene_dock();
-    let files = filesystem_dock();
-
-    Box::new(bsn! {
-        Node {
-            width: px(LEFT_DOCK_W),
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Stretch,
-        }
-        Children [
-            Node {
-                flex_grow: 0.62,
-                flex_basis: px(0),
-                min_height: px(0),
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-            }
-            Children [ {scene} ]
-            --
-            {splitter(false)}
-            --
-            Node {
-                flex_grow: 0.38,
-                flex_basis: px(0),
-                min_height: px(0),
-                display: Display::Flex,
-                flex_direction: FlexDirection::Column,
-            }
-            Children [ {files} ]
-        ]
-    })
-}
-
-fn dock_frame(tabs: Vec<Part>, tail: Vec<Part>, body: Part, strip: ThemeToken) -> Part {
-    Box::new(bsn! {
-        Node {
-            flex_grow: 1.0,
-            min_height: px(0),
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Stretch,
-        }
-        Children [
-            {tab_strip(tabs, tail, strip)}
-            --
-            {body}
-        ]
-    })
-}
-
-fn dock_menu() -> Part {
-    icon_button(icons::dock_menu(), 20.0)
-}
-
-pub fn scene_dock() -> Part {
-    let tabs = vec![tab("Scene", true), tab("Import", false)];
-    let tail = vec![dock_menu()];
-
+/// Hierarchy panel body: the scene tree toolbar, filter, and rows.
+pub fn hierarchy() -> Part {
     let toolbar = Box::new(bsn! {
         Node {
             height: px(TOOL_ROW_H),
@@ -139,7 +81,7 @@ pub fn scene_dock() -> Part {
         Children [ {tree_rows()} ]
     });
 
-    let body = Box::new(bsn! {
+    Box::new(bsn! {
         Node {
             flex_grow: 1.0,
             min_height: px(0),
@@ -155,9 +97,7 @@ pub fn scene_dock() -> Part {
             --
             {tree}
         ]
-    });
-
-    dock_frame(tabs, tail, body, tokens::WINDOW)
+    })
 }
 
 fn tree_rows() -> Part {
@@ -714,22 +654,8 @@ fn open_tree_menu(
     menu::open(&mut menu, click.pointer.position, state.primary());
 }
 
-pub fn filesystem_dock() -> Part {
-    super::files::filesystem_dock()
-}
-
-pub fn bottom_dock() -> Part {
-    let tabs = vec![
-        bottom_tab("Output", false),
-        bottom_tab("Debugger", true),
-        bottom_tab("Audio", false),
-        bottom_tab("Animation", false),
-    ];
-    let tail = vec![
-        icon_button(icons::close(), 18.0),
-        icon_button(icons::dock_menu(), 20.0),
-    ];
-
+/// Console panel body: the log lines, without a tab strip.
+pub fn console() -> Part {
     let banner = format!(
         "{} Engine v0.20.0-dev (c) 2026 {} Contributors.",
         crate::PRODUCT,
@@ -744,7 +670,7 @@ pub fn bottom_dock() -> Part {
         lines.push(text_mono(line, FONT_SIZE_OUTPUT, tokens::TEXT));
     }
 
-    let body = Box::new(bsn! {
+    Box::new(bsn! {
         Node {
             flex_grow: 1.0,
             min_height: px(0),
@@ -761,9 +687,7 @@ pub fn bottom_dock() -> Part {
         }
         ThemeBackgroundColor(tokens::INSET)
         Children [ {lines} ]
-    });
-
-    dock_frame(tabs, tail, body, tokens::PANEL)
+    })
 }
 
 /// Host for the undo history rows.
@@ -822,7 +746,25 @@ pub(crate) fn sync_history(
     *last = Some(names);
 }
 
-pub fn history_dock() -> Part {
+fn dock_frame(tabs: Vec<Part>, tail: Vec<Part>, body: Part, strip: ThemeToken) -> Part {
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            min_height: px(0),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+        }
+        Children [
+            {tab_strip(tabs, tail, strip)}
+            --
+            {body}
+        ]
+    })
+}
+
+/// History panel body: its own `Node`/`History` tab set and the undo rows.
+pub fn history() -> Part {
     let tabs = vec![tab("Node", false), tab("History", true)];
     let tail = vec![
         icon_button(icons::close(), 18.0),

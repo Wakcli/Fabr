@@ -24,9 +24,6 @@ pub const SCENE_TAB_H: f32 = 29.0;
 pub const DOCK_TAB_H: f32 = 29.0;
 pub const TOOL_ROW_H: f32 = 28.0;
 pub const STATUS_H: f32 = 27.0;
-pub const LEFT_DOCK_W: f32 = 280.0;
-pub const RIGHT_DOCK_W: f32 = 280.0;
-pub const BOTTOM_DOCK_H: f32 = 270.0;
 pub const TREE_ROW_H: f32 = 21.0;
 pub const PROPERTY_ROW_H: f32 = 27.0;
 pub const FIELD_H: f32 = 27.0;
@@ -175,27 +172,6 @@ pub fn tab(label: &str, active: bool) -> Part {
             right: px(11),
             top: px(5),
             bottom: px(5),
-        },
-    )
-}
-
-/// A bottom panel tab: selected tabs darken and take the accent underline.
-pub fn bottom_tab(label: &str, active: bool) -> Part {
-    let (bg, fg, line) = if active {
-        (tokens::WINDOW, tokens::TEXT, 2.0)
-    } else {
-        (tokens::CLEAR, tokens::TEXT_MEDIUM, 0.0)
-    };
-    tab_shell(
-        label,
-        bg,
-        fg,
-        line,
-        UiRect {
-            left: px(8),
-            right: px(8),
-            top: px(6),
-            bottom: px(6),
         },
     )
 }

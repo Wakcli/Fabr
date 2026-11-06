@@ -50,7 +50,7 @@ impl Default for Tabs {
     fn default() -> Self {
         Self {
             entries: vec![TabEntry {
-                label: "main.scene".into(),
+                label: "main.ember".into(),
                 kind: TabKind::Scene,
             }],
             active: 0,
@@ -64,6 +64,13 @@ impl Tabs {
         self.entries
             .iter()
             .position(|entry| entry.kind == TabKind::Scene)
+    }
+
+    /// Renames the authored scene tab, as loading another scene from the file dock does.
+    pub fn set_scene_label(&mut self, label: impl Into<String>) {
+        if let Some(index) = self.scene_index() {
+            self.entries[index].label = label.into();
+        }
     }
 
     /// What the selected tab shows.
@@ -266,10 +273,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn loading_a_scene_renames_the_authored_tab() {
+        let mut tabs = Tabs::default();
+        tabs.set_scene_label("cave.ember");
+        assert_eq!(tabs.entries[0].label, "cave.ember");
+        assert_eq!(tabs.active, 0);
+    }
+
+    #[test]
     fn the_default_strip_has_the_authored_scene_selected() {
         let tabs = Tabs::default();
         assert_eq!(tabs.entries.len(), 1);
-        assert_eq!(tabs.entries[0].label, "main.scene");
+        assert_eq!(tabs.entries[0].label, "main.ember");
         assert_eq!(tabs.active_kind(), TabKind::Scene);
         assert_eq!(tabs.active, 0);
     }

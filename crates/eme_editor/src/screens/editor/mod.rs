@@ -10,6 +10,7 @@ use crate::tokens;
 mod build_dialog;
 pub(crate) mod chrome;
 mod docks;
+pub(crate) mod files;
 mod gizmo;
 pub(crate) mod icons;
 mod inspector;
@@ -189,6 +190,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<menu::MenuState>()
             .init_resource::<menu::RightPress>()
             .init_resource::<build::BuildState>()
+            .init_resource::<files::FileTree>()
             .add_observer(menu::request_object_menu)
             .add_systems(
                 Update,
@@ -215,6 +217,12 @@ impl Plugin for EditorPlugin {
                     orbit::apply_camera,
                     orbit::reset_orbit,
                     docks::rebuild_scene_rows,
+                    (
+                        files::sync_file_rows,
+                        files::poll_files.run_if(eme::time::common_conditions::on_timer(
+                            core::time::Duration::from_secs(1),
+                        )),
+                    ),
                     inspector::sync_inspector,
                     inspector::typing_guard.before(scene::keyboard_edit),
                 ),

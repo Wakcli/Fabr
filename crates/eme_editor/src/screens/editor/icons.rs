@@ -40,7 +40,6 @@ png! {
     EMPTY => "empty",
     FILE => "file",
     FOLDER => "folder",
-    FOLDER_LARGE => "folder_large",
     GEAR => "gear",
     INSTANCE => "instance",
     LINK => "link",
@@ -207,10 +206,6 @@ pub fn breadcrumb_caret() -> Part {
 
 pub fn folder() -> Part {
     mono(FOLDER, tokens::FOLDER)
-}
-
-pub fn folder_large() -> Part {
-    image(FOLDER_LARGE, 40.0, Some(tokens::FOLDER))
 }
 
 pub fn file() -> Part {

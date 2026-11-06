@@ -31,6 +31,7 @@
         "editor.accent": "#E8743B",
         "editor.accent.text": "#1A0F08",
         "editor.tab.highlight": "#E8743B",
+        "editor.drop": "#E8743B55",
         "editor.select": "#4A2A1A",
         "editor.scrim": "#00000099",
         "editor.clear": "#00000000",

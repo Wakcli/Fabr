@@ -9,11 +9,23 @@ Split(
             ratio: 0.82,
             first: Panel(
                 id: PanelId(1),
-                kind: Hierarchy,
+                tabs: [
+                    PanelTab(
+                        id: PanelId(9),
+                        kind: Hierarchy,
+                    ),
+                ],
+                active: 0,
             ),
             second: Panel(
                 id: PanelId(2),
-                kind: Custom("Outline"),
+                tabs: [
+                    PanelTab(
+                        id: PanelId(10),
+                        kind: Custom("Outline"),
+                    ),
+                ],
+                active: 0,
             ),
         ),
         second: Split(
@@ -24,18 +36,36 @@ Split(
                 ratio: 0.7,
                 first: Panel(
                     id: PanelId(3),
-                    kind: Scene,
+                    tabs: [
+                        PanelTab(
+                            id: PanelId(11),
+                            kind: Scene,
+                        ),
+                    ],
+                    active: 0,
                 ),
                 second: Split(
                     axis: Horizontal,
                     ratio: 0.5,
                     first: Panel(
                         id: PanelId(4),
-                        kind: Project,
+                        tabs: [
+                            PanelTab(
+                                id: PanelId(12),
+                                kind: Project,
+                            ),
+                        ],
+                        active: 0,
                     ),
                     second: Panel(
                         id: PanelId(5),
-                        kind: Console,
+                        tabs: [
+                            PanelTab(
+                                id: PanelId(13),
+                                kind: Console,
+                            ),
+                        ],
+                        active: 0,
                     ),
                 ),
             ),
@@ -44,17 +74,35 @@ Split(
                 ratio: 0.62,
                 first: Panel(
                     id: PanelId(6),
-                    kind: Inspector,
+                    tabs: [
+                        PanelTab(
+                            id: PanelId(14),
+                            kind: Inspector,
+                        ),
+                    ],
+                    active: 0,
                 ),
                 second: Panel(
                     id: PanelId(7),
-                    kind: Custom("Stats"),
+                    tabs: [
+                        PanelTab(
+                            id: PanelId(15),
+                            kind: Custom("Stats"),
+                        ),
+                    ],
+                    active: 0,
                 ),
             ),
         ),
     ),
     second: Panel(
         id: PanelId(8),
-        kind: Custom("Status"),
+        tabs: [
+            PanelTab(
+                id: PanelId(16),
+                kind: Custom("Status"),
+            ),
+        ],
+        active: 0,
     ),
 )

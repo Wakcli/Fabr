@@ -31,6 +31,8 @@ pub const ACCENT: ThemeToken = ThemeToken::new_static("editor.accent");
 pub const ACCENT_TEXT: ThemeToken = ThemeToken::new_static("editor.accent.text");
 /// The two pixel underline under the active tab.
 pub const TAB_HIGHLIGHT: ThemeToken = ThemeToken::new_static("editor.tab.highlight");
+/// Translucent accent wash over a dock that will receive a dragged tab.
+pub const DROP: ThemeToken = ThemeToken::new_static("editor.drop");
 /// Tree row selection: the accent at low strength over [`INSET`].
 pub const SELECT: ThemeToken = ThemeToken::new_static("editor.select");
 /// Dims the editor behind a modal dialog.
@@ -104,6 +106,7 @@ pub const ALL: &[(&str, ThemeToken)] = &[
     ("editor.accent", ACCENT),
     ("editor.accent.text", ACCENT_TEXT),
     ("editor.tab.highlight", TAB_HIGHLIGHT),
+    ("editor.drop", DROP),
     ("editor.select", SELECT),
     ("editor.scrim", SCRIM),
     ("editor.clear", CLEAR),

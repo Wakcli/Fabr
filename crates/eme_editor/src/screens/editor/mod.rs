@@ -46,6 +46,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {tree}
             --
+            {dock::overlay()}
+            --
             {crate::play::flyout()}
         ]
     }
@@ -146,6 +148,7 @@ pub struct EditorPlugin;
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
         viewport::plugins(app);
+        dock::plugins(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()

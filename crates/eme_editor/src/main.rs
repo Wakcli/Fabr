@@ -27,7 +27,7 @@ pub const PRODUCT: &str = "Fabr";
 
 const TITLE: &str = PRODUCT;
 const THEME_PATH: &str = "editor/theme.ron";
-const LAYOUT_PATH: &str = "editor/layout.ron";
+pub(crate) const LAYOUT_PATH: &str = "editor/layout.ron";
 /// The editor assets live in the workspace root, not in this crate, and cargo
 /// points the asset server at the crate directory.
 const ASSET_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
@@ -48,7 +48,7 @@ fn asset_root() -> PathBuf {
     PathBuf::from(ASSET_ROOT)
 }
 
-fn asset_path(rel: &str) -> PathBuf {
+pub(crate) fn asset_path(rel: &str) -> PathBuf {
     asset_root().join(rel)
 }
 

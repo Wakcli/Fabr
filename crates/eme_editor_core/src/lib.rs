@@ -14,7 +14,7 @@ pub mod selection;
 pub mod theme;
 
 pub use history::{History, Op, DEFAULT_LIMIT};
-pub use layout::{Axis, Layout, PanelId, PanelKind, MAX_RATIO, MIN_RATIO};
+pub use layout::{Axis, Edge, Layout, PanelId, PanelKind, PanelTab, MAX_RATIO, MIN_RATIO};
 pub use project::{HubState, Project, ProjectId};
 pub use selection::Selection;
 pub use theme::{Rgba, Theme, ThemeError};

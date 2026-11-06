@@ -256,6 +256,10 @@ fn sync_doc(
         }
     }
 
+    if !gizmo.active && !was {
+        return;
+    }
+
     let Ok((link, tf)) = focused.single() else {
         if was && !gizmo.active {
             state.touch();
@@ -484,6 +488,54 @@ fn toggle_click(
 mod tests {
     use super::*;
     use eme_game_scene::ObjectKind;
+
+    #[test]
+    fn an_idle_gizmo_never_writes_the_entity_back_into_the_document() {
+        let mut app = App::new();
+        app.init_resource::<SceneState>()
+            .init_resource::<Undo>()
+            .init_resource::<TransformGizmoState>()
+            .add_systems(Update, sync_doc);
+
+        let id = {
+            let mut state = app.world_mut().resource_mut::<SceneState>();
+            let id = state.spawn(ObjectKind::Cube);
+            state.select_only(id);
+            state.doc.set_translation(id, [1.0, 2.0, 3.0]);
+            id
+        };
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                SceneLink {
+                    id,
+                    kind: ObjectKind::Cube,
+                },
+                Transform::from_xyz(9.0, 9.0, 9.0),
+                TransformGizmoFocus,
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<SceneState>()
+            .entities
+            .insert(id, entity);
+
+        app.update();
+
+        let translation = app
+            .world()
+            .resource::<SceneState>()
+            .doc
+            .get(id)
+            .unwrap()
+            .translation;
+        assert_eq!(
+            translation,
+            [1.0, 2.0, 3.0],
+            "an idle gizmo copied the stale entity transform over the document"
+        );
+    }
 
     #[test]
     fn translation_delta_carries_to_a_second_object() {

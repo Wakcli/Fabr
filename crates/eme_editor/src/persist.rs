@@ -132,7 +132,6 @@ pub fn edit_shortcuts(
         return;
     }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-
     if keys.just_pressed(KeyCode::KeyZ) {
         if shift {
             if undo.can_redo() {

@@ -168,8 +168,8 @@ pub fn overlay() -> Part {
             top: px(0),
             width: px(0),
             height: px(0),
-            border: px(1),
-            border_radius: px(2),
+            border: px(2),
+            border_radius: px(4),
         }
         DropOverlay
         GlobalZIndex(150)

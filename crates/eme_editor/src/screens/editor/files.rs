@@ -91,7 +91,7 @@ impl FileTree {
 
     /// Rescans the project folder, returning whether its signature changed.
     fn rescan(&mut self) -> bool {
-        let scan = scan(&self.root);
+        let scan = scan(&self.root, &self.expanded);
         if self.ready && self.signature == Some(scan.signature) {
             return false;
         }
@@ -106,6 +106,8 @@ impl FileTree {
         if !self.expanded.remove(rel) {
             self.expanded.insert(rel.to_string());
         }
+        self.signature = None;
+        self.rescan();
         self.rev = self.rev.wrapping_add(1);
     }
 
@@ -162,7 +164,7 @@ enum Row {
     MissingRoot,
 }
 
-fn scan(root: &Path) -> Scan {
+fn scan(root: &Path, expanded: &HashSet<String>) -> Scan {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     if !root.is_dir() {
         return Scan {
@@ -171,7 +173,10 @@ fn scan(root: &Path) -> Scan {
             signature: 0,
         };
     }
-    let listing = scan_dir(root, "", 1, &mut hasher);
+    for rel in expanded {
+        hasher.write(rel.as_bytes());
+    }
+    let listing = scan_dir(root, "", 1, &mut hasher, expanded);
     Scan {
         root: listing,
         missing: false,
@@ -184,6 +189,7 @@ fn scan_dir(
     rel: &str,
     depth: usize,
     hasher: &mut std::collections::hash_map::DefaultHasher,
+    expanded: &HashSet<String>,
 ) -> Listing {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Listing::default();
@@ -231,8 +237,8 @@ fn scan_dir(
         } else {
             format!("{rel}/{name}")
         };
-        let children = if is_dir && depth < MAX_DEPTH {
-            scan_dir(&dir.join(&name), &child_rel, depth + 1, hasher)
+        let children = if is_dir && depth < MAX_DEPTH && expanded.contains(&child_rel) {
+            scan_dir(&dir.join(&name), &child_rel, depth + 1, hasher, expanded)
         } else {
             Listing::default()
         };
@@ -636,7 +642,7 @@ mod tests {
         tmp.file("a.png", "");
         tmp.file(".secret", "");
 
-        let scan = scan(&tmp.0);
+        let scan = scan(&tmp.0, &HashSet::new());
         let rows = rows(&scan, &HashSet::new());
         assert_eq!(names(&rows), ["adir", "zdir", "a.png", "b.rs"]);
         assert!(rows.iter().all(|row| matches!(row, Row::Entry { .. })));
@@ -647,8 +653,8 @@ mod tests {
         let tmp = Tmp::new("depth");
         tmp.dir("d1/d2/d3/d4/d5/d6");
 
-        let scan = scan(&tmp.0);
         let expanded = open(&["d1", "d1/d2", "d1/d2/d3", "d1/d2/d3/d4", "d1/d2/d3/d4/d5"]);
+        let scan = scan(&tmp.0, &expanded);
         let rows = rows(&scan, &expanded);
 
         assert_eq!(names(&rows), ["d1", "d2", "d3", "d4"]);
@@ -669,7 +675,7 @@ mod tests {
         tmp.file("dir/a.rs", "fn main() {}");
         tmp.dir("empty");
 
-        let scan = scan(&tmp.0);
+        let scan = scan(&tmp.0, &open(&["dir", "empty"]));
         assert_eq!(names(&rows(&scan, &HashSet::new())), ["dir", "empty"]);
         assert_eq!(
             names(&rows(&scan, &open(&["dir", "empty"]))),
@@ -688,8 +694,9 @@ mod tests {
             tmp.file(&format!("many/{i:03}.rs"), "");
         }
 
-        let scan = scan(&tmp.0);
-        let rows = rows(&scan, &open(&["many"]));
+        let expanded = open(&["many"]);
+        let scan = scan(&tmp.0, &expanded);
+        let rows = rows(&scan, &expanded);
         let entries = names(&rows);
         assert_eq!(entries.len(), MAX_ENTRIES + 1);
         assert_eq!(entries[0], "many");
@@ -713,11 +720,11 @@ mod tests {
         let tmp = Tmp::new("sig");
         tmp.file("a.rs", "fn main() {}");
 
-        let first = scan(&tmp.0).signature;
-        assert_eq!(scan(&tmp.0).signature, first, "an idle scan must not churn");
+        let first = scan(&tmp.0, &HashSet::new()).signature;
+        assert_eq!(scan(&tmp.0, &HashSet::new()).signature, first, "an idle scan must not churn");
 
         tmp.file("b.rs", "fn b() {}");
-        assert_ne!(scan(&tmp.0).signature, first);
+        assert_ne!(scan(&tmp.0, &HashSet::new()).signature, first);
     }
 
     #[test]
@@ -738,7 +745,7 @@ mod tests {
     #[test]
     fn a_missing_root_gets_one_explanatory_row() {
         let tmp = Tmp::new("missing");
-        let scan = scan(&tmp.0.join("absent"));
+        let scan = scan(&tmp.0.join("absent"), &HashSet::new());
         assert!(scan.missing);
         assert_eq!(rows(&scan, &HashSet::new()), [Row::MissingRoot]);
     }

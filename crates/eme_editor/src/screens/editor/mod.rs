@@ -195,7 +195,7 @@ impl Plugin for EditorPlugin {
                     (
                         files::sync_file_rows,
                         files::poll_files.run_if(eme::time::common_conditions::on_timer(
-                            core::time::Duration::from_secs(1),
+                            core::time::Duration::from_secs(3),
                         )),
                     ),
                     inspector::sync_inspector,

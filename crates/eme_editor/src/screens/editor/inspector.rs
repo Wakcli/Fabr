@@ -13,6 +13,7 @@ use eme::text::{
 };
 use eme::ui_widgets::{Activate, Button, TextInput};
 use eme_game_scene::{Behaviour, BehaviourKind, ObjectTransform};
+use std::path::PathBuf;
 
 use super::chrome::*;
 use super::docks;
@@ -133,6 +134,20 @@ pub fn body() -> Part {
         }
         ThemeBackgroundColor(tokens::PANEL)
         Children [
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                row_gap: px(2),
+                padding: UiRect {
+                    left: px(10),
+                    right: px(8),
+                    top: px(4),
+                    bottom: px(4),
+                },
+            }
+            ImportReportRows
+            --
             {object_row()}
             --
             {section(Section::Transform, "Transform", transform_rows())}
@@ -1076,4 +1091,113 @@ mod tests {
         close(state.doc.get(parent).unwrap().translation[0], 3.0);
         close(state.doc.get(child).unwrap().translation[0], 5.0);
     }
+}
+
+/// Host for the imported-model report above the object sections.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ImportReportRows;
+
+/// Marks the Reimport button and carries the file it re-imports.
+#[derive(Component, Clone, Default)]
+pub struct Reimport(pub PathBuf);
+
+/// Renders the report of the model selected in the `FileSystem` dock.
+pub fn sync_import_report(
+    mut commands: Commands,
+    tree: Res<crate::screens::editor::files::FileTree>,
+    service: Res<crate::import::ImportService>,
+    hosts: Query<Entity, With<ImportReportRows>>,
+    mut shown: Local<Option<(Entity, String, String)>>,
+) {
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    let selected = tree.selected().unwrap_or_default().to_owned();
+    let report = tree
+        .selected()
+        .map(|rel| tree.root_path().join(rel))
+        .and_then(|path| service.report(&path).cloned());
+    let signature = report
+        .as_ref()
+        .map(crate::import::ImportReport::summary)
+        .unwrap_or_default();
+    if shown.as_ref() == Some(&(host, selected.clone(), signature.clone())) {
+        return;
+    }
+    *shown = Some((host, selected, signature));
+
+    commands.entity(host).despawn_children();
+    let Some(report) = report else {
+        return;
+    };
+
+    let counts = format!(
+        "{} nodes · {} meshes · {} verts · {} tris",
+        report.counts.nodes, report.counts.meshes, report.counts.vertices, report.counts.triangles
+    );
+    let size = report.bounds.map_or_else(
+        || "no geometry".to_string(),
+        |bounds| {
+            let size = bounds.size();
+            format!("{:.2} × {:.2} × {:.2} m", size[0], size[1], size[2])
+        },
+    );
+    let extras = format!(
+        "{} textures · {} animations · {} warnings",
+        report.textures.len(),
+        report.animations.len(),
+        report.warnings.len()
+    );
+
+    for line in [counts, size, extras] {
+        let row = text(line, FONT_SIZE, tokens::TEXT);
+        commands.spawn_scene(bsn! {
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+            }
+            ChildOf(host)
+            Children [ {row} ]
+        });
+    }
+
+    let path = report.file.path.clone();
+    let label = text("Reimport", FONT_SIZE, tokens::ACCENT);
+    commands
+        .spawn_scene(bsn! {
+            Node {
+                height: px(PROPERTY_ROW_H),
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(6)),
+            }
+            Button
+            Reimport(path)
+            ChildOf(host)
+            Children [ {label} ]
+        })
+        .observe(reimport);
+}
+
+fn reimport(
+    activate: On<Activate>,
+    buttons: Query<&Reimport>,
+    mut service: ResMut<crate::import::ImportService>,
+    mut log: ResMut<crate::console::ConsoleLog>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    let settings = service.settings.clone();
+    service.start(
+        crate::import::ImportRequest {
+            source: button.0.clone(),
+            folder: PathBuf::new(),
+            settings,
+            copy: false,
+        },
+        &crate::build::workspace_dir(),
+        &mut log,
+    );
 }

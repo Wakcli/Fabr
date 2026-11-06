@@ -1,30 +1,17 @@
 //! glTF and GLB import.
 //!
 //! One [`ImportSettings`] describes the options, [`import`] is the only parser,
-//! and every call returns one [`ImportReport`] or one [`ImportError`].
+//! and every call returns one [`ImportReport`] or one [`ImportError`]. The UI
+//! reaches it through [`ImportService`], which runs the parse off the main thread.
 
 mod importer;
 mod report;
+mod service;
 mod settings;
 
-#[expect(
-    unused_imports,
-    reason = "phase 2 entry points consume the importer API"
-)]
-pub use importer::{SUPPORTED_EXTENSIONS, import};
-#[expect(
-    unused_imports,
-    reason = "phase 2 entry points consume the report API"
-)]
-pub use report::{
-    AnimationInfo, Bounds, Counts, FileInfo, ImportError, ImportReport, ImportWarning, Severity,
-    StageTimings, TextureInfo,
+pub use importer::import;
+pub use report::{ImportError, ImportReport};
+pub use service::{
+    ImportRequest, ImportService, ImportStatus, PendingImport, poll_system, status_system,
 };
-#[expect(
-    unused_imports,
-    reason = "phase 2 entry points consume the settings API"
-)]
-pub use settings::{
-    AnimationSettings, GeometrySettings, ImportSettings, MaterialSettings, OutputSettings,
-    SceneSettings, TransformSettings, UpAxis,
-};
+pub use settings::ImportSettings;

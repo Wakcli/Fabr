@@ -5,14 +5,17 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use eme::feathers::theme::{ThemeBackgroundColor, ThemeToken};
+use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeToken};
 use eme::prelude::*;
+use eme::window::{FileDragAndDrop, PrimaryWindow, Window};
 use eme::scene::bsn;
 use eme::ui_widgets::{Activate, Button, ScrollArea};
 
 use super::chrome::*;
 use super::icons;
 use crate::build;
+use crate::console::ConsoleLog;
+use crate::import::{ImportRequest, ImportService, PendingImport};
 use crate::persist;
 use crate::play::PlayState;
 use crate::scene::SceneState;
@@ -77,6 +80,16 @@ impl Default for FileTree {
 }
 
 impl FileTree {
+    /// The project folder this tree is rooted at.
+    pub(crate) fn root_path(&self) -> &Path {
+        &self.root
+    }
+
+    /// Relative path of the selected row, if any.
+    pub(crate) fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
     fn new(root: PathBuf) -> Self {
         Self {
             root,
@@ -312,7 +325,7 @@ pub(crate) struct FileRows;
 
 /// One row in the `FileSystem` dock, keyed by its path below the project root.
 #[derive(Component, Clone, Default)]
-struct FileRow {
+pub(crate) struct FileRow {
     rel: String,
     is_dir: bool,
 }
@@ -516,6 +529,7 @@ fn spawn_entry(
         ChildOf(host)
         Children [ {kids} ]
         on(click_file)
+        on(open_folder_menu)
     };
     commands.spawn_scene(row);
 }
@@ -757,5 +771,224 @@ mod tests {
         let scan = scan(&tmp.0.join("absent"), &HashSet::new());
         assert!(scan.missing);
         assert_eq!(rows(&scan, &HashSet::new()), [Row::MissingRoot]);
+    }
+}
+
+/// The one-row import menu opened from a folder or the Project menu.
+#[derive(Resource, Default)]
+pub struct ImportMenu {
+    /// Where to draw it, in window coordinates.
+    pub at: Option<Vec2>,
+    /// Folder it targets, relative to the project root.
+    pub folder: Option<String>,
+}
+
+/// Marks the import menu's root node.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ImportMenuRoot;
+
+/// Opens the import menu for a folder row on secondary click.
+pub fn open_folder_menu(
+    click: On<PointerClick>,
+    rows: Query<&FileRow>,
+    mut menu: ResMut<ImportMenu>,
+) {
+    if click.button != PointerButton::Secondary {
+        return;
+    }
+    let Ok(row) = rows.get(click.entity) else {
+        return;
+    };
+    if !row.is_dir {
+        return;
+    }
+    menu.at = Some(click.pointer.position);
+    menu.folder = Some(row.rel.clone());
+}
+
+/// Opens the same menu from the Project entry in the menu bar.
+pub fn open_project_menu(_: On<Activate>, mut menu: ResMut<ImportMenu>) {
+    menu.at = Some(Vec2::new(8.0, 34.0));
+    menu.folder = None;
+}
+
+/// Hides the import menu on Escape or when the screen goes away.
+pub fn close_import_menu(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<ImportMenu>) {
+    if keys.just_pressed(KeyCode::Escape) {
+        menu.at = None;
+    }
+}
+
+/// Draws the menu at its anchor and hides it when closed.
+pub fn sync_import_menu(
+    menu: Res<ImportMenu>,
+    mut roots: Query<&mut Node, With<ImportMenuRoot>>,
+) {
+    for mut node in &mut roots {
+        let want = if menu.at.is_some() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+        if let Some(at) = menu.at {
+            node.left = px(at.x);
+            node.top = px(at.y);
+        }
+    }
+}
+
+/// The menu itself, a root-level overlay so it can overhang the dock.
+pub fn import_menu() -> Part {
+    let row = Box::new(bsn! {
+        Node {
+            height: px(TREE_ROW_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(10)),
+        }
+        Button
+        ThemeBackgroundColor(tokens::PANEL)
+        Children [ {text("Import…", FONT_SIZE, tokens::TEXT)} ]
+        on(run_import)
+    });
+
+    Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            display: Display::None,
+            left: px(0),
+            top: px(0),
+            width: px(190),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            border: px(1),
+            border_radius: px(4),
+            padding: px(2),
+        }
+        ImportMenuRoot
+        GlobalZIndex(200)
+        ThemeBackgroundColor(tokens::WINDOW)
+        ThemeBorderColor(tokens::BORDER)
+        Children [ {row} ]
+    })
+}
+
+/// Imports the selected model, from a folder menu or the Project menu.
+pub fn run_import(
+    _: On<Activate>,
+    mut menu: ResMut<ImportMenu>,
+    tree: Res<FileTree>,
+    mut service: ResMut<ImportService>,
+    mut log: ResMut<ConsoleLog>,
+) {
+    menu.at = None;
+    let Some(rel) = tree.selected.clone() else {
+        log.push("import: select a .glb or .gltf in the FileSystem first");
+        return;
+    };
+    let source = tree.root.join(&rel);
+    if !is_model(&source) {
+        log.push(format!("import: {rel} is not a .glb or .gltf file"));
+        return;
+    }
+    let folder = menu
+        .folder
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| service.settings.output.folder.clone());
+
+    service.pending = Some(PendingImport {
+        source: source.clone(),
+        folder: folder.clone(),
+        settings: service.settings.clone(),
+    });
+    log.push("import options arrive in phase 3; importing with defaults");
+    let settings = service.settings.clone();
+    service.start(
+        ImportRequest {
+            source,
+            folder,
+            settings,
+            copy: false,
+        },
+        &tree.root,
+        &mut log,
+    );
+}
+
+pub fn is_model(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("glb") || ext.eq_ignore_ascii_case("gltf"))
+}
+
+/// Copies dropped models into the hovered folder and imports them.
+pub fn accept_drop(
+    mut drops: MessageReader<FileDragAndDrop>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    rows: Query<(&FileRow, &ComputedNode, &UiGlobalTransform)>,
+    keys: Res<ButtonInput<KeyCode>>,
+    tree: Res<FileTree>,
+    mut service: ResMut<ImportService>,
+    mut log: ResMut<ConsoleLog>,
+) {
+    let mut dropped = Vec::new();
+    for event in drops.read() {
+        if let FileDragAndDrop::DroppedFile { path_buf, .. } = event {
+            dropped.push(path_buf.clone());
+        }
+    }
+    if dropped.is_empty() {
+        return;
+    }
+
+    let scale = window.scale_factor();
+    let cursor = window.cursor_position().map(|pos| pos * scale);
+    let hovered = cursor.and_then(|pos| {
+        rows.iter().find_map(|(row, node, global)| {
+            let rect = Rect::from_center_size(global.translation.trunc(), node.size());
+            rect.contains(pos).then(|| row.clone())
+        })
+    });
+
+    let folder = match &hovered {
+        Some(row) if row.is_dir => PathBuf::from(&row.rel),
+        Some(row) => Path::new(&row.rel)
+            .parent()
+            .map_or_else(|| service.settings.output.folder.clone(), PathBuf::from),
+        None => service.settings.output.folder.clone(),
+    };
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+
+    for source in dropped {
+        if !is_model(&source) {
+            log.push(format!(
+                "import: {} is not a .glb or .gltf file",
+                source.display()
+            ));
+            continue;
+        }
+        if shift {
+            service.pending = Some(PendingImport {
+                source: source.clone(),
+                folder: folder.clone(),
+                settings: service.settings.clone(),
+            });
+            log.push("import options arrive in phase 3; importing with defaults");
+        }
+        let settings = service.settings.clone();
+        service.start(
+            ImportRequest {
+                source,
+                folder: folder.clone(),
+                settings,
+                copy: true,
+            },
+            &tree.root,
+            &mut log,
+        );
     }
 }

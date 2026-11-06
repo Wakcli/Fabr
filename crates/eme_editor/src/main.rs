@@ -13,7 +13,6 @@ mod app;
 mod build;
 mod clipboard;
 mod console;
-#[expect(dead_code, reason = "import entry points arrive in phase 2")]
 mod import;
 mod orbit;
 mod persist;

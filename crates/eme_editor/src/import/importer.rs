@@ -84,7 +84,6 @@ pub fn import(path: &Path, settings: &ImportSettings) -> Result<ImportReport, Im
         ..Counts::default()
     };
 
-    let mut bounds: Option<Bounds> = None;
     let mut names: HashMap<String, usize> = HashMap::new();
 
     for node in doc.nodes() {
@@ -125,9 +124,6 @@ pub fn import(path: &Path, settings: &ImportSettings) -> Result<ImportReport, Im
 
             if let Some(positions) = primitive.get(&Semantic::Positions) {
                 counts.vertices += positions.count();
-                if let Some((lo, hi)) = accessor_bounds(&positions) {
-                    bounds = Some(union(bounds, lo, hi));
-                }
             } else {
                 warnings.push(ImportWarning::new(
                     Severity::Error,
@@ -177,6 +173,7 @@ pub fn import(path: &Path, settings: &ImportSettings) -> Result<ImportReport, Im
         }
     }
 
+    let mut bounds = world_bounds(&doc);
     if let Some(bounds) = bounds.as_mut() {
         for axis in 0..3 {
             bounds.min[axis] *= settings.transform.scale;
@@ -293,19 +290,109 @@ fn accessor_bounds(accessor: &gltf::Accessor<'_>) -> Option<([f32; 3], [f32; 3])
     Some((lo, hi))
 }
 
-fn union(current: Option<Bounds>, lo: [f32; 3], hi: [f32; 3]) -> Bounds {
+/// Union of every mesh primitive's bounds after its node's world transform.
+///
+/// The hierarchy matters: a child mesh inherits its parents' translation,
+/// rotation and scale, so the report has to walk up before transforming corners.
+fn world_bounds(doc: &gltf::Document) -> Option<Bounds> {
+    let mut parents: HashMap<usize, usize> = HashMap::new();
+    for node in doc.nodes() {
+        for child in node.children() {
+            parents.insert(child.index(), node.index());
+        }
+    }
+
+    let mut bounds: Option<Bounds> = None;
+    for node in doc.nodes() {
+        let Some(mesh) = node.mesh() else {
+            continue;
+        };
+        let world = world_matrix(doc, &node, &parents);
+        for primitive in mesh.primitives() {
+            let Some(positions) = primitive.get(&Semantic::Positions) else {
+                continue;
+            };
+            let Some((lo, hi)) = accessor_bounds(&positions) else {
+                continue;
+            };
+            for corner in corners(lo, hi) {
+                let point = transform_point(&world, corner);
+                bounds = Some(union_point(bounds, point));
+            }
+        }
+    }
+    bounds
+}
+
+fn world_matrix(
+    doc: &gltf::Document,
+    node: &gltf::Node<'_>,
+    parents: &HashMap<usize, usize>,
+) -> [[f32; 4]; 4] {
+    let mut matrix = node.transform().matrix();
+    let mut current = parents.get(&node.index()).copied();
+    while let Some(index) = current {
+        let Some(parent) = doc.nodes().find(|candidate| candidate.index() == index) else {
+            break;
+        };
+        matrix = multiply(parent.transform().matrix(), matrix);
+        current = parents.get(&index).copied();
+    }
+    matrix
+}
+
+fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0_f32; 4]; 4];
+    for column in 0..4 {
+        for row in 0..4 {
+            let mut sum = 0.0;
+            for step in 0..4 {
+                sum += a[step][row] * b[column][step];
+            }
+            out[column][row] = sum;
+        }
+    }
+    out
+}
+
+fn transform_point(matrix: &[[f32; 4]; 4], point: [f32; 3]) -> [f32; 3] {
+    let [x, y, z] = point;
+    [
+        matrix[0][0] * x + matrix[1][0] * y + matrix[2][0] * z + matrix[3][0],
+        matrix[0][1] * x + matrix[1][1] * y + matrix[2][1] * z + matrix[3][1],
+        matrix[0][2] * x + matrix[1][2] * y + matrix[2][2] * z + matrix[3][2],
+    ]
+}
+
+fn corners(lo: [f32; 3], hi: [f32; 3]) -> [[f32; 3]; 8] {
+    [
+        [lo[0], lo[1], lo[2]],
+        [hi[0], lo[1], lo[2]],
+        [lo[0], hi[1], lo[2]],
+        [hi[0], hi[1], lo[2]],
+        [lo[0], lo[1], hi[2]],
+        [hi[0], lo[1], hi[2]],
+        [lo[0], hi[1], hi[2]],
+        [hi[0], hi[1], hi[2]],
+    ]
+}
+
+fn union_point(current: Option<Bounds>, point: [f32; 3]) -> Bounds {
     match current {
-        None => Bounds { min: lo, max: hi },
+        None => Bounds {
+            min: point,
+            max: point,
+        },
         Some(bounds) => Bounds {
             min: [
-                bounds.min[0].min(lo[0]),
-                bounds.min[1].min(lo[1]),
-                bounds.min[2].min(lo[2]),
+                bounds.min[0].min(point[0]),
+                bounds.min[1].min(point[1]),
+                bounds.min[2].min(point[2]),
             ],
             max: [
-                bounds.max[0].max(hi[0]),
-                bounds.max[1].max(hi[1]),
-                bounds.max[2].max(hi[2]),
+                bounds.max[0].max(point[0]),
+                bounds.max[1].max(point[1]),
+                bounds.max[2].max(point[2]),
             ],
         },
     }
@@ -372,6 +459,10 @@ mod tests {
     }
 
     fn glb(positions: [[f32; 3]; 3], indices: [u16; 3]) -> Vec<u8> {
+        glb_nodes(positions, indices, r#"[{"name":"tri","mesh":0}]"#)
+    }
+
+    fn glb_nodes(positions: [[f32; 3]; 3], indices: [u16; 3], nodes: &str) -> Vec<u8> {
         let mut bin = Vec::new();
         for vertex in positions {
             for axis in vertex {
@@ -381,7 +472,10 @@ mod tests {
         for index in indices {
             bin.extend(index.to_le_bytes());
         }
-        let json = r#"{"asset":{"version":"2.0","generator":"glb-test"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"tri","mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1,"mode":4}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"buffers":[{"byteLength":42}]}"#;
+        let json = String::from(
+            r#"{"asset":{"version":"2.0","generator":"glb-test"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":"#,
+        ) + nodes
+            + r#","meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1,"mode":4}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"buffers":[{"byteLength":42}]}"#;
         let mut json_chunk = json.as_bytes().to_vec();
         while !json_chunk.len().is_multiple_of(4) {
             json_chunk.push(b' ');
@@ -461,6 +555,23 @@ mod tests {
                 .any(|w| w.message.contains("degenerate triangles")),
             "a zero-area triangle must be warned about"
         );
+    }
+
+    #[test]
+    fn bounds_apply_node_rotation_and_scale() {
+        let nodes = r#"[{"name":"tri","mesh":0,"rotation":[0.0,0.70710678,0.0,0.70710678],"scale":[2.0,2.0,2.0]}]"#;
+        let path = temp(
+            "rotated.glb",
+            &glb_nodes([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], [0, 1, 2], nodes),
+        );
+        let report = import(&path, &ImportSettings::default()).unwrap();
+        let bounds = report.bounds.expect("mesh has bounds");
+
+        // 90 degrees about Y turns +X into -Z; both axes are then scaled by 2.
+        assert!((bounds.min[2] + 2.0).abs() < 1e-4, "min {:?}", bounds.min);
+        assert!((bounds.max[1] - 2.0).abs() < 1e-4, "max {:?}", bounds.max);
+        assert!(bounds.max[0].abs() < 1e-4, "max {:?}", bounds.max);
+        assert!(bounds.min[0].abs() < 1e-4, "min {:?}", bounds.min);
     }
 
     #[test]

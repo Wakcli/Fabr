@@ -1,6 +1,8 @@
 //! The editor frame: a docked layout, monochrome chrome, and a perspective viewport.
 
-use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor};
+use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor};
+use eme::text::{FontSize, FontSourceTemplate, FontWeight};
+use eme::ui_widgets::Button;
 use eme::prelude::*;
 use eme::scene::{bsn, Scene};
 use eme_editor_core::{Layout, EDITOR_VERSION};
@@ -52,6 +54,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {dock::drag_ghost()}
             --
+            {files::import_menu()}
+            --
             {crate::play::flyout()}
         ]
     }
@@ -65,7 +69,20 @@ fn top_bar() -> Part {
         hgap(4.0),
     ];
     for item in ["Scene", "Project", "Debug", "Editor", "Help"] {
-        left.push(menu_item(item));
+        if item == "Project" {
+            left.push(Box::new(bsn! {
+                Node {
+                    height: px(27),
+                    display: Display::Flex,
+                    align_items: AlignItems::Center,
+                }
+                Button
+                Children [ {menu_item(item)} ]
+                on(files::open_project_menu)
+            }) as Part);
+        } else {
+            left.push(menu_item(item));
+        }
     }
 
     let right = vec![
@@ -119,6 +136,19 @@ fn top_bar() -> Part {
     })
 }
 
+fn import_status() -> Part {
+    Box::new(bsn! {
+        Text("")
+        TextFont {
+            font: FontSourceTemplate::Handle(eme::feathers::constants::fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        crate::import::ImportStatus
+    })
+}
+
 pub(crate) fn status_bar() -> Part {
     Box::new(bsn! {
         Node {
@@ -134,6 +164,8 @@ pub(crate) fn status_bar() -> Part {
         ThemeBorderColor(tokens::BORDER)
         Children [
             {text(format!("{} {EDITOR_VERSION}", crate::PRODUCT), FONT_SIZE, tokens::TEXT_DIM)}
+            --
+            {import_status()}
             --
             {spacer()}
             --
@@ -171,6 +203,8 @@ impl Plugin for EditorPlugin {
             .init_resource::<build::BuildState>()
             .init_resource::<files::FileTree>()
             .init_resource::<crate::console::ConsoleLog>()
+            .init_resource::<crate::import::ImportService>()
+            .init_resource::<files::ImportMenu>()
                         .add_observer(menu::request_object_menu)
             .add_systems(
                 Update,
@@ -187,12 +221,19 @@ impl Plugin for EditorPlugin {
                     crate::selection_outline::sync_outlines,
                     (
                         crate::console::sync,
-                    crate::play::poll,
+                        crate::import::poll_system,
+                        crate::import::status_system,
+                        (
+                            files::accept_drop,
+                            files::sync_import_menu,
+                            files::close_import_menu,
+                        ),
+                        crate::play::poll,
                         crate::play::sync_button,
                         crate::play::autoplay,
                         eme_game_runtime::run_behaviours.run_if(crate::play::behaviours_active),
+                        (crate::play::sync_flyout, crate::play::place_flyout),
                     ),
-                    (crate::play::sync_flyout, crate::play::place_flyout),
                     orbit::toggle_mode,
                     orbit::fly_move.before(orbit::apply_camera),
                     orbit::apply_camera,
@@ -204,8 +245,11 @@ impl Plugin for EditorPlugin {
                             core::time::Duration::from_secs(3),
                         )),
                     ),
-                    inspector::sync_inspector,
-                    inspector::typing_guard.before(scene::keyboard_edit),
+                    (
+                        inspector::sync_inspector,
+                        inspector::sync_import_report,
+                        inspector::typing_guard.before(scene::keyboard_edit),
+                    ),
                 ),
             )
             .add_systems(

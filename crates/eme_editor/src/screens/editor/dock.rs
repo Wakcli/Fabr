@@ -12,10 +12,11 @@ use eme::prelude::*;
 use eme::scene::bsn;
 use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
 use eme::ui::widget::Text;
+use eme::ui_widgets::Button;
 use eme::window::{PrimaryWindow, Window};
-use eme_editor_core::{Axis, Edge, Layout, PanelId, PanelKind, PanelTab};
+use eme_editor_core::{Axis, Edge, Layout, PanelId, PanelKind, PanelTab, MAX_RATIO, MIN_RATIO};
 
-use super::chrome::{self, splitter, tab, tab_strip, Part, FONT_SIZE, STATUS_H};
+use super::chrome::{self, tab, tab_strip, Part, FONT_SIZE, STATUS_H};
 use super::{docks, files, icons, inspector, viewport};
 use crate::tokens;
 use crate::LayoutRes;
@@ -44,6 +45,19 @@ const CARET_W: f32 = 2.0;
 /// Host of the dock tree; its children are rebuilt from [`Layout`].
 #[derive(Component, Clone, Copy, Default)]
 pub struct DockRoot;
+
+/// Marks the first child of a split so a dragged divider can resize it live.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SplitFirst(pub usize);
+
+/// A draggable divider between the two children of the split at `index`.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SplitHandle {
+    /// Depth-first index of the owning split.
+    pub index: usize,
+    /// True when the split lays its children out side by side.
+    pub horizontal: bool,
+}
 
 /// Identity of one leaf dock and the drop target for a tab.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -151,7 +165,8 @@ impl TabDrag {
 
 /// Installs the tab drag resource and its frame systems.
 pub fn plugins(app: &mut App) {
-    app.init_resource::<TabDrag>().add_systems(
+    app.init_resource::<TabDrag>()
+        .init_resource::<SplitDrag>().add_systems(
         Update,
         (
             sync_drop_feedback,
@@ -187,7 +202,7 @@ pub fn tree(layout: &Layout) -> Part {
             overflow: Overflow::clip(),
         }
         DockRoot
-        Children [ {content(layout)} ]
+        Children [ {content(layout, &mut 0)} ]
     })
 }
 
@@ -294,40 +309,171 @@ pub fn sync(mut commands: Commands, roots: Query<Entity, With<DockRoot>>, layout
             overflow: Overflow::clip(),
         }
         ChildOf(root)
-        Children [ {content(&layout)} ]
+        Children [ {content(&layout, &mut 0)} ]
     });
 }
 
-fn content(layout: &Layout) -> Part {
+fn content(layout: &Layout, hits: &mut usize) -> Part {
     match layout {
         Layout::Split {
             axis,
             ratio,
             first,
             second,
-        } => split(*axis, *ratio, first, second),
+        } => split(*axis, *ratio, first, second, hits),
         Layout::Panel { id, tabs, active } => dock(*id, tabs, *active),
     }
 }
 
-fn split(axis: Axis, ratio: f32, first: &Layout, second: &Layout) -> Part {
-    let (dir, vertical) = match axis {
-        Axis::Horizontal => (FlexDirection::Row, true),
-        Axis::Vertical => (FlexDirection::Column, false),
+fn handle(axis: Axis, index: usize) -> Part {
+    let horizontal = axis == Axis::Horizontal;
+    let (w, h) = if horizontal {
+        (px(5), Val::Auto)
+    } else {
+        (Val::Auto, px(5))
+    };
+    let (line_w, line_h) = if horizontal {
+        (px(1), percent(100))
+    } else {
+        (percent(100), px(1))
+    };
+    Box::new(bsn! {
+        Node {
+            width: {w},
+            height: {h},
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+        Button
+        SplitHandle { index, horizontal }
+        Children [
+            Node { width: {line_w}, height: {line_h} }
+            ThemeBackgroundColor(tokens::BORDER)
+        ]
+        on(start_split_drag)
+        on(drag_split)
+        on(end_split_drag)
+    })
+}
+
+/// Divider drag in flight.
+#[derive(Resource, Default)]
+pub struct SplitDrag {
+    index: usize,
+    horizontal: bool,
+    origin: Vec2,
+    total: f32,
+    start_px: f32,
+    ratio: f32,
+    active: bool,
+}
+
+fn start_split_drag(
+    start: On<PointerDragStart>,
+    handles: Query<(&SplitHandle, &ChildOf)>,
+    containers: Query<&ComputedNode>,
+    children: Query<(&SplitFirst, &ComputedNode)>,
+    mut drag: ResMut<SplitDrag>,
+) {
+    if start.button != PointerButton::Primary {
+        return;
+    }
+    let Ok((handle, child_of)) = handles.get(start.entity) else {
+        return;
+    };
+    let Ok(container) = containers.get(child_of.parent()) else {
+        return;
+    };
+    let size = container.size();
+    let total = if handle.horizontal { size.x } else { size.y };
+    if total <= 0.0 {
+        return;
+    }
+    let start_px = children
+        .iter()
+        .find(|(first, _)| first.0 == handle.index)
+        .map(|(_, node)| {
+            let size = node.size();
+            if handle.horizontal { size.x } else { size.y }
+        })
+        .unwrap_or(0.0);
+    *drag = SplitDrag {
+        index: handle.index,
+        horizontal: handle.horizontal,
+        origin: start.pointer.position,
+        total,
+        start_px,
+        ratio: start_px / total,
+        active: false,
+    };
+}
+
+fn drag_split(
+    drag_ev: On<PointerDrag>,
+    mut drag: ResMut<SplitDrag>,
+    mut children: Query<(&SplitFirst, &mut Node)>,
+) {
+    if drag_ev.button != PointerButton::Primary || drag.total <= 0.0 {
+        return;
+    }
+    let pointer = drag_ev.pointer.position;
+    if !drag.active {
+        if (pointer - drag.origin).length() < DRAG_SLOP {
+            return;
+        }
+        drag.active = true;
+    }
+    let delta = if drag.horizontal {
+        pointer.x - drag.origin.x
+    } else {
+        pointer.y - drag.origin.y
+    };
+    let ratio = ((drag.start_px + delta) / drag.total).clamp(MIN_RATIO, MAX_RATIO);
+    drag.ratio = ratio;
+    for (first, mut node) in &mut children {
+        if first.0 == drag.index {
+            node.flex_grow = 0.0;
+            node.flex_shrink = 0.0;
+            node.flex_basis = percent(ratio * 100.0);
+        }
+    }
+}
+
+fn end_split_drag(
+    _: On<PointerDragEnd>,
+    mut drag: ResMut<SplitDrag>,
+    mut layout: ResMut<LayoutRes>,
+) {
+    if !drag.active {
+        return;
+    }
+    drag.active = false;
+    if layout.set_ratio_at(drag.index, drag.ratio) {
+        persist(&layout);
+    }
+}
+
+fn split(axis: Axis, ratio: f32, first: &Layout, second: &Layout, hits: &mut usize) -> Part {
+    let index = *hits;
+    *hits += 1;
+    let dir = match axis {
+        Axis::Horizontal => FlexDirection::Row,
+        Axis::Vertical => FlexDirection::Column,
     };
 
     let (a, b) = match (fixed_extent(first), fixed_extent(second)) {
         (Some(h), _) => (
-            sized(content(first), Sizing::Fixed(h)),
-            sized(content(second), Sizing::Grow),
+            sized(content(first, hits), Sizing::Fixed(h), None),
+            sized(content(second, hits), Sizing::Grow, None),
         ),
         (None, Some(h)) => (
-            sized(content(first), Sizing::Grow),
-            sized(content(second), Sizing::Fixed(h)),
+            sized(content(first, hits), Sizing::Grow, None),
+            sized(content(second, hits), Sizing::Fixed(h), None),
         ),
         _ => (
-            sized(content(first), Sizing::Ratio(ratio * 100.0)),
-            sized(content(second), Sizing::Grow),
+            sized(content(first, hits), Sizing::Ratio(ratio * 100.0), Some(index)),
+            sized(content(second, hits), Sizing::Grow, None),
         ),
     };
 
@@ -340,7 +486,7 @@ fn split(axis: Axis, ratio: f32, first: &Layout, second: &Layout) -> Part {
             flex_direction: {dir},
             align_items: AlignItems::Stretch,
         }
-        Children [ {a} -- {splitter(vertical)} -- {b} ]
+        Children [ {a} -- {handle(axis, index)} -- {b} ]
     })
 }
 
@@ -363,12 +509,29 @@ enum Sizing {
     Grow,
 }
 
-fn sized(child: Part, sizing: Sizing) -> Part {
+fn sized(child: Part, sizing: Sizing, first: Option<usize>) -> Part {
     let (grow, flex_basis, shrink): (f32, Val, f32) = match sizing {
         Sizing::Ratio(share) => (0.0, percent(share), 0.0),
         Sizing::Fixed(extent) => (0.0, px(extent), 0.0),
         Sizing::Grow => (1.0, px(0), 1.0),
     };
+    if let Some(index) = first {
+        return Box::new(bsn! {
+            Node {
+                flex_grow: {grow},
+                flex_basis: {flex_basis},
+                flex_shrink: {shrink},
+                min_width: px(0),
+                min_height: px(0),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                overflow: Overflow::clip(),
+            }
+            SplitFirst(index)
+            Children [ {child} ]
+        });
+    }
     Box::new(bsn! {
         Node {
             flex_grow: {grow},

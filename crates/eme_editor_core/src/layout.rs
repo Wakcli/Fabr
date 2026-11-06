@@ -96,6 +96,47 @@ pub enum Layout {
     },
 }
 
+fn set_ratio_inner(layout: &mut Layout, index: usize, ratio: f32, cursor: &mut usize) -> bool {
+    match layout {
+        Layout::Split {
+            ratio: slot,
+            first,
+            second,
+            ..
+        } => {
+            let here = *cursor;
+            *cursor += 1;
+            if here == index {
+                *slot = ratio;
+                return true;
+            }
+            set_ratio_inner(first, index, ratio, cursor)
+                || set_ratio_inner(second, index, ratio, cursor)
+        }
+        Layout::Panel { .. } => false,
+    }
+}
+
+fn ratio_inner(layout: &Layout, index: usize, cursor: &mut usize) -> Option<f32> {
+    match layout {
+        Layout::Split {
+            ratio,
+            first,
+            second,
+            ..
+        } => {
+            let here = *cursor;
+            *cursor += 1;
+            if here == index {
+                return Some(*ratio);
+            }
+            ratio_inner(first, index, cursor).or_else(|| ratio_inner(second, index, cursor))
+        }
+        Layout::Panel { .. } => None,
+    }
+}
+
+
 impl Layout {
     /// The eight-region arrangement used when no layout is saved.
     pub fn default_editor() -> Self {
@@ -149,6 +190,19 @@ impl Layout {
             ),
             panel(8, 16, PanelKind::Custom("Status".into())),
         )
+    }
+
+    /// Sets the ratio of the split at `index` (depth-first, split nodes only), clamped to
+    /// [`MIN_RATIO`]..[`MAX_RATIO`]. Returns false when no split has that index.
+    pub fn set_ratio_at(&mut self, index: usize, ratio: f32) -> bool {
+        let mut cursor = 0;
+        set_ratio_inner(self, index, ratio.clamp(MIN_RATIO, MAX_RATIO), &mut cursor)
+    }
+
+    /// Ratio of the split at `index`, if it exists.
+    pub fn ratio_at(&self, index: usize) -> Option<f32> {
+        let mut cursor = 0;
+        ratio_inner(self, index, &mut cursor)
     }
 
     /// Every tab in tree order.

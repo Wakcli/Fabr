@@ -96,20 +96,6 @@ pub fn vline(height: f32, token: ThemeToken) -> Part {
     })
 }
 
-pub fn splitter(vertical: bool) -> Part {
-    if vertical {
-        Box::new(bsn! {
-            Node { width: px(1) }
-            ThemeBackgroundColor(tokens::BORDER)
-        })
-    } else {
-        Box::new(bsn! {
-            Node { height: px(1) }
-            ThemeBackgroundColor(tokens::BORDER)
-        })
-    }
-}
-
 pub fn rect(width: f32, height: f32, token: ThemeToken, radius: f32) -> Part {
     Box::new(bsn! {
         Node {

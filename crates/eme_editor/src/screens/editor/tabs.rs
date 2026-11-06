@@ -216,6 +216,7 @@ pub(crate) struct TabStripSync {
     rev: u64,
     host: Option<Entity>,
     shown: Option<(Vec<TabEntry>, usize)>,
+    pending: bool,
 }
 
 impl TabStripSync {
@@ -245,7 +246,12 @@ pub(crate) fn rebuild_strip(
         sync.host = Some(host);
         sync.shown = None;
     }
-    if sync.changed(&tabs).is_none() {
+    if sync.pending {
+        sync.pending = false;
+    } else if sync.changed(&tabs).is_some() {
+        sync.pending = true;
+        return;
+    } else {
         return;
     }
     commands.entity(host).despawn_children();

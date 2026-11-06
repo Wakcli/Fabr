@@ -170,7 +170,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<menu::RightPress>()
             .init_resource::<build::BuildState>()
             .init_resource::<files::FileTree>()
-            .add_observer(menu::request_object_menu)
+                        .add_observer(menu::request_object_menu)
             .add_systems(
                 Update,
                 (

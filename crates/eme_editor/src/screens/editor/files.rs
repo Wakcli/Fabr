@@ -64,6 +64,8 @@ pub struct FileTree {
     built: u64,
     host: Option<Entity>,
     ready: bool,
+    /// A rebuild was requested while a row was being clicked; it runs next frame.
+    pending: bool,
 }
 
 impl Default for FileTree {
@@ -86,6 +88,7 @@ impl FileTree {
             built: 0,
             host: None,
             ready: false,
+            pending: false,
         }
     }
 
@@ -414,9 +417,15 @@ pub fn sync_file_rows(
     let Ok(host) = hosts.single() else {
         return;
     };
-    if tree.host == Some(host) && tree.built == tree.rev {
+    if tree.host == Some(host) && tree.built == tree.rev && !tree.pending {
         return;
     }
+    if !tree.pending {
+        tree.host = Some(host);
+        tree.pending = true;
+        return;
+    }
+    tree.pending = false;
     tree.host = Some(host);
     tree.built = tree.rev;
     commands.entity(host).despawn_children();

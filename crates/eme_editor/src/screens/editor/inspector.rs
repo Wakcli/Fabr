@@ -12,7 +12,7 @@ use eme::text::{
     TextLayout,
 };
 use eme::ui_widgets::{Activate, Button, TextInput};
-use eme_game_scene::ObjectTransform;
+use eme_game_scene::{Behaviour, BehaviourKind, ObjectTransform};
 
 use super::chrome::*;
 use super::docks;
@@ -46,11 +46,16 @@ pub struct FieldEdit {
 #[derive(Component, Clone, Default)]
 pub struct ObjectTitle;
 
+/// Marks the behaviour row's value text so it follows the selection.
+#[derive(Component, Clone, Copy, Default)]
+pub struct BehaviourValue;
+
 /// An inspector section whose body can be collapsed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Section {
     #[default]
     Transform,
+    Behaviour,
     Visibility,
     Script,
 }
@@ -59,6 +64,7 @@ pub enum Section {
 #[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct InspectorSections {
     pub transform: bool,
+    pub behaviour: bool,
     pub visibility: bool,
     pub script: bool,
 }
@@ -67,6 +73,7 @@ impl Default for InspectorSections {
     fn default() -> Self {
         Self {
             transform: true,
+            behaviour: true,
             visibility: true,
             script: true,
         }
@@ -78,6 +85,7 @@ impl InspectorSections {
     pub fn is_open(&self, section: Section) -> bool {
         match section {
             Section::Transform => self.transform,
+            Section::Behaviour => self.behaviour,
             Section::Visibility => self.visibility,
             Section::Script => self.script,
         }
@@ -87,6 +95,7 @@ impl InspectorSections {
     pub fn set_open(&mut self, section: Section, open: bool) {
         match section {
             Section::Transform => self.transform = open,
+            Section::Behaviour => self.behaviour = open,
             Section::Visibility => self.visibility = open,
             Section::Script => self.script = open,
         }
@@ -164,6 +173,8 @@ fn inspector_dock() -> Part {
             {object_row()}
             --
             {section(Section::Transform, "Transform", transform_rows())}
+            --
+            {section(Section::Behaviour, "Behaviour", vec![behaviour_row()])}
             --
             {section(Section::Visibility, "Visibility", vec![visibility_row()])}
             --
@@ -625,6 +636,69 @@ fn axis_field(
     })
 }
 
+fn behaviour_row() -> Part {
+    Box::new(bsn! {
+        Node {
+            height: px(PROPERTY_ROW_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(10)),
+            column_gap: px(6),
+        }
+        Button
+        Children [
+            {label_cell("Play")}
+            --
+            {field(vec![behaviour_text()], FIELD_H)}
+        ]
+        on(cycle_behaviour_row)
+    })
+}
+
+fn behaviour_text() -> Part {
+    let value = BehaviourKind::None.label().to_string();
+    Box::new(bsn! {
+        Text(value)
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        BehaviourValue
+    })
+}
+
+/// Advances the primary object through None → Spin → Bob, with one checkpoint.
+fn cycle_behaviour(state: &mut SceneState, undo: &mut Undo) -> bool {
+    let Some(id) = state.primary() else {
+        return false;
+    };
+    let Some(current) = state.doc.get(id).map(|obj| obj.behaviour) else {
+        return false;
+    };
+    let next = Behaviour {
+        kind: current.kind.next(),
+        ..current
+    };
+    undo.checkpoint(state, "Behaviour");
+    state.doc.set_behaviour(id, next);
+    state.touch();
+    true
+}
+
+fn cycle_behaviour_row(_: On<Activate>, mut state: ResMut<SceneState>, mut undo: ResMut<Undo>) {
+    cycle_behaviour(&mut state, &mut undo);
+}
+
+fn behaviour_label(spec: Behaviour) -> String {
+    match spec.kind {
+        BehaviourKind::None => BehaviourKind::None.label().to_string(),
+        kind => format!("{} · {:.1}", kind.label(), spec.speed),
+    }
+}
+
 fn visibility_row() -> Part {
     Box::new(bsn! {
         Node {
@@ -715,7 +789,8 @@ pub fn sync_inspector(
     sections: Option<ResMut<InspectorSections>>,
     mut focus: ResMut<InputFocus>,
     mut values: Query<(Entity, &AxisValue, &mut EditableText, Option<&FieldEdit>)>,
-    mut titles: Query<&mut Text, With<ObjectTitle>>,
+    mut titles: Query<&mut Text, (With<ObjectTitle>, Without<BehaviourValue>)>,
+    mut behaviours: Query<&mut Text, (With<BehaviourValue>, Without<ObjectTitle>)>,
     mut slots: Query<
         (&mut Node, Option<&SectionBody>, Option<&SectionCaret>),
         Or<(With<SectionBody>, With<SectionCaret>)>,
@@ -777,6 +852,16 @@ pub fn sync_inspector(
             text.0 = title.clone();
         }
     }
+
+    let behaviour = selected.map_or_else(
+        || BehaviourKind::None.label().to_string(),
+        |obj| behaviour_label(obj.behaviour),
+    );
+    for mut text in &mut behaviours {
+        if text.0 != behaviour {
+            text.0 = behaviour.clone();
+        }
+    }
 }
 
 /// Keeps scene hotkeys off while a transform field is typing.
@@ -834,7 +919,12 @@ mod tests {
     #[test]
     fn toggling_a_section_flips_only_that_section() {
         let mut sections = InspectorSections::default();
-        for section in [Section::Transform, Section::Visibility, Section::Script] {
+        for section in [
+            Section::Transform,
+            Section::Behaviour,
+            Section::Visibility,
+            Section::Script,
+        ] {
             assert!(sections.is_open(section));
         }
 
@@ -849,6 +939,51 @@ mod tests {
         sections.set_open(Section::Script, false);
         assert!(!sections.is_open(Section::Script));
         assert!(sections.is_open(Section::Transform));
+    }
+
+    #[test]
+    fn cycling_behaviour_writes_the_doc_with_one_checkpoint() {
+        let (mut state, id, mut undo) = one_cube();
+        assert_eq!(
+            state.doc.get(id).unwrap().behaviour.kind,
+            BehaviourKind::None
+        );
+
+        assert!(cycle_behaviour(&mut state, &mut undo));
+        assert_eq!(
+            state.doc.get(id).unwrap().behaviour.kind,
+            BehaviourKind::Spin
+        );
+        assert!(cycle_behaviour(&mut state, &mut undo));
+        assert_eq!(
+            state.doc.get(id).unwrap().behaviour.kind,
+            BehaviourKind::Bob
+        );
+        assert_eq!(undo.names().count(), 2);
+
+        undo.undo(&mut state);
+        assert_eq!(
+            state.doc.get(id).unwrap().behaviour.kind,
+            BehaviourKind::Spin
+        );
+    }
+
+    #[test]
+    fn behaviour_label_shows_the_speed_only_when_running() {
+        assert_eq!(behaviour_label(Behaviour::default()), "None");
+        let spinning = Behaviour {
+            kind: BehaviourKind::Spin,
+            speed: 2.5,
+            amount: 0.25,
+        };
+        assert_eq!(behaviour_label(spinning), "Spin · 2.5");
+        assert_eq!(
+            behaviour_label(Behaviour {
+                kind: BehaviourKind::Bob,
+                ..spinning
+            }),
+            "Bob · 2.5"
+        );
     }
 
     #[test]

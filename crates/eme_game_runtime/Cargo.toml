@@ -1,0 +1,23 @@
+[package]
+name = "eme_game_runtime"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Runtime behaviour systems shared by the editor's instance view and the player"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["eme", "runtime", "behaviour"]
+rust-version = "1.96.0"
+
+[dependencies]
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_time = { path = "../eme_time", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

@@ -8,6 +8,9 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Version written into every document; older documents are rejected.
+///
+/// [`SceneObject::behaviour`] was added without a version bump: the field is
+/// defaulted, so a document written before it existed still decodes to `None`.
 pub const FORMAT_VERSION: u32 = 1;
 
 /// What a scene object is, for spawning, icon choice, and inspector behavior.
@@ -108,6 +111,63 @@ impl ObjectTransform {
     }
 }
 
+/// What a behaviour does to an object every frame.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Serialize, Deserialize)]
+pub enum BehaviourKind {
+    /// Nothing moves.
+    #[default]
+    None,
+    /// Rotates around the world Y axis.
+    Spin,
+    /// Moves up and down along the world Y axis.
+    Bob,
+}
+
+impl BehaviourKind {
+    /// Every kind the inspector cycles through, in order.
+    pub const ALL: [BehaviourKind; 3] =
+        [BehaviourKind::None, BehaviourKind::Spin, BehaviourKind::Bob];
+
+    /// The next kind in the inspector cycle, wrapping back to [`Self::None`].
+    pub fn next(self) -> Self {
+        match self {
+            BehaviourKind::None => BehaviourKind::Spin,
+            BehaviourKind::Spin => BehaviourKind::Bob,
+            BehaviourKind::Bob => BehaviourKind::None,
+        }
+    }
+
+    /// Human label shown in the inspector and the behaviour row.
+    pub fn label(self) -> &'static str {
+        match self {
+            BehaviourKind::None => "None",
+            BehaviourKind::Spin => "Spin",
+            BehaviourKind::Bob => "Bob",
+        }
+    }
+}
+
+/// A running behaviour authored on an object.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Behaviour {
+    /// What the object does every frame.
+    pub kind: BehaviourKind,
+    /// Radians per second for spin, cycles per second for bob.
+    pub speed: f32,
+    /// Vertical travel in world units for bob.
+    pub amount: f32,
+}
+
+impl Default for Behaviour {
+    fn default() -> Self {
+        Self {
+            kind: BehaviourKind::None,
+            speed: 1.0,
+            amount: 0.25,
+        }
+    }
+}
+
 /// One authored object. `id` is stable for the life of the document.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct SceneObject {
@@ -127,6 +187,10 @@ pub struct SceneObject {
     pub scale: [f32; 3],
     /// Per-object base color as linear RGBA; `None` means the kind's default.
     pub color: Option<[f32; 4]>,
+    /// Per-frame animation applied at runtime; the documented transform stays the
+    /// authored base.
+    #[serde(default)]
+    pub behaviour: Behaviour,
 }
 
 impl SceneObject {
@@ -215,6 +279,7 @@ impl SceneDoc {
             rotation: transform.rotation,
             scale: transform.scale,
             color: None,
+            behaviour: Behaviour::default(),
         });
         id
     }
@@ -289,6 +354,17 @@ impl SceneDoc {
         }
     }
 
+    /// Replaces an object's runtime behaviour; false when the id is unknown.
+    pub fn set_behaviour(&mut self, id: u64, behaviour: Behaviour) -> bool {
+        match self.get_mut(id) {
+            Some(obj) => {
+                obj.behaviour = behaviour;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Reparents an object, refusing self-parents, unknown parents and cycles.
     pub fn set_parent(&mut self, id: u64, parent: Option<u64>) -> bool {
         if parent == Some(id) {
@@ -310,7 +386,9 @@ impl SceneDoc {
 
     /// Direct children of `id`, in document order.
     pub fn children(&self, id: u64) -> impl Iterator<Item = &SceneObject> {
-        self.objects.iter().filter(move |obj| obj.parent == Some(id))
+        self.objects
+            .iter()
+            .filter(move |obj| obj.parent == Some(id))
     }
 
     /// Whether `ancestor` sits anywhere above `of` in the tree.
@@ -477,6 +555,55 @@ mod tests {
     }
 
     #[test]
+    fn behaviour_round_trips_through_ron() {
+        let mut doc = authored();
+        let behaviour = Behaviour {
+            kind: BehaviourKind::Spin,
+            speed: 2.5,
+            amount: 0.5,
+        };
+        assert!(doc.set_behaviour(1, behaviour));
+        let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
+        assert_eq!(back, doc);
+        assert_eq!(back.get(1).unwrap().behaviour, behaviour);
+        assert!(!doc.set_behaviour(99, behaviour));
+    }
+
+    #[test]
+    fn documents_without_behaviour_load_as_none() {
+        let old = r#"(
+    format_version: 1,
+    objects: [(
+        id: 1,
+        name: "Cube 1",
+        kind: Cube,
+        parent: None,
+        translation: (0.0, 0.5, -1.0),
+        rotation: (0.0, 0.0, 0.0, 1.0),
+        scale: (1.0, 1.0, 1.0),
+        color: None,
+    )],
+)"#;
+        let back = SceneDoc::from_ron(old).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back.get(1).unwrap().behaviour, Behaviour::default());
+        assert_eq!(back.get(1).unwrap().behaviour.kind, BehaviourKind::None);
+    }
+
+    #[test]
+    fn behaviour_kinds_cycle_and_all_are_listed() {
+        let mut kind = BehaviourKind::None;
+        for want in [BehaviourKind::Spin, BehaviourKind::Bob, BehaviourKind::None] {
+            kind = kind.next();
+            assert_eq!(kind, want);
+        }
+        let mut labels: Vec<&str> = BehaviourKind::ALL.iter().map(|kind| kind.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), BehaviourKind::ALL.len());
+    }
+
+    #[test]
     fn duplicate_ids_are_unique_and_offset() {
         let mut doc = authored();
         let new_id = doc.duplicate(1).unwrap();
@@ -567,9 +694,18 @@ mod tests {
 
         assert!(doc.set_parent(sphere, Some(cube)));
         assert!(doc.set_parent(light, Some(sphere)));
-        assert!(!doc.set_parent(cube, Some(light)), "grandparent cycle slipped through");
-        assert!(!doc.set_parent(cube, Some(cube)), "self-parent slipped through");
-        assert!(!doc.set_parent(cube, Some(999)), "unknown parent slipped through");
+        assert!(
+            !doc.set_parent(cube, Some(light)),
+            "grandparent cycle slipped through"
+        );
+        assert!(
+            !doc.set_parent(cube, Some(cube)),
+            "self-parent slipped through"
+        );
+        assert!(
+            !doc.set_parent(cube, Some(999)),
+            "unknown parent slipped through"
+        );
         assert_eq!(doc.get(cube).unwrap().parent, None);
     }
 

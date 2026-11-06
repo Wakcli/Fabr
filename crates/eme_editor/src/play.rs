@@ -216,6 +216,30 @@ pub fn poll(mut play: ResMut<PlayState>) {
     }
 }
 
+/// Whether the Instance view is live and behaviours own entity transforms.
+pub fn behaviours_active(play: Res<PlayState>, view: Res<ViewMode>) -> bool {
+    play.running() && *view == ViewMode::Game
+}
+
+/// Starts embedded play once the authoring environment asks for it, so a headless
+/// capture can film a running session without clicking the play control.
+pub fn autoplay(
+    mut play: ResMut<PlayState>,
+    mut state: ResMut<SceneState>,
+    mut view: ResMut<ViewMode>,
+    mut tabs: ResMut<Tabs>,
+    mut started: Local<bool>,
+) {
+    if *started || play.running() || state.doc.is_empty() {
+        return;
+    }
+    if !std::env::var("EME_EDITOR_PLAY").is_ok_and(|value| value == "1") {
+        return;
+    }
+    *started = true;
+    play.start_embedded(&mut state, &mut view, &mut tabs);
+}
+
 /// Shows the stop glyph while a game runs, the play glyph otherwise.
 pub fn sync_button(play: Res<PlayState>, mut glyphs: Query<(&PlayGlyph, &mut Node)>) {
     for (glyph, mut node) in &mut glyphs {

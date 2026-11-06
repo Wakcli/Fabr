@@ -12,9 +12,11 @@ use eme::render::render_resource::Face;
 use eme::ui::widget::ViewportNode;
 use eme::window::{PrimaryWindow, Window};
 use eme_editor_core::Selection;
-use eme_game_scene::{ObjectKind, ObjectTransform, SceneDoc, SceneObject};
+use eme_game_runtime::SceneBehaviour;
+use eme_game_scene::{Behaviour, ObjectKind, ObjectTransform, SceneDoc, SceneObject};
 
 use crate::orbit::{FlyMove, ViewMode};
+use crate::play::PlayState;
 use crate::tokens;
 use crate::undo::Undo;
 
@@ -465,9 +467,12 @@ pub fn reconcile_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
     theme: Res<UiTheme>,
+    play: Res<PlayState>,
+    view: Res<ViewMode>,
     links: Query<&SceneLink>,
 ) {
     let state = state.into_inner();
+    let playing = play.running() && *view == ViewMode::Game;
     let ids: Vec<u64> = state.doc.objects.iter().map(|obj| obj.id).collect();
 
     let stale: Vec<(u64, Entity)> = state
@@ -489,12 +494,19 @@ pub fn reconcile_scene(
         let name = obj.name.clone();
         let transform = obj.transform();
         let color = obj.color;
+        let spec = obj.behaviour;
+        let trs = to_transform(&transform);
+        let behaviour = SceneBehaviour { spec, base: trs };
 
         match state.entities.get(&id).copied() {
             Some(entity) if links.get(entity).is_ok_and(|link| link.kind == kind) => {
-                commands
-                    .entity(entity)
-                    .insert((to_transform(&transform), Name::new(name)));
+                let mut entity = commands.entity(entity);
+                entity.insert((Name::new(name), behaviour));
+                // the behaviour system owns the transform during an embedded
+                // session, so the document must not overwrite it here
+                if !playing {
+                    entity.insert(trs);
+                }
             }
             Some(entity) => {
                 commands.entity(entity).insert(StaleScene);
@@ -511,6 +523,7 @@ pub fn reconcile_scene(
                     name,
                     &transform,
                     color,
+                    spec,
                 );
                 state.entities.insert(id, entity);
             }
@@ -527,6 +540,7 @@ pub fn reconcile_scene(
                     name,
                     &transform,
                     color,
+                    spec,
                 );
                 state.entities.insert(id, entity);
             }
@@ -618,8 +632,10 @@ fn spawn_entity(
     name: String,
     transform: &ObjectTransform,
     color: Option<[f32; 4]>,
+    spec: Behaviour,
 ) -> Entity {
     let trs = to_transform(transform);
+    let behaviour = SceneBehaviour { spec, base: trs };
     let entity = match kind {
         ObjectKind::Empty => commands.spawn(trs).id(),
         ObjectKind::PointLight => commands
@@ -688,7 +704,7 @@ fn spawn_entity(
 
     commands
         .entity(entity)
-        .insert((Name::new(name), SceneLink { id, kind }))
+        .insert((Name::new(name), SceneLink { id, kind }, behaviour))
         .observe(click_object)
         .observe(drag_start)
         .observe(drag_object);
@@ -1044,6 +1060,13 @@ pub fn spawn_demo(state: &mut SceneState) {
         return;
     }
     let first = state.spawn(ObjectKind::Cube);
+    state.doc.set_behaviour(
+        first,
+        Behaviour {
+            kind: eme_game_scene::BehaviourKind::Spin,
+            ..default()
+        },
+    );
     state.spawn(ObjectKind::Cube);
     state.spawn(ObjectKind::Sphere);
     state.spawn(ObjectKind::PointLight);
@@ -1084,6 +1107,44 @@ mod tests {
         let (ax, _) = cell(0);
         let (bx, _) = cell(1);
         assert_eq!(bx - ax, CELL);
+    }
+
+    #[test]
+    fn behaviour_system_does_not_touch_the_document() {
+        use core::time::Duration;
+
+        use eme::time::{TimePlugin, TimeUpdateStrategy};
+        use eme_game_runtime::run_behaviours;
+
+        let spec = Behaviour {
+            kind: eme_game_scene::BehaviourKind::Spin,
+            ..default()
+        };
+        let mut state = SceneState::default();
+        let id = state.spawn(ObjectKind::Cube);
+        assert!(state.doc.set_behaviour(id, spec));
+        let want = state.doc.clone();
+        let base = to_transform(&want.get(id).unwrap().transform());
+
+        let mut app = App::new();
+        app.add_plugins(TimePlugin)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+                0.5,
+            )))
+            .insert_resource(state)
+            .add_systems(Update, run_behaviours);
+        let entity = app
+            .world_mut()
+            .spawn((SceneBehaviour { spec, base }, base))
+            .id();
+
+        app.update();
+        let first = *app.world().entity(entity).get::<Transform>().unwrap();
+        app.update();
+        let second = *app.world().entity(entity).get::<Transform>().unwrap();
+
+        assert_ne!(first.rotation, second.rotation);
+        assert_eq!(app.world().resource::<SceneState>().doc, want);
     }
 
     #[test]

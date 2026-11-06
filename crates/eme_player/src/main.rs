@@ -71,7 +71,14 @@ fn main() {
         }))
         .insert_resource(loaded)
         .add_systems(Startup, (scene::announce, scene::spawn_scene))
-        .add_systems(Update, (exit_on_esc, capture_on_frame))
+        .add_systems(
+            Update,
+            (
+                exit_on_esc,
+                capture_on_frame,
+                eme_game_runtime::run_behaviours,
+            ),
+        )
         .run();
 }
 

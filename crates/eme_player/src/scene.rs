@@ -2,7 +2,10 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 
 use eme::prelude::*;
-use eme_game_scene::{ObjectKind, ObjectTransform, SceneDoc};
+use eme_game_runtime::SceneBehaviour;
+use eme_game_scene::{
+    Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
+};
 
 const SCENE_IN_CWD: &str = "scenes/main.ember";
 const SCENE_NEXT_TO_EXE: &str = "scene.ember";
@@ -124,6 +127,13 @@ fn to_transform(translation: [f32; 3], rotation: [f32; 4], scale: [f32; 3]) -> T
         .with_scale(Vec3::from_array(scale))
 }
 
+fn behaviour_for(obj: &SceneObject) -> SceneBehaviour {
+    SceneBehaviour {
+        spec: obj.behaviour,
+        base: to_transform(obj.translation, obj.rotation, obj.scale),
+    }
+}
+
 pub fn announce(scene: Res<LoadedScene>) {
     if scene.doc.objects.is_empty() {
         warn!(
@@ -153,10 +163,11 @@ pub fn spawn_scene(
 
     for obj in &scene.doc.objects {
         let trs = to_transform(obj.translation, obj.rotation, obj.scale);
+        let behaviour = behaviour_for(obj);
         let name = Name::new(obj.name.clone());
         match body(obj.kind) {
             Body::Empty => {
-                commands.spawn((trs, name));
+                commands.spawn((trs, behaviour, name));
             }
             Body::Camera => {
                 view.get_or_insert(trs);
@@ -169,6 +180,7 @@ pub fn spawn_scene(
                         ..default()
                     },
                     trs,
+                    behaviour,
                     name,
                 ));
             }
@@ -180,6 +192,7 @@ pub fn spawn_scene(
                         ..default()
                     },
                     trs,
+                    behaviour,
                     name,
                 ));
                 has_sun = true;
@@ -199,6 +212,7 @@ pub fn spawn_scene(
                     Mesh3d(mesh),
                     MeshMaterial3d(materials.add(material)),
                     trs,
+                    behaviour,
                     name,
                 ));
             }
@@ -229,10 +243,17 @@ pub fn spawn_scene(
 
 pub fn demo_doc() -> SceneDoc {
     let mut doc = SceneDoc::new();
-    doc.add(
+    let cube = doc.add(
         ObjectKind::Cube,
         "Cube",
         ObjectTransform::from_translation([-1.5, 0.5, 0.0]),
+    );
+    doc.set_behaviour(
+        cube,
+        Behaviour {
+            kind: BehaviourKind::Spin,
+            ..default()
+        },
     );
     doc.add(
         ObjectKind::Sphere,
@@ -274,6 +295,10 @@ fn look_at(eye: Vec3) -> Quat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::time::Duration;
+
+    use eme::time::{TimePlugin, TimeUpdateStrategy};
+    use eme_game_runtime::run_behaviours;
     use eme_game_scene::FORMAT_VERSION;
 
     #[test]
@@ -315,6 +340,44 @@ mod tests {
                 kind.label()
             );
         }
+        assert!(
+            back.objects
+                .iter()
+                .any(|obj| obj.behaviour.kind == BehaviourKind::Spin),
+            "the demo scene should show motion"
+        );
+    }
+
+    #[test]
+    fn a_spawned_spin_advances_between_updates() {
+        let doc = demo_doc();
+        let obj = doc
+            .iter()
+            .find(|obj| obj.behaviour.kind == BehaviourKind::Spin)
+            .expect("demo scene has a spinning object");
+
+        let mut app = App::new();
+        app.add_plugins(TimePlugin)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
+                0.5,
+            )))
+            .add_systems(Update, run_behaviours);
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                behaviour_for(obj),
+                to_transform(obj.translation, obj.rotation, obj.scale),
+            ))
+            .id();
+
+        app.update();
+        let first = *app.world().entity(entity).get::<Transform>().unwrap();
+        app.update();
+        let second = *app.world().entity(entity).get::<Transform>().unwrap();
+
+        assert_ne!(first.rotation, second.rotation);
+        assert_ne!(first, second);
     }
 
     #[test]

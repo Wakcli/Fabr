@@ -170,6 +170,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<menu::RightPress>()
             .init_resource::<build::BuildState>()
             .init_resource::<files::FileTree>()
+            .init_resource::<crate::console::ConsoleLog>()
                         .add_observer(menu::request_object_menu)
             .add_systems(
                 Update,
@@ -185,7 +186,8 @@ impl Plugin for EditorPlugin {
                     scene::draw_camera_frusta,
                     crate::selection_outline::sync_outlines,
                     (
-                        crate::play::poll,
+                        crate::console::sync,
+                    crate::play::poll,
                         crate::play::sync_button,
                         crate::play::autoplay,
                         eme_game_runtime::run_behaviours.run_if(crate::play::behaviours_active),

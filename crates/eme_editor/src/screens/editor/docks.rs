@@ -669,6 +669,17 @@ pub fn console() -> Part {
     ] {
         lines.push(text_mono(line, FONT_SIZE_OUTPUT, tokens::TEXT));
     }
+    lines.push(Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            min_height: px(0),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: px(2),
+        }
+        crate::console::ConsoleRows
+    }) as Part);
 
     Box::new(bsn! {
         Node {

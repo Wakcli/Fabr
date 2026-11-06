@@ -161,17 +161,21 @@ impl Layout {
             panel(1, 9, PanelKind::Hierarchy),
             panel(2, 10, PanelKind::Custom("Outline".into())),
         );
-        let center = split(
-            Axis::Vertical,
-            0.70,
-            panel(3, 11, PanelKind::Scene),
-            split(
-                Axis::Horizontal,
-                0.5,
-                panel(4, 12, PanelKind::Project),
-                panel(5, 13, PanelKind::Console),
-            ),
-        );
+        let bottom = Layout::Panel {
+            id: PanelId(4),
+            tabs: vec![
+                PanelTab {
+                    id: PanelId(12),
+                    kind: PanelKind::Project,
+                },
+                PanelTab {
+                    id: PanelId(13),
+                    kind: PanelKind::Console,
+                },
+            ],
+            active: 0,
+        };
+        let center = split(Axis::Vertical, 0.70, panel(3, 11, PanelKind::Scene), bottom);
         let right = split(
             Axis::Vertical,
             0.62,
@@ -596,6 +600,31 @@ mod tests {
             .iter()
             .map(|tab| (tab.id.0, tab.kind.clone()))
             .collect()
+    }
+
+    #[test]
+    fn ratios_can_be_read_and_set_by_split_index() {
+        let mut layout = Layout::default_editor();
+        let before = layout.ratio_at(0).unwrap();
+        assert!(layout.set_ratio_at(0, before - 0.2));
+        assert!((layout.ratio_at(0).unwrap() - (before - 0.2)).abs() < 1e-6);
+
+        assert!(layout.set_ratio_at(1, 0.5));
+        assert!((layout.ratio_at(1).unwrap() - 0.5).abs() < 1e-6);
+        assert!(
+            !layout.set_ratio_at(99, 0.5),
+            "an unknown split index must be refused"
+        );
+        assert_eq!(layout.ratio_at(99), None);
+    }
+
+    #[test]
+    fn ratios_clamp_to_the_allowed_range() {
+        let mut layout = Layout::default_editor();
+        layout.set_ratio_at(1, -5.0);
+        assert!((layout.ratio_at(1).unwrap() - MIN_RATIO).abs() < 1e-6);
+        layout.set_ratio_at(1, 5.0);
+        assert!((layout.ratio_at(1).unwrap() - MAX_RATIO).abs() < 1e-6);
     }
 
     #[test]

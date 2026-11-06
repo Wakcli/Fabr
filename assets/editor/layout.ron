@@ -44,29 +44,19 @@ Split(
                     ],
                     active: 0,
                 ),
-                second: Split(
-                    axis: Horizontal,
-                    ratio: 0.5,
-                    first: Panel(
-                        id: PanelId(4),
-                        tabs: [
-                            PanelTab(
-                                id: PanelId(12),
-                                kind: Project,
-                            ),
-                        ],
-                        active: 0,
-                    ),
-                    second: Panel(
-                        id: PanelId(5),
-                        tabs: [
-                            PanelTab(
-                                id: PanelId(13),
-                                kind: Console,
-                            ),
-                        ],
-                        active: 0,
-                    ),
+                second: Panel(
+                    id: PanelId(4),
+                    tabs: [
+                        PanelTab(
+                            id: PanelId(12),
+                            kind: Project,
+                        ),
+                        PanelTab(
+                            id: PanelId(13),
+                            kind: Console,
+                        ),
+                    ],
+                    active: 0,
                 ),
             ),
             second: Split(

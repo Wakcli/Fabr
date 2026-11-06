@@ -56,7 +56,7 @@ fn leaf(dock: u32, tab: u32, kind: PanelKind) -> Layout {
 #[test]
 fn every_panel_gets_one_dock() {
     let layout = Layout::default_editor();
-    let want = layout.panels().len();
+    let want = leaf_count(&layout);
     let mut app = test_app();
     spawn_tree(&mut app, layout);
 
@@ -99,6 +99,13 @@ fn titles_cover_every_panel_kind() {
     assert_eq!(title(&PanelKind::Custom("Stats".into())), "Stats");
 }
 
+fn leaf_count(layout: &Layout) -> usize {
+    match layout {
+        Layout::Panel { .. } => 1,
+        Layout::Split { first, second, .. } => leaf_count(first) + leaf_count(second),
+    }
+}
+
 #[derive(Resource, Default)]
 struct Tally(usize);
 
@@ -117,7 +124,7 @@ fn a_layout_change_rebuilds_the_tree_once() {
     app.update();
     app.update();
     let first = app.world().resource::<Tally>().0;
-    assert_eq!(first, Layout::default_editor().panels().len());
+    assert_eq!(first, leaf_count(&Layout::default_editor()));
 
     app.update();
     assert_eq!(

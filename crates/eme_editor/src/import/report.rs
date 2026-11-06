@@ -118,6 +118,17 @@ impl Bounds {
     }
 }
 
+/// One node of the scene graph, in document order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeInfo {
+    /// glTF node index; stable inside the file and the key Phase 5 will use.
+    pub index: usize,
+    /// Node name, or `GltfNode{index}` when the file has none.
+    pub name: String,
+    /// Nesting depth, roots at 0.
+    pub depth: usize,
+}
+
 /// One texture that came with the file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextureInfo {
@@ -172,6 +183,8 @@ pub struct ImportReport {
     pub textures: Vec<TextureInfo>,
     /// Animation clips.
     pub animations: Vec<AnimationInfo>,
+    /// Scene graph nodes, depth first.
+    pub nodes: Vec<NodeInfo>,
     /// Per-stage timings.
     pub timings: StageTimings,
     /// Problems found, worst last.
@@ -259,6 +272,7 @@ mod tests {
             }),
             textures: Vec::new(),
             animations: Vec::new(),
+            nodes: Vec::new(),
             timings: StageTimings {
                 total_ms: 12.0,
                 ..StageTimings::default()

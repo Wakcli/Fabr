@@ -54,6 +54,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {dock::drag_ghost()}
             --
+            {crate::import::panel()}
+            --
             {files::import_menu()}
             --
             {crate::play::flyout()}
@@ -205,6 +207,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::console::ConsoleLog>()
             .init_resource::<crate::import::ImportService>()
             .init_resource::<files::ImportMenu>()
+            .init_resource::<crate::import::OptionsPanel>()
                         .add_observer(menu::request_object_menu)
             .add_systems(
                 Update,
@@ -223,6 +226,7 @@ impl Plugin for EditorPlugin {
                         crate::console::sync,
                         crate::import::poll_system,
                         crate::import::status_system,
+                        crate::import::sync_panel,
                         (
                             files::accept_drop,
                             files::sync_import_menu,

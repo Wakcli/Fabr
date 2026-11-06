@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use eme::prelude::*;
 
 use crate::console::ConsoleLog;
-use crate::import::{ImportError, ImportReport, ImportSettings};
+use crate::import::{ImportError, ImportReport, ImportSettings, Sidecar};
 
 /// What one worker produced.
 type JobResult = Result<(PathBuf, ImportReport), (PathBuf, ImportError)>;
@@ -30,20 +30,9 @@ pub struct ImportRequest {
     pub copy: bool,
 }
 
-/// An import that was asked to open the options panel, kept for phase 3.
-#[derive(Clone, Debug)]
-#[expect(dead_code, reason = "phase 3 options panel reads these fields")]
-pub struct PendingImport {
-    /// File waiting for options.
-    pub source: PathBuf,
-    /// Folder it will land in.
-    pub folder: PathBuf,
-    /// Options that will be shown.
-    pub settings: ImportSettings,
-}
-
 struct Job {
     name: String,
+    settings: ImportSettings,
     rx: Mutex<Receiver<JobResult>>,
 }
 
@@ -57,8 +46,6 @@ pub struct ImportService {
     pub reports: HashMap<PathBuf, ImportReport>,
     /// Settings used by the next plain import.
     pub settings: ImportSettings,
-    /// Import waiting for the phase 3 options panel.
-    pub pending: Option<PendingImport>,
 }
 
 impl ImportService {
@@ -108,6 +95,8 @@ impl ImportService {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| dest.display().to_string());
+        // a stored sidecar is the authoring state; a reimport must honour it
+        let settings = Sidecar::load(&dest).map_or(settings, |sidecar| sidecar.settings);
         self.status = Some(format!("importing {name}…"));
 
         let (tx, rx) = channel();
@@ -120,9 +109,10 @@ impl ImportService {
             let _ = tx.send(result);
         });
 
-        self.settings = settings;
+        self.settings = settings.clone();
         self.jobs.push(Job {
             name,
+            settings,
             rx: Mutex::new(rx),
         });
         true
@@ -161,7 +151,18 @@ impl ImportService {
                                 log.push(format!("  {}: {}{target}", warning.severity, warning.message));
                             }
                         }
-                        self.reports.insert(path, report);
+                        self.reports.insert(path.clone(), report);
+                        let sidecar = Sidecar {
+                            version: crate::import::sidecar::SIDECAR_VERSION,
+                            guid: Sidecar::load_or_new(&path).guid,
+                            settings: self
+                                .jobs
+                                .get(index)
+                                .map_or_else(ImportSettings::default, |job| job.settings.clone()),
+                        };
+                        if let Err(err) = sidecar.save(&path) {
+                            log.push(format!("could not save sidecar: {err}"));
+                        }
                     }
                     Err((_, err)) => log.push(format!("import failed: {err}")),
                 }

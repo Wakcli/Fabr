@@ -15,7 +15,7 @@ use super::chrome::*;
 use super::icons;
 use crate::build;
 use crate::console::ConsoleLog;
-use crate::import::{ImportRequest, ImportService, PendingImport};
+use crate::import::{ImportRequest, ImportService, OptionsPanel};
 use crate::persist;
 use crate::play::PlayState;
 use crate::scene::SceneState;
@@ -883,6 +883,7 @@ pub fn run_import(
     mut menu: ResMut<ImportMenu>,
     tree: Res<FileTree>,
     mut service: ResMut<ImportService>,
+    mut panel: ResMut<OptionsPanel>,
     mut log: ResMut<ConsoleLog>,
 ) {
     menu.at = None;
@@ -901,23 +902,9 @@ pub fn run_import(
         .map(PathBuf::from)
         .unwrap_or_else(|| service.settings.output.folder.clone());
 
-    service.pending = Some(PendingImport {
-        source: source.clone(),
-        folder: folder.clone(),
-        settings: service.settings.clone(),
-    });
-    log.push("import options arrive in phase 3; importing with defaults");
-    let settings = service.settings.clone();
-    service.start(
-        ImportRequest {
-            source,
-            folder,
-            settings,
-            copy: false,
-        },
-        &tree.root,
-        &mut log,
-    );
+    panel.open_for(&source, &folder);
+    log.push(format!("opened import options for {rel}"));
+    let _ = (&mut service, &mut log);
 }
 
 pub fn is_model(path: &Path) -> bool {
@@ -933,6 +920,7 @@ pub fn accept_drop(
     keys: Res<ButtonInput<KeyCode>>,
     tree: Res<FileTree>,
     mut service: ResMut<ImportService>,
+    mut panel: ResMut<OptionsPanel>,
     mut log: ResMut<ConsoleLog>,
 ) {
     let mut dropped = Vec::new();
@@ -972,12 +960,12 @@ pub fn accept_drop(
             continue;
         }
         if shift {
-            service.pending = Some(PendingImport {
-                source: source.clone(),
-                folder: folder.clone(),
-                settings: service.settings.clone(),
-            });
-            log.push("import options arrive in phase 3; importing with defaults");
+            panel.open_for(&source, &folder);
+            log.push(format!(
+                "opened import options for {}",
+                source.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            continue;
         }
         let settings = service.settings.clone();
         service.start(

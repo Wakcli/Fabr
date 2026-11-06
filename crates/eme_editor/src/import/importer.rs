@@ -244,6 +244,15 @@ pub fn import(path: &Path, settings: &ImportSettings) -> Result<ImportReport, Im
         })
         .collect();
 
+    let mut nodes = Vec::new();
+    let roots: Vec<gltf::Node<'_>> = match doc.default_scene() {
+        Some(scene) => scene.nodes().collect(),
+        None => doc.nodes().collect(),
+    };
+    for root in roots {
+        collect_nodes(&root, 0, &mut nodes);
+    }
+
     warnings.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.target.cmp(&b.target)));
     let analyse_ms = analyse_start.elapsed().as_secs_f32() * 1000.0;
 
@@ -260,6 +269,7 @@ pub fn import(path: &Path, settings: &ImportSettings) -> Result<ImportReport, Im
         bounds,
         textures,
         animations,
+        nodes,
         timings: StageTimings {
             read_ms,
             parse_ms,
@@ -270,9 +280,24 @@ pub fn import(path: &Path, settings: &ImportSettings) -> Result<ImportReport, Im
     })
 }
 
+fn collect_nodes(node: &gltf::Node<'_>, depth: usize, out: &mut Vec<super::report::NodeInfo>) {
+    out.push(super::report::NodeInfo {
+        index: node.index(),
+        name: node
+            .name()
+            .map_or_else(|| format!("GltfNode{}", node.index()), str::to_owned),
+        depth,
+    });
+    for child in node.children() {
+        collect_nodes(&child, depth + 1, out);
+    }
+}
+
+/// Node label matching the engine loader's naming, so warnings point at the
+/// same node an override will key on in phase 5.
 fn node_label(node: &gltf::Node<'_>) -> String {
     node.name()
-        .map_or_else(|| format!("node[{}]", node.index()), str::to_owned)
+        .map_or_else(|| format!("GltfNode{}", node.index()), str::to_owned)
 }
 
 fn accessor_bounds(accessor: &gltf::Accessor<'_>) -> Option<([f32; 3], [f32; 3])> {

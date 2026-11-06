@@ -316,6 +316,7 @@ pub fn filesystem_dock() -> Part {
     let body = Box::new(bsn! {
         Node {
             flex_grow: 1.0,
+            flex_basis: px(0),
             min_height: px(0),
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -328,6 +329,7 @@ pub fn filesystem_dock() -> Part {
             --
             Node {
                 flex_grow: 1.0,
+                flex_basis: px(0),
                 min_height: px(0),
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
@@ -342,6 +344,7 @@ pub fn filesystem_dock() -> Part {
     Box::new(bsn! {
         Node {
             flex_grow: 1.0,
+            flex_basis: px(0),
             min_height: px(0),
             display: Display::Flex,
             flex_direction: FlexDirection::Column,

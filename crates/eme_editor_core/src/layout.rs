@@ -301,6 +301,14 @@ impl Layout {
     ///
     /// Returns `false` for an unknown dock or a tab that is already in the tree.
     pub fn drop_as_tab(&mut self, dock: PanelId, tab: PanelTab) -> bool {
+        self.drop_as_tab_at(dock, tab, usize::MAX)
+    }
+
+    /// Inserts `tab` into the dock with `id` at `index`, clamped to the current
+    /// tab count, and makes it active.
+    ///
+    /// Returns `false` for an unknown dock or a tab that is already in the tree.
+    pub fn drop_as_tab_at(&mut self, dock: PanelId, tab: PanelTab, index: usize) -> bool {
         if self.find_tab(tab.id).is_some() {
             return false;
         }
@@ -310,8 +318,9 @@ impl Layout {
         let Layout::Panel { tabs, active, .. } = slot else {
             return false;
         };
-        tabs.push(tab);
-        *active = tabs.len() - 1;
+        let index = index.min(tabs.len());
+        tabs.insert(index, tab);
+        *active = index;
         true
     }
 
@@ -599,6 +608,90 @@ mod tests {
         );
         assert_eq!(layout.tabs(PanelId(1)).unwrap().len(), 2);
         assert_eq!(layout.active_tab(PanelId(1)).unwrap().id, PanelId(14));
+        layout.validate().unwrap();
+    }
+
+    fn stacked_layout() -> Layout {
+        let mut layout = Layout::default_editor();
+        let console = layout.detach(PanelId(13)).unwrap();
+        assert!(layout.drop_as_tab(PanelId(4), console));
+        layout
+    }
+
+    #[test]
+    fn drop_as_tab_at_inserts_at_the_start() {
+        let mut layout = stacked_layout();
+        let tab = layout.detach(PanelId(14)).unwrap();
+
+        assert!(layout.drop_as_tab_at(PanelId(4), tab, 0));
+        assert_eq!(
+            dock_tabs(&layout, 4),
+            vec![
+                (14, PanelKind::Inspector),
+                (12, PanelKind::Project),
+                (13, PanelKind::Console),
+            ]
+        );
+        assert_eq!(layout.active_tab(PanelId(4)).unwrap().id, PanelId(14));
+        layout.validate().unwrap();
+    }
+
+    #[test]
+    fn drop_as_tab_at_inserts_in_the_middle() {
+        let mut layout = stacked_layout();
+        let tab = layout.detach(PanelId(14)).unwrap();
+
+        assert!(layout.drop_as_tab_at(PanelId(4), tab, 1));
+        assert_eq!(
+            dock_tabs(&layout, 4),
+            vec![
+                (12, PanelKind::Project),
+                (14, PanelKind::Inspector),
+                (13, PanelKind::Console),
+            ]
+        );
+        assert_eq!(layout.active_tab(PanelId(4)).unwrap().id, PanelId(14));
+        layout.validate().unwrap();
+    }
+
+    #[test]
+    fn drop_as_tab_at_clamps_past_the_end() {
+        let mut layout = stacked_layout();
+        let tab = layout.detach(PanelId(14)).unwrap();
+
+        assert!(layout.drop_as_tab_at(PanelId(4), tab, usize::MAX));
+        assert_eq!(
+            dock_tabs(&layout, 4),
+            vec![
+                (12, PanelKind::Project),
+                (13, PanelKind::Console),
+                (14, PanelKind::Inspector),
+            ]
+        );
+        assert_eq!(layout.active_tab(PanelId(4)).unwrap().id, PanelId(14));
+        layout.validate().unwrap();
+    }
+
+    #[test]
+    fn drop_as_tab_at_rejects_an_unknown_dock() {
+        let mut layout = stacked_layout();
+        let tab = layout.detach(PanelId(14)).unwrap();
+
+        assert!(!layout.drop_as_tab_at(PanelId(99), tab, 0));
+        layout.validate().unwrap();
+    }
+
+    #[test]
+    fn drop_as_tab_at_reorders_within_one_dock() {
+        let mut layout = stacked_layout();
+        let tab = layout.detach(PanelId(12)).unwrap();
+
+        assert!(layout.drop_as_tab_at(PanelId(4), tab, 1));
+        assert_eq!(
+            dock_tabs(&layout, 4),
+            vec![(13, PanelKind::Console), (12, PanelKind::Project)]
+        );
+        assert_eq!(layout.active_tab(PanelId(4)).unwrap().id, PanelId(12));
         layout.validate().unwrap();
     }
 

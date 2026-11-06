@@ -32,6 +32,8 @@
         "editor.accent.text": "#1A0F08",
         "editor.tab.highlight": "#E8743B",
         "editor.drop": "#E8743B1A",
+        "editor.drag.ghost": "#171717F2",
+        "editor.drag.ghost.border": "#3A3A3A",
         "editor.select": "#4A2A1A",
         "editor.scrim": "#00000099",
         "editor.clear": "#00000000",

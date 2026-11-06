@@ -33,6 +33,10 @@ pub const ACCENT_TEXT: ThemeToken = ThemeToken::new_static("editor.accent.text")
 pub const TAB_HIGHLIGHT: ThemeToken = ThemeToken::new_static("editor.tab.highlight");
 /// Translucent accent wash over a dock that will receive a dragged tab.
 pub const DROP: ThemeToken = ThemeToken::new_static("editor.drop");
+/// Floating tab body shown under the pointer during a tab drag.
+pub const GHOST: ThemeToken = ThemeToken::new_static("editor.drag.ghost");
+/// Raised edge around the floating drag tab, one step above [`BORDER`].
+pub const GHOST_BORDER: ThemeToken = ThemeToken::new_static("editor.drag.ghost.border");
 /// Tree row selection: the accent at low strength over [`INSET`].
 pub const SELECT: ThemeToken = ThemeToken::new_static("editor.select");
 /// Dims the editor behind a modal dialog.
@@ -107,6 +111,8 @@ pub const ALL: &[(&str, ThemeToken)] = &[
     ("editor.accent.text", ACCENT_TEXT),
     ("editor.tab.highlight", TAB_HIGHLIGHT),
     ("editor.drop", DROP),
+    ("editor.drag.ghost", GHOST),
+    ("editor.drag.ghost.border", GHOST_BORDER),
     ("editor.select", SELECT),
     ("editor.scrim", SCRIM),
     ("editor.clear", CLEAR),

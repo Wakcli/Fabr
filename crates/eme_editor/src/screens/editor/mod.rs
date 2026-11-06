@@ -48,6 +48,10 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {dock::overlay()}
             --
+            {dock::insert_caret()}
+            --
+            {dock::drag_ghost()}
+            --
             {crate::play::flyout()}
         ]
     }

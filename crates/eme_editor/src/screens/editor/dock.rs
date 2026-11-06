@@ -5,14 +5,17 @@
 //! re-deriving identity from node position. [`DockRoot`] marks the node whose
 //! children are replaced when the layout changes.
 
-use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor};
+use eme::feathers::constants::fonts;
+use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor, UiTheme};
 use eme::math::Rect;
 use eme::prelude::*;
 use eme::scene::bsn;
+use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
+use eme::ui::widget::Text;
 use eme::window::{PrimaryWindow, Window};
 use eme_editor_core::{Axis, Edge, Layout, PanelId, PanelKind, PanelTab};
 
-use super::chrome::{self, splitter, tab, tab_strip, Part, STATUS_H};
+use super::chrome::{self, splitter, tab, tab_strip, Part, FONT_SIZE, STATUS_H};
 use super::{docks, files, icons, inspector, viewport};
 use crate::tokens;
 use crate::LayoutRes;
@@ -28,6 +31,15 @@ const DRAG_SLOP: f32 = 4.0;
 
 /// Fraction of a dock edge that accepts a split drop.
 const EDGE_BAND: f32 = 0.25;
+
+/// Horizontal offset from the pointer to the floating drag tab.
+const GHOST_DX: f32 = 14.0;
+
+/// Vertical offset from the pointer to the floating drag tab.
+const GHOST_DY: f32 = 10.0;
+
+/// Width of the insertion bar drawn between two tabs.
+const CARET_W: f32 = 2.0;
 
 /// Host of the dock tree; its children are rebuilt from [`Layout`].
 #[derive(Component, Clone, Copy, Default)]
@@ -71,6 +83,18 @@ impl Default for DockTab {
 #[derive(Component, Clone, Copy, Default)]
 pub struct DropOverlay;
 
+/// Vertical accent bar marking the slot a dragged tab would take.
+#[derive(Component, Clone, Copy, Default)]
+pub struct InsertCaret;
+
+/// The floating tab that follows the pointer during a drag.
+#[derive(Component, Clone, Copy, Default)]
+pub struct DragGhost;
+
+/// Title text of the floating drag tab.
+#[derive(Component, Clone, Copy, Default)]
+pub struct DragGhostLabel;
+
 /// The tab strip of a dock, an explicit merge target.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DockStrip {
@@ -94,10 +118,12 @@ struct TabOrigin {
 /// What a release over a dock does with the dragged tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DropZone {
-    /// Join the dock's tab stack.
+    /// Join the dock's tab stack at the end.
     Merge,
     /// Become a new split on this side of the dock.
     Split(Edge),
+    /// Take the tab slot at `index` in `dock`.
+    Insert { dock: PanelId, index: usize },
 }
 
 /// A dock and the action a release would take there.
@@ -125,8 +151,15 @@ impl TabDrag {
 
 /// Installs the tab drag resource and its frame systems.
 pub fn plugins(app: &mut App) {
-    app.init_resource::<TabDrag>()
-        .add_systems(Update, (sync_drop_feedback, cancel_on_escape));
+    app.init_resource::<TabDrag>().add_systems(
+        Update,
+        (
+            sync_drop_feedback,
+            sync_drag_ghost,
+            sync_drag_source,
+            cancel_on_escape,
+        ),
+    );
 }
 
 /// The tab strip title for `kind`.
@@ -176,6 +209,68 @@ pub fn overlay() -> Part {
         Pickable::IGNORE
         ThemeBackgroundColor(tokens::DROP)
         ThemeBorderColor(tokens::ACCENT)
+    })
+}
+
+/// The absolute bar showing the exact slot a dragged tab would take.
+pub fn insert_caret() -> Part {
+    Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            display: Display::None,
+            left: px(0),
+            top: px(0),
+            width: px(CARET_W),
+            height: px(0),
+        }
+        InsertCaret
+        GlobalZIndex(151)
+        Pickable::IGNORE
+        ThemeBackgroundColor(tokens::ACCENT)
+    })
+}
+
+/// The floating tab that follows the pointer while a drag is live.
+pub fn drag_ghost() -> Part {
+    Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            display: Display::None,
+            left: px(0),
+            top: px(0),
+            height: px(chrome::DOCK_TAB_H),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            padding: UiRect { left: px(11), right: px(11), top: px(5), bottom: px(5) },
+            border: UiRect { left: px(1), right: px(1), top: px(1), bottom: px(1) },
+            border_radius: px(2),
+        }
+        DragGhost
+        GlobalZIndex(160)
+        Pickable::IGNORE
+        ThemeBackgroundColor(tokens::GHOST)
+        ThemeBorderColor(tokens::GHOST_BORDER)
+        Children [
+            Node {
+                flex_grow: 1.0,
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+            }
+            Children [
+                Text("")
+                TextFont {
+                    font: FontSourceTemplate::Handle(fonts::REGULAR),
+                    font_size: FontSize::Px(FONT_SIZE),
+                    weight: FontWeight::NORMAL,
+                }
+                ThemeTextColor(tokens::TEXT)
+                DragGhostLabel
+            ]
+            --
+            Node { height: px(2) }
+            ThemeBackgroundColor(tokens::ACCENT)
+        ]
     })
 }
 
@@ -426,6 +521,7 @@ fn end_tab_drag(
     end: On<PointerDragEnd>,
     docks: Query<(&Dock, &ComputedNode, &UiGlobalTransform)>,
     strips: Query<(&DockStrip, &ComputedNode, &UiGlobalTransform)>,
+    tabs: Query<(&DockTab, &ComputedNode, &UiGlobalTransform)>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut drag: ResMut<TabDrag>,
     mut layout: ResMut<LayoutRes>,
@@ -449,9 +545,17 @@ fn end_tab_drag(
     let at = pos * window.scale_factor();
     let rects = dock_rects(&docks);
     let strips = strip_rects(&strips);
-    let Some((target, _)) = target_under(&layout, source, at, &rects, &strips) else {
+    let tab_rects = collect_tab_rects(&tabs);
+    let Some((target, _)) = target_under(&layout, source, at, &rects, &strips, &tab_rects) else {
         return;
     };
+    let src_index = tab_index(&layout, source).unwrap_or(0);
+    if let DropZone::Insert { dock, index } = target.zone
+        && dock == source.dock
+        && (index == src_index || index == src_index + 1)
+    {
+        return;
+    }
     let Some(tab) = layout.detach(source.tab) else {
         return;
     };
@@ -459,6 +563,14 @@ fn end_tab_drag(
     let moved = match target.zone {
         DropZone::Merge => layout.drop_as_tab(target.dock, tab.clone()),
         DropZone::Split(edge) => layout.drop_as_split(target.dock, edge, tab.clone()),
+        DropZone::Insert { dock, index } => {
+            let index = if dock == source.dock && src_index < index {
+                index - 1
+            } else {
+                index
+            };
+            layout.drop_as_tab_at(dock, tab.clone(), index)
+        }
     };
     if moved {
         persist(&layout);
@@ -498,34 +610,60 @@ fn sync_drop_feedback(
     window: Single<&Window, With<PrimaryWindow>>,
     docks: Query<(&Dock, &ComputedNode, &UiGlobalTransform)>,
     strips: Query<(&DockStrip, &ComputedNode, &UiGlobalTransform)>,
+    tabs: Query<(&DockTab, &ComputedNode, &UiGlobalTransform)>,
     layout: Res<LayoutRes>,
     drag: Res<TabDrag>,
-    mut overlays: Query<&mut Node, With<DropOverlay>>,
+    mut overlays: Query<&mut Node, (With<DropOverlay>, Without<InsertCaret>)>,
+    mut carets: Query<&mut Node, (With<InsertCaret>, Without<DropOverlay>)>,
 ) {
-    let Ok(mut node) = overlays.single_mut() else {
+    let (Ok(mut node), Ok(mut caret)) = (overlays.single_mut(), carets.single_mut()) else {
         return;
     };
     let Some(source) = drag.source else {
         hide_overlay(&mut node);
+        hide_overlay(&mut caret);
         return;
     };
     if !drag.active {
         hide_overlay(&mut node);
+        hide_overlay(&mut caret);
         return;
     }
     let Some(pos) = window.cursor_position() else {
         hide_overlay(&mut node);
+        hide_overlay(&mut caret);
         return;
     };
 
     let at = pos * window.scale_factor();
     let rects = dock_rects(&docks);
     let strips = strip_rects(&strips);
-    let Some((target, rect)) = target_under(&layout, source, at, &rects, &strips) else {
+    let tab_rects = collect_tab_rects(&tabs);
+    let Some((target, rect)) = target_under(&layout, source, at, &rects, &strips, &tab_rects)
+    else {
         hide_overlay(&mut node);
+        hide_overlay(&mut caret);
         return;
     };
 
+    if let DropZone::Insert { dock, index } = target.zone {
+        hide_overlay(&mut node);
+        let scale = window.scale_factor();
+        let slots: Vec<Rect> = tab_rects
+            .iter()
+            .filter(|(id, _, _)| *id == dock)
+            .map(|(_, _, rect)| *rect)
+            .collect();
+        let x = insert_edge(index, &slots, rect);
+        caret.display = Display::Flex;
+        caret.left = px(x / scale - CARET_W / 2.0);
+        caret.top = px(rect.min.y / scale);
+        caret.width = px(CARET_W);
+        caret.height = px(rect.size().y / scale);
+        return;
+    }
+
+    hide_overlay(&mut caret);
     let scale = window.scale_factor();
     let rect = Rect {
         min: rect.min / scale,
@@ -544,6 +682,7 @@ fn sync_drop_feedback(
             Vec2::new(rect.min.x, rect.min.y + size.y / 2.0),
             Vec2::new(size.x, size.y / 2.0),
         ),
+        DropZone::Insert { .. } => unreachable!("insert returned before the rect preview"),
     };
 
     node.display = Display::Flex;
@@ -551,6 +690,89 @@ fn sync_drop_feedback(
     node.top = px(min.y);
     node.width = px(extent.x);
     node.height = px(extent.y);
+}
+
+fn sync_drag_ghost(
+    window: Single<&Window, With<PrimaryWindow>>,
+    layout: Res<LayoutRes>,
+    drag: Res<TabDrag>,
+    mut ghosts: Query<&mut Node, With<DragGhost>>,
+    mut labels: Query<&mut Text, With<DragGhostLabel>>,
+) {
+    let Ok(mut node) = ghosts.single_mut() else {
+        return;
+    };
+    let Some(source) = drag.source.filter(|_| drag.active) else {
+        hide_overlay(&mut node);
+        return;
+    };
+    let Some(pos) = window.cursor_position() else {
+        hide_overlay(&mut node);
+        return;
+    };
+
+    node.display = Display::Flex;
+    node.left = px(pos.x + GHOST_DX);
+    node.top = px(pos.y + GHOST_DY);
+
+    let Some(tab) = layout.find_tab(source.tab) else {
+        return;
+    };
+    let label = title(&tab.kind);
+    for mut text in &mut labels {
+        if text.0 != label {
+            text.0 = label.clone();
+        }
+    }
+}
+
+fn sync_drag_source(
+    theme: Res<UiTheme>,
+    layout: Res<LayoutRes>,
+    drag: Res<TabDrag>,
+    mut tabs: Query<(Entity, &DockTab)>,
+    children: Query<&Children>,
+    mut fills: Query<&mut BackgroundColor>,
+    mut texts: Query<&mut TextColor>,
+) {
+    if !drag.is_changed() {
+        return;
+    }
+    let source = drag.source.filter(|_| drag.active);
+    for (entity, tab) in &mut tabs {
+        let dragged = source.is_some_and(|source| source.dock == tab.dock && source.tab == tab.id);
+        let active = layout
+            .tabs(tab.dock)
+            .and_then(|tabs| tabs.get(tab.index))
+            .is_some_and(|entry| entry.id == tab.id);
+
+        let (fill, text) = if dragged {
+            (tokens::CLEAR, tokens::TEXT_MEDIUM)
+        } else if active {
+            (tokens::PANEL, tokens::TEXT)
+        } else {
+            (tokens::WINDOW, tokens::TEXT_DIM)
+        };
+
+        let Ok(kids) = children.get(entity) else {
+            continue;
+        };
+        let Some(&face) = kids.first() else {
+            continue;
+        };
+        if let Ok(mut bg) = fills.get_mut(face) {
+            bg.0 = theme.color(&fill);
+        }
+        let Ok(face_kids) = children.get(face) else {
+            continue;
+        };
+        let Some(&label) = face_kids.first() else {
+            continue;
+        };
+        if let Ok(mut color) = texts.get_mut(label) {
+            color.0 = theme.color(&text);
+        }
+    }
 }
 
 fn hide_overlay(node: &mut Node) {
@@ -585,27 +807,64 @@ fn strip_rects(
         .collect()
 }
 
+fn collect_tab_rects(
+    tabs: &Query<(&DockTab, &ComputedNode, &UiGlobalTransform)>,
+) -> Vec<(PanelId, usize, Rect)> {
+    let mut out: Vec<(PanelId, usize, Rect)> = tabs
+        .iter()
+        .map(|(tab, node, global)| {
+            (
+                tab.dock,
+                tab.index,
+                Rect::from_center_size(global.translation.trunc(), node.size()),
+            )
+        })
+        .collect();
+    out.sort_by_key(|(dock, index, _)| (dock.0, *index));
+    out
+}
+
+fn insert_index(pointer_x: f32, tabs: &[Rect]) -> usize {
+    tabs.iter()
+        .position(|rect| pointer_x < rect.center().x)
+        .unwrap_or(tabs.len())
+}
+
+fn insert_edge(index: usize, tabs: &[Rect], strip: Rect) -> f32 {
+    match tabs.get(index) {
+        Some(rect) => rect.min.x,
+        None => tabs.last().map_or(strip.min.x, |rect| rect.max.x),
+    }
+}
+
+fn tab_index(layout: &Layout, origin: TabOrigin) -> Option<usize> {
+    layout
+        .tabs(origin.dock)?
+        .iter()
+        .position(|tab| tab.id == origin.tab)
+}
+
 fn target_under(
     layout: &Layout,
     source: TabOrigin,
     at: Vec2,
     rects: &[(PanelId, Rect)],
     strips: &[(PanelId, Rect)],
+    tabs: &[(PanelId, usize, Rect)],
 ) -> Option<(DropTarget, Rect)> {
-    if let Some((dock, strip_rect)) = strips.iter().find(|(_, rect)| rect.contains(at)).copied()
-        && can_drop(layout, source, dock, DropZone::Merge)
-    {
-        let rect = rects
+    if let Some((dock, strip_rect)) = strips.iter().find(|(_, rect)| rect.contains(at)).copied() {
+        let slots: Vec<Rect> = tabs
             .iter()
-            .find(|(id, _)| *id == dock)
-            .map_or(strip_rect, |(_, rect)| *rect);
-        return Some((
-            DropTarget {
-                dock,
-                zone: DropZone::Merge,
-            },
-            rect,
-        ));
+            .filter(|(id, _, _)| *id == dock)
+            .map(|(_, _, rect)| *rect)
+            .collect();
+        let zone = DropZone::Insert {
+            dock,
+            index: insert_index(at.x, &slots),
+        };
+        if can_drop(layout, source, dock, zone) {
+            return Some((DropTarget { dock, zone }, strip_rect));
+        }
     }
 
     let (dock, rect) = rects.iter().find(|(_, rect)| rect.contains(at)).copied()?;
@@ -620,6 +879,7 @@ fn can_drop(layout: &Layout, source: TabOrigin, dock: PanelId, zone: DropZone) -
     match zone {
         DropZone::Merge => false,
         DropZone::Split(_) => layout.tab_count(dock).is_some_and(|count| count > 1),
+        DropZone::Insert { .. } => layout.tab_count(dock).is_some(),
     }
 }
 
@@ -704,243 +964,4 @@ fn placeholder() -> Part {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::{HashMap, HashSet};
-
-    use eme::app::TaskPoolPlugin;
-    use eme::asset::AssetPlugin;
-    use eme::scene::ScenePlugin;
-
-    use super::*;
-
-    fn test_app() -> App {
-        let mut app = App::new();
-        app.add_plugins((
-            TaskPoolPlugin::default(),
-            AssetPlugin::default(),
-            ScenePlugin,
-        ))
-        .init_asset::<Font>()
-        .init_asset::<Image>();
-        app
-    }
-
-    fn spawn_tree(app: &mut App, layout: Layout) {
-        app.add_systems(Startup, move |mut commands: Commands| {
-            commands.spawn_scene_list(tree(&layout));
-        });
-        app.update();
-        app.update();
-    }
-
-    fn dock_ids(app: &mut App) -> HashSet<PanelId> {
-        let world = app.world_mut();
-        let mut query = world.query::<&Dock>();
-        query.iter(world).map(|dock| dock.id).collect()
-    }
-
-    fn tab_counts(app: &mut App) -> HashMap<u32, usize> {
-        let world = app.world_mut();
-        let mut query = world.query::<&DockTab>();
-        let mut out = HashMap::new();
-        for tab in query.iter(world) {
-            *out.entry(tab.dock.0).or_default() += 1;
-        }
-        out
-    }
-
-    fn leaf(dock: u32, tab: u32, kind: PanelKind) -> Layout {
-        Layout::Panel {
-            id: PanelId(dock),
-            tabs: vec![PanelTab {
-                id: PanelId(tab),
-                kind,
-            }],
-            active: 0,
-        }
-    }
-
-    #[test]
-    fn every_panel_gets_one_dock() {
-        let layout = Layout::default_editor();
-        let want = layout.panels().len();
-        let mut app = test_app();
-        spawn_tree(&mut app, layout);
-
-        let ids = dock_ids(&mut app);
-        assert_eq!(ids.len(), want, "rendered dock count disagrees with panels");
-    }
-
-    #[test]
-    fn ratio_becomes_the_first_flex_basis_percentage() {
-        for axis in [Axis::Horizontal, Axis::Vertical] {
-            let mut app = test_app();
-            spawn_tree(
-                &mut app,
-                Layout::Split {
-                    axis,
-                    ratio: 0.7,
-                    first: Box::new(leaf(1, 9, PanelKind::Scene)),
-                    second: Box::new(leaf(2, 10, PanelKind::Console)),
-                },
-            );
-
-            let world = app.world_mut();
-            let mut query = world.query::<&Node>();
-            let basis: Vec<Val> = query.iter(world).map(|node| node.flex_basis).collect();
-            assert!(
-                basis.contains(&percent(70.0)),
-                "{axis:?} split lost its ratio: {basis:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn titles_cover_every_panel_kind() {
-        assert_eq!(title(&PanelKind::Hierarchy), "Scene");
-        assert_eq!(title(&PanelKind::Scene), "Viewport");
-        assert_eq!(title(&PanelKind::Inspector), "Inspector");
-        assert_eq!(title(&PanelKind::Project), "FileSystem");
-        assert_eq!(title(&PanelKind::Console), "Console");
-        assert_eq!(title(&PanelKind::Custom("Outline".into())), "Outline");
-        assert_eq!(title(&PanelKind::Custom("Stats".into())), "Stats");
-    }
-
-    #[derive(Resource, Default)]
-    struct Tally(usize);
-
-    fn tally_docks(docks: Query<(), Added<Dock>>, mut tally: ResMut<Tally>) {
-        tally.0 += docks.iter().count();
-    }
-
-    #[test]
-    fn a_layout_change_rebuilds_the_tree_once() {
-        let mut app = test_app();
-        app.insert_resource(LayoutRes(Layout::default_editor()))
-            .init_resource::<Tally>()
-            .add_systems(Update, (sync, tally_docks));
-        app.world_mut().spawn(DockRoot);
-
-        app.update();
-        app.update();
-        let first = app.world().resource::<Tally>().0;
-        assert_eq!(first, Layout::default_editor().panels().len());
-
-        app.update();
-        assert_eq!(
-            app.world().resource::<Tally>().0,
-            first,
-            "an untouched layout rebuilt the tree"
-        );
-
-        app.world_mut()
-            .resource_mut::<LayoutRes>()
-            .0
-            .set_ratio(PanelId(11), 0.5);
-        app.update();
-        app.update();
-        assert_eq!(
-            app.world().resource::<Tally>().0,
-            first * 2,
-            "one layout change must rebuild exactly once"
-        );
-    }
-
-    #[test]
-    fn moving_a_tab_rebuilds_it_into_the_target_dock() {
-        let mut app = test_app();
-        app.insert_resource(LayoutRes(Layout::default_editor()))
-            .add_systems(Update, sync);
-        app.world_mut().spawn(DockRoot);
-        app.update();
-        app.update();
-
-        let layout = &mut app.world_mut().resource_mut::<LayoutRes>().0;
-        let tab = layout.detach(PanelId(14)).expect("inspector tab detaches");
-        assert!(layout.drop_as_tab(PanelId(1), tab));
-
-        app.update();
-        app.update();
-
-        let counts = tab_counts(&mut app);
-        assert_eq!(counts.get(&1), Some(&2), "target dock keeps both tabs");
-        assert_eq!(counts.get(&6), None, "emptied dock is gone");
-        assert_eq!(counts.get(&3), Some(&1));
-    }
-
-    #[test]
-    fn drop_zone_centres_merge_and_bands_split() {
-        let rect = Rect::from_center_size(Vec2::new(100.0, 100.0), Vec2::new(200.0, 100.0));
-
-        assert_eq!(
-            drop_zone(rect, Vec2::new(100.0, 100.0)),
-            Some(DropZone::Merge)
-        );
-        assert_eq!(
-            drop_zone(rect, Vec2::new(10.0, 100.0)),
-            Some(DropZone::Split(Edge::Left))
-        );
-        assert_eq!(
-            drop_zone(rect, Vec2::new(190.0, 100.0)),
-            Some(DropZone::Split(Edge::Right))
-        );
-        assert_eq!(
-            drop_zone(rect, Vec2::new(100.0, 60.0)),
-            Some(DropZone::Split(Edge::Top))
-        );
-        assert_eq!(
-            drop_zone(rect, Vec2::new(100.0, 140.0)),
-            Some(DropZone::Split(Edge::Bottom))
-        );
-        assert_eq!(drop_zone(rect, Vec2::new(300.0, 100.0)), None);
-    }
-
-    #[test]
-    fn drop_zone_corners_resolve_consistently() {
-        let rect = Rect::from_center_size(Vec2::new(100.0, 100.0), Vec2::new(200.0, 100.0));
-
-        assert_eq!(
-            drop_zone(rect, Vec2::new(0.0, 50.0)),
-            Some(DropZone::Split(Edge::Left))
-        );
-        assert_eq!(
-            drop_zone(rect, Vec2::new(200.0, 150.0)),
-            Some(DropZone::Split(Edge::Right))
-        );
-        assert_eq!(
-            drop_zone(rect, Vec2::new(200.0, 50.0)),
-            Some(DropZone::Split(Edge::Right))
-        );
-        assert_eq!(
-            drop_zone(rect, Vec2::new(0.0, 150.0)),
-            Some(DropZone::Split(Edge::Left))
-        );
-    }
-
-    #[test]
-    fn self_merges_are_rejected_and_self_splits_need_a_second_tab() {
-        let mut layout = Layout::default_editor();
-        let origin = TabOrigin {
-            dock: PanelId(3),
-            tab: PanelId(11),
-        };
-
-        assert!(!can_drop(&layout, origin, PanelId(3), DropZone::Merge));
-        assert!(!can_drop(
-            &layout,
-            origin,
-            PanelId(3),
-            DropZone::Split(Edge::Left)
-        ));
-        assert!(can_drop(&layout, origin, PanelId(1), DropZone::Merge));
-
-        let tab = layout.detach(PanelId(14)).unwrap();
-        layout.drop_as_tab(PanelId(3), tab);
-        assert!(can_drop(
-            &layout,
-            origin,
-            PanelId(3),
-            DropZone::Split(Edge::Left)
-        ));
-    }
-}
+mod tests;

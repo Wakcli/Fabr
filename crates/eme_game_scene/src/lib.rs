@@ -172,6 +172,91 @@ impl Default for Behaviour {
     }
 }
 
+/// Stable identity of one node inside a model instance.
+///
+/// The path is the child ordinal from the instance root; the name makes a
+/// reorder or rename detectable instead of silently applying to the wrong node.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NodeKey {
+    /// Child ordinals from the root to this node.
+    pub path: Vec<u32>,
+    /// Node name at the time the key was recorded.
+    pub name: String,
+}
+
+impl NodeKey {
+    /// The key for a model's root node.
+    pub fn root(name: &str) -> Self {
+        Self {
+            path: Vec::new(),
+            name: name.to_owned(),
+        }
+    }
+
+    /// The key for a child at `ordinal` under this key.
+    pub fn child(&self, ordinal: usize, name: &str) -> Self {
+        let mut path = self.path.clone();
+        path.push(ordinal as u32);
+        Self {
+            path,
+            name: name.to_owned(),
+        }
+    }
+
+    /// True when this key sits at or below `ancestor`'s path.
+    pub fn is_within(&self, ancestor: &NodeKey) -> bool {
+        self.path.starts_with(&ancestor.path)
+    }
+}
+
+/// What an author changed on one model node.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum OverrideOp {
+    /// Replace the node's local transform.
+    SetTransform(ObjectTransform),
+    /// Show or hide the node.
+    SetVisible {
+        /// Whether the node renders.
+        visible: bool,
+    },
+    /// Leave the node and its subtree out of the instance.
+    SetExcluded {
+        /// Whether the node is excluded.
+        excluded: bool,
+    },
+}
+
+/// Which field an [`OverrideOp`] writes, used to replace an existing edit.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OverrideKind {
+    /// [`OverrideOp::SetTransform`].
+    Transform,
+    /// [`OverrideOp::SetVisible`].
+    Visible,
+    /// [`OverrideOp::SetExcluded`].
+    Excluded,
+}
+
+impl OverrideOp {
+    /// The field this op writes.
+    pub fn kind(&self) -> OverrideKind {
+        match self {
+            OverrideOp::SetTransform(_) => OverrideKind::Transform,
+            OverrideOp::SetVisible { .. } => OverrideKind::Visible,
+            OverrideOp::SetExcluded { .. } => OverrideKind::Excluded,
+        }
+    }
+}
+
+/// One author edit keyed by the node it applies to.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct NodeOverride {
+    /// Node identity the edit was authored against.
+    pub key: NodeKey,
+    /// The edit itself.
+    pub op: OverrideOp,
+}
+
 /// Pointer from a scene object to an imported model asset.
 ///
 /// The GUID is the durable identity: moving or renaming the file keeps it, and a
@@ -211,6 +296,9 @@ pub struct SceneObject {
     /// Imported model this object instances, for [`ObjectKind::Model`].
     #[serde(default)]
     pub asset: Option<AssetRef>,
+    /// Author edits to the instanced model's nodes, kept beside the source asset.
+    #[serde(default)]
+    pub overrides: Vec<NodeOverride>,
 }
 
 impl SceneObject {
@@ -301,6 +389,7 @@ impl SceneDoc {
             color: None,
             behaviour: Behaviour::default(),
             asset: None,
+            overrides: Vec::new(),
         });
         id
     }
@@ -395,6 +484,68 @@ impl SceneDoc {
             }
             None => false,
         }
+    }
+
+    /// The authored overrides for `id`, or an empty slice.
+    pub fn overrides(&self, id: u64) -> &[NodeOverride] {
+        self.get(id).map_or(&[], |obj| obj.overrides.as_slice())
+    }
+
+    /// Records one edit, replacing an earlier edit of the same kind on the same node.
+    pub fn set_override(&mut self, id: u64, key: NodeKey, op: OverrideOp) -> bool {
+        let kind = op.kind();
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        if let Some(existing) = obj
+            .overrides
+            .iter_mut()
+            .find(|entry| entry.key == key && entry.op.kind() == kind)
+        {
+            if existing.op == op {
+                return false;
+            }
+            existing.op = op;
+            return true;
+        }
+        obj.overrides.push(NodeOverride { key, op });
+        true
+    }
+
+    /// Removes one edit of `kind` for `key`.
+    pub fn remove_override(&mut self, id: u64, key: &NodeKey, kind: OverrideKind) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        let before = obj.overrides.len();
+        obj.overrides
+            .retain(|entry| !(entry.key == *key && entry.op.kind() == kind));
+        obj.overrides.len() != before
+    }
+
+    /// Removes every edit attached to `key`.
+    pub fn remove_node_overrides(&mut self, id: u64, key: &NodeKey) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        let before = obj.overrides.len();
+        obj.overrides.retain(|entry| entry.key != *key);
+        obj.overrides.len() != before
+    }
+
+    /// Points every edit for `from` at `to`, used to reattach an orphan.
+    pub fn reattach_override(&mut self, id: u64, from: &NodeKey, to: NodeKey) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        let mut moved = false;
+        for entry in &mut obj.overrides {
+            if entry.key == *from {
+                entry.key = to.clone();
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Reparents an object, refusing self-parents, unknown parents and cycles.
@@ -764,6 +915,100 @@ mod tests {
         let doc = SceneDoc::from_ron(text).unwrap();
         assert_eq!(doc.objects[0].asset, None);
         assert_eq!(doc.objects[0].kind, ObjectKind::Cube);
+    }
+
+    fn node(path: &[u32], name: &str) -> NodeKey {
+        NodeKey {
+            path: path.to_vec(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn overrides_round_trip_with_the_object() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Model,
+            "chair",
+            ObjectTransform::from_translation([0.0, 0.0, 0.0]),
+        );
+        assert!(doc.set_override(
+            id,
+            node(&[0, 1], "Leg"),
+            OverrideOp::SetTransform(ObjectTransform::from_translation([1.0, 2.0, 3.0])),
+        ));
+        assert!(doc.set_override(
+            id,
+            node(&[0, 1], "Leg"),
+            OverrideOp::SetVisible { visible: false },
+        ));
+        assert!(doc.set_override(
+            id,
+            node(&[0], "Chair"),
+            OverrideOp::SetExcluded { excluded: true },
+        ));
+
+        let text = doc.to_ron().unwrap();
+        let back = SceneDoc::from_ron(&text).unwrap();
+        let overrides = back.overrides(id);
+        assert_eq!(overrides.len(), 3);
+        assert!(overrides.iter().any(|entry| entry.key == node(&[0, 1], "Leg")
+            && entry.op == OverrideOp::SetVisible { visible: false }));
+        assert!(overrides
+            .iter()
+            .any(|entry| entry.op == OverrideOp::SetExcluded { excluded: true }));
+    }
+
+    #[test]
+    fn an_old_scene_without_overrides_still_loads() {
+        let text = r#"(
+            format_version: 1,
+            objects: [(
+                id: 1,
+                name: "old",
+                kind: Cube,
+                parent: None,
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0),
+                color: None,
+            )],
+        )"#;
+        let doc = SceneDoc::from_ron(text).unwrap();
+        assert!(doc.overrides(1).is_empty());
+    }
+
+    #[test]
+    fn setting_the_same_kind_replaces_and_reattach_moves_every_op() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Model,
+            "chair",
+            ObjectTransform::from_translation([0.0; 3]),
+        );
+        let key = node(&[0], "Seat");
+        assert!(doc.set_override(
+            id,
+            key.clone(),
+            OverrideOp::SetVisible { visible: false }
+        ));
+        assert!(doc.set_override(
+            id,
+            key.clone(),
+            OverrideOp::SetVisible { visible: true }
+        ));
+        assert_eq!(doc.overrides(id).len(), 1);
+        assert!(doc.set_override(
+            id,
+            key.clone(),
+            OverrideOp::SetTransform(ObjectTransform::from_translation([1.0; 3])),
+        ));
+
+        let to = node(&[0], "Moved");
+        assert!(doc.reattach_override(id, &key, to.clone()));
+        assert!(doc.overrides(id).iter().all(|entry| entry.key == to));
+        assert!(doc.remove_override(id, &to, OverrideKind::Visible));
+        assert_eq!(doc.overrides(id).len(), 1);
     }
 
     #[test]

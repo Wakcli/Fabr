@@ -4,6 +4,7 @@
 //! and every call returns one [`ImportReport`] or one [`ImportError`]. The UI
 //! reaches it through [`ImportService`], which runs the parse off the main thread.
 
+mod diff;
 mod importer;
 mod panel;
 mod report;
@@ -12,6 +13,7 @@ mod service;
 mod settings;
 mod watch;
 
+pub use diff::NodeDiff;
 pub use importer::import;
 pub use panel::{OptionsPanel, panel, sync as sync_panel};
 pub use sidecar::Sidecar;

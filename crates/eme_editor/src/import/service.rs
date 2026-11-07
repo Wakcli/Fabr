@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use eme::prelude::*;
 
 use crate::console::ConsoleLog;
-use crate::import::{ImportError, ImportReport, ImportSettings, Sidecar};
+use crate::import::{ImportError, ImportReport, ImportSettings, NodeDiff, Sidecar};
 
 /// What one worker produced.
 type JobResult = Result<(PathBuf, ImportReport), (PathBuf, ImportError)>;
@@ -61,6 +61,8 @@ pub struct ImportService {
     pub reloaded: Vec<PathBuf>,
     /// Dry-run outcomes keyed by source path, for the options panel.
     pub dry: HashMap<PathBuf, Result<ImportReport, String>>,
+    /// Latest node-list change per asset, for the inspector.
+    pub diffs: HashMap<PathBuf, NodeDiff>,
 }
 
 impl ImportService {
@@ -225,6 +227,9 @@ impl ImportService {
                                 self.dry.insert(path, Ok(report));
                             }
                             JobKind::Import | JobKind::Reload => {
+                                let keys: Vec<eme_game_scene::NodeKey> =
+                                    report.nodes.iter().map(|node| node.key.clone()).collect();
+                                let diff = crate::import::diff::update(&path, &keys);
                                 self.reports.insert(path.clone(), report);
                                 if kind == JobKind::Import {
                                     self.finished.push(path.clone());
@@ -244,6 +249,10 @@ impl ImportService {
                                 if let Err(err) = sidecar.save(&path) {
                                     log.push(format!("could not save sidecar: {err}"));
                                 }
+                                for line in diff.summary_lines() {
+                                    log.push(line);
+                                }
+                                self.diffs.insert(path.clone(), diff);
                             }
                         }
                     }

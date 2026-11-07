@@ -77,6 +77,7 @@ fn main() {
                 exit_on_esc,
                 capture_on_frame,
                 eme_game_runtime::run_behaviours,
+                eme_game_overrides::sync_model_nodes,
             ),
         )
         .run();

@@ -353,8 +353,13 @@ pub fn workspace_dir() -> PathBuf {
     workspace()
 }
 
+/// Git-ignored cache for import bookkeeping.
+pub(crate) fn import_cache_dir() -> PathBuf {
+    target_dir().join("import-cache")
+}
+
 /// Cargo's target directory, honoring `CARGO_TARGET_DIR` and `.cargo/config.toml`.
-fn target_dir() -> PathBuf {
+pub(crate) fn target_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(dir);
     }

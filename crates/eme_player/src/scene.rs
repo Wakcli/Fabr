@@ -2,6 +2,7 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 
 use eme::prelude::*;
+use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
 use eme_game_scene::{
     Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
@@ -213,7 +214,10 @@ pub fn spawn_scene(
                                 parent
                                     .spawn((pivot, Visibility::Inherited))
                                     .with_children(|pivot| {
-                                        pivot.spawn(WorldAssetRoot(handle));
+                                        pivot.spawn((
+                                            WorldAssetRoot(handle),
+                                            ModelOverrides(obj.overrides.clone()),
+                                        ));
                                     });
                             });
                     }
@@ -351,6 +355,38 @@ mod tests {
     use eme::time::{TimePlugin, TimeUpdateStrategy};
     use eme_game_runtime::run_behaviours;
     use eme_game_scene::FORMAT_VERSION;
+
+    #[test]
+    fn player_applies_the_shared_override_layer() {
+        use eme::ecs::system::RunSystemOnce;
+        use eme_game_overrides::ModelNodeCatalog;
+        use eme_game_scene::{NodeKey, NodeOverride, OverrideOp};
+
+        let mut world = World::new();
+        let root = world
+            .spawn(ModelOverrides(vec![NodeOverride {
+                key: NodeKey {
+                    path: vec![0],
+                    name: "Seat".into(),
+                },
+                op: OverrideOp::SetTransform(ObjectTransform::from_translation([4.0, 0.0, 0.0])),
+            }]))
+            .id();
+        let scene = world.spawn(Name::new("Scene0")).id();
+        let seat = world.spawn(Name::new("Seat")).id();
+        world.entity_mut(scene).add_children(&[seat]);
+        world.entity_mut(root).add_children(&[scene]);
+        world
+            .run_system_once(eme_game_overrides::sync_model_nodes)
+            .unwrap();
+
+        assert_eq!(
+            world.get::<Transform>(seat).unwrap().translation,
+            Vec3::new(4.0, 0.0, 0.0)
+        );
+        let catalog = world.get::<ModelNodeCatalog>(root).unwrap();
+        assert_eq!(catalog.nodes[0].key.name, "Seat");
+    }
 
     #[test]
     fn every_kind_has_a_body() {

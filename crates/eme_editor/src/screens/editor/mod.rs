@@ -208,6 +208,8 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::import::ImportService>()
             .init_resource::<crate::import::ModelWatcher>()
             .init_resource::<scene::ModelIndex>()
+            .init_resource::<scene::NodeSelection>()
+            .init_resource::<inspector::ReattachState>()
             .init_resource::<files::ImportMenu>()
             .init_resource::<files::AssetDrag>()
             .init_resource::<crate::import::OptionsPanel>()
@@ -224,7 +226,8 @@ impl Plugin for EditorPlugin {
                     scene::face_viewport_camera,
                     scene::keyboard_edit,
                     scene::draw_camera_frusta,
-                    scene::tag_model_nodes,
+                    scene::sync_node_selection,
+                    scene::report_override_issues,
                     crate::selection_outline::sync_outlines,
                     (
                         crate::console::sync,
@@ -261,9 +264,18 @@ impl Plugin for EditorPlugin {
                     ),
                     (
                         inspector::sync_inspector,
+                        inspector::sync_node_inspector,
+                        inspector::sync_override_panel,
                         inspector::sync_import_report,
                         inspector::typing_guard.before(scene::keyboard_edit),
                     ),
+                ),
+            )
+            .add_systems(
+                Update,
+                (
+                    scene::respawn_model_roots,
+                    (scene::sync_model_overrides, eme_game_overrides::sync_model_nodes).chain(),
                 ),
             )
             .add_systems(
@@ -291,7 +303,10 @@ impl Plugin for EditorPlugin {
     }
 }
 
-fn autoload_scene(mut state: ResMut<scene::SceneState>) {
+fn autoload_scene(
+    mut state: ResMut<scene::SceneState>,
+    mut node: ResMut<scene::NodeSelection>,
+) {
     if std::env::var_os("EME_EDITOR_DEMO").is_some() {
         return;
     }
@@ -308,5 +323,25 @@ fn autoload_scene(mut state: ResMut<scene::SceneState>) {
         let count = doc.len();
         state.replace_doc(doc);
         info!("loaded {count} objects");
+        if let Some(id) = std::env::var("EME_EDITOR_SELECT")
+            .ok()
+            .and_then(|id| id.parse::<u64>().ok())
+        {
+            state.select_only(id);
+        }
+        if let Some(spec) = std::env::var("EME_EDITOR_NODE").ok()
+            && let Some((path, name)) = spec.split_once(':')
+            && let Some(object) = state.primary()
+        {
+            let path = path
+                .split('.')
+                .filter_map(|part| part.parse::<u32>().ok())
+                .collect();
+            node.object = Some(object);
+            node.key = Some(eme_game_scene::NodeKey {
+                path,
+                name: name.to_owned(),
+            });
+        }
     }
 }

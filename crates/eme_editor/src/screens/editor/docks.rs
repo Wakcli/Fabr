@@ -1,6 +1,6 @@
 //! The Scene, `FileSystem`, Output, and History docks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor, ThemeToken};
@@ -9,12 +9,13 @@ use eme::prelude::*;
 use eme::scene::bsn;
 use eme::ui_widgets::{Activate, Button};
 use eme::window::{PrimaryWindow, Window};
-use eme_game_scene::{ObjectKind, SceneDoc};
+use eme_game_overrides::{ModelNodeCatalog, ModelNodeInfo};
+use eme_game_scene::{NodeKey, ObjectKind, OverrideOp, SceneDoc};
 
 use super::chrome::*;
 use super::icons;
 use super::menu::{self, MenuState};
-use crate::scene::SceneState;
+use crate::scene::{ModelOwner, NodeSelection, ReloadModel, SceneState};
 use crate::tokens;
 use crate::undo::Undo;
 
@@ -126,6 +127,14 @@ pub struct SceneRows;
 /// Scene-tree row pointing at one spawned object.
 #[derive(Component, Clone, Copy, Default)]
 pub struct SceneRow(pub u64);
+
+/// Scene-tree row for one node inside an instanced model.
+#[derive(Component, Clone, PartialEq, Default)]
+pub struct SceneNodeRow(pub u64, pub NodeKey);
+
+/// Include/exclude checkbox on a model node row.
+#[derive(Component, Clone, PartialEq, Default)]
+pub struct NodeExclude(pub u64, pub NodeKey);
 
 /// Disclosure triangle on a row that has children.
 #[derive(Component, Clone, Copy, Default)]
@@ -298,7 +307,12 @@ fn kind_badge(kind: ObjectKind) -> Part {
 }
 
 /// Identity of the tree's contents: what the rows are built from, ignoring selection.
-fn tree_signature(state: &SceneState, tree: &SceneTree) -> u64 {
+fn tree_signature(
+    state: &SceneState,
+    tree: &SceneTree,
+    catalogues: &HashMap<u64, Vec<ModelNodeInfo>>,
+    node_selection: &NodeSelection,
+) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     state.doc.len().hash(&mut hasher);
     for obj in &state.doc.objects {
@@ -306,7 +320,22 @@ fn tree_signature(state: &SceneState, tree: &SceneTree) -> u64 {
         obj.name.hash(&mut hasher);
         obj.kind.index().hash(&mut hasher);
         obj.parent.hash(&mut hasher);
+        format!("{:?}", obj.overrides).hash(&mut hasher);
     }
+    let mut ids: Vec<u64> = catalogues.keys().copied().collect();
+    ids.sort_unstable();
+    for id in ids {
+        id.hash(&mut hasher);
+        if let Some(nodes) = catalogues.get(&id) {
+            for node in nodes {
+                node.key.hash(&mut hasher);
+                node.depth.hash(&mut hasher);
+                node.present.hash(&mut hasher);
+            }
+        }
+    }
+    node_selection.object.hash(&mut hasher);
+    node_selection.key.hash(&mut hasher);
     let mut collapsed: Vec<u64> = tree.collapsed.iter().copied().collect();
     collapsed.sort_unstable();
     collapsed.hash(&mut hasher);
@@ -355,8 +384,11 @@ pub fn rebuild_scene_rows(
     state: Res<SceneState>,
     tree: Option<ResMut<SceneTree>>,
     rows: Query<(Entity, &SceneRow, &ThemeBackgroundColor, &Children)>,
+    node_rows: Query<(Entity, &SceneNodeRow, &ThemeBackgroundColor, &Children)>,
     texts: Query<&ThemeTextColor>,
     layout: Query<(&SceneRow, &ComputedNode, &UiGlobalTransform)>,
+    catalogs: Query<(&ModelOwner, &ModelNodeCatalog)>,
+    node_selection: Res<NodeSelection>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
     let Some(mut tree) = tree else {
@@ -378,8 +410,13 @@ pub fn rebuild_scene_rows(
             .map(|pos| pos * window.scale_factor()),
     );
     paint_scene_rows(&state, &tree, &rows, &texts, &mut commands);
+    paint_node_rows(&state, &node_selection, &node_rows, &texts, &mut commands);
 
-    let sig = tree_signature(&state, &tree);
+    let mut catalogues: HashMap<u64, Vec<ModelNodeInfo>> = HashMap::new();
+    for (owner, catalog) in &catalogs {
+        catalogues.insert(owner.0, catalog.nodes.clone());
+    }
+    let sig = tree_signature(&state, &tree, &catalogues, &node_selection);
     if tree.host == Some(host) && tree.signature == Some(sig) {
         return;
     }
@@ -452,6 +489,177 @@ pub fn rebuild_scene_rows(
             on(cancel_row_drag)
         };
         commands.spawn_scene(row);
+
+        if !tree.is_collapsed(id)
+            && let Some(nodes) = catalogues.get(&id)
+        {
+            for info in nodes {
+                spawn_node_row(&mut commands, host, id, depth + 1, info, &obj.overrides, &node_selection);
+            }
+        }
+    }
+}
+
+/// True when the node or one of its ancestors is excluded.
+fn node_excluded(overrides: &[eme_game_scene::NodeOverride], key: &NodeKey) -> bool {
+    overrides.iter().any(|entry| {
+        key.is_within(&entry.key)
+            && matches!(entry.op, OverrideOp::SetExcluded { excluded: true })
+    })
+}
+
+/// One row for a glTF node under its model object.
+fn spawn_node_row(
+    commands: &mut Commands,
+    host: Entity,
+    object: u64,
+    depth: usize,
+    info: &ModelNodeInfo,
+    overrides: &[eme_game_scene::NodeOverride],
+    selection: &NodeSelection,
+) {
+    let excluded = node_excluded(overrides, &info.key);
+    let selected = selection.object == Some(object) && selection.key.as_ref() == Some(&info.key);
+    let (bg, fg) = if selected {
+        (tokens::SELECT, tokens::SELECT_TEXT)
+    } else if excluded || !info.present {
+        (tokens::CLEAR, tokens::TEXT_DIM)
+    } else {
+        (tokens::CLEAR, tokens::TEXT)
+    };
+    let exclude_key = info.key.clone();
+    let row_key = info.key.clone();
+    let fill = if excluded { tokens::CLEAR } else { tokens::ACCENT };
+    let mark = Box::new(bsn! {
+        Node {
+            width: px(10),
+            height: px(10),
+            border: UiRect::all(px(1)),
+            border_radius: px(2),
+        }
+        ThemeBackgroundColor(fill)
+        ThemeBorderColor(tokens::BORDER)
+    }) as Part;
+    let box_part = Box::new(bsn! {
+        Node {
+            width: px(16),
+            height: px(16),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+        }
+        Button
+        NodeExclude(object, exclude_key)
+        Children [ {mark} ]
+        on(toggle_node_excluded)
+    }) as Part;
+    let row = bsn! {
+        Node {
+            height: px(TREE_ROW_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect {
+                left: px(8.0 + depth as f32 * INDENT),
+                right: px(6),
+            },
+            column_gap: px(6),
+        }
+        ThemeBackgroundColor(bg)
+        Button
+        SceneNodeRow(object, row_key)
+        ChildOf(host)
+        Children [
+            {box_part}
+            --
+            {icons::badge(icons::NODE)}
+            --
+            {text(info.key.name.clone(), FONT_SIZE, fg)}
+        ]
+        on(select_node_row)
+    };
+    commands.spawn_scene(row);
+}
+
+/// Clicking a node row selects the node and its owning object.
+fn select_node_row(
+    activate: On<Activate>,
+    rows: Query<&SceneNodeRow>,
+    mut state: ResMut<SceneState>,
+    mut node: ResMut<NodeSelection>,
+) {
+    let Ok(row) = rows.get(activate.entity) else {
+        return;
+    };
+    state.select_only(row.0);
+    node.object = Some(row.0);
+    node.key = Some(row.1.clone());
+}
+
+/// Flips a node's include checkbox and stores it as an exclusion override.
+fn toggle_node_excluded(
+    mut click: On<PointerClick>,
+    boxes: Query<&NodeExclude>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut commands: Commands,
+    owners: Query<(&ModelOwner, Entity)>,
+) {
+    if click.button != PointerButton::Primary {
+        return;
+    }
+    let Ok(toggle) = boxes.get(click.entity) else {
+        return;
+    };
+    click.propagate(false);
+    let excluded = state.doc.overrides(toggle.0).iter().any(|entry| {
+        entry.key == toggle.1 && matches!(entry.op, OverrideOp::SetExcluded { excluded: true })
+    });
+    undo.checkpoint(&state, "Exclude Node");
+    state.doc.set_override(
+        toggle.0,
+        toggle.1.clone(),
+        OverrideOp::SetExcluded {
+            excluded: !excluded,
+        },
+    );
+    state.touch();
+    if excluded
+        && let Some((_, entity)) = owners.iter().find(|(owner, _)| owner.0 == toggle.0)
+    {
+        commands.entity(entity).insert(ReloadModel);
+    }
+}
+
+/// Repaints node rows from the node selection.
+fn paint_node_rows(
+    state: &SceneState,
+    selection: &NodeSelection,
+    rows: &Query<(Entity, &SceneNodeRow, &ThemeBackgroundColor, &Children)>,
+    texts: &Query<&ThemeTextColor>,
+    commands: &mut Commands,
+) {
+    for (entity, row, bg, kids) in rows {
+        let selected = selection.object == Some(row.0)
+            && selection.key.as_ref() == Some(&row.1);
+        let excluded = node_excluded(state.doc.overrides(row.0), &row.1);
+        let (want_bg, want_fg) = if selected {
+            (tokens::SELECT, tokens::SELECT_TEXT)
+        } else if excluded {
+            (tokens::CLEAR, tokens::TEXT_DIM)
+        } else {
+            (tokens::CLEAR, tokens::TEXT)
+        };
+        if bg.0 != want_bg {
+            commands.entity(entity).insert(ThemeBackgroundColor(want_bg));
+        }
+        for child in kids.iter() {
+            if let Ok(current) = texts.get(child)
+                && current.0 != want_fg
+            {
+                commands.entity(child).insert(ThemeTextColor(want_fg.clone()));
+            }
+        }
     }
 }
 
@@ -945,20 +1153,22 @@ mod tests {
         let a = state.spawn(ObjectKind::Cube);
         let b = state.spawn(ObjectKind::Sphere);
         let mut tree = SceneTree::default();
-        let sig = tree_signature(&state, &tree);
+        let none = HashMap::new();
+        let node = NodeSelection::default();
+        let sig = tree_signature(&state, &tree, &none, &node);
 
         state.select_only(a);
-        assert_eq!(tree_signature(&state, &tree), sig);
+        assert_eq!(tree_signature(&state, &tree, &none, &node), sig);
 
         tree.toggle(a);
-        let collapsed = tree_signature(&state, &tree);
+        let collapsed = tree_signature(&state, &tree, &none, &node);
         assert_ne!(collapsed, sig, "collapse must force a rebuild");
 
         state.doc.rename(a, "Crate");
-        let renamed = tree_signature(&state, &tree);
+        let renamed = tree_signature(&state, &tree, &none, &node);
         assert_ne!(renamed, collapsed);
 
         state.doc.set_parent(a, Some(b));
-        assert_ne!(tree_signature(&state, &tree), renamed);
+        assert_ne!(tree_signature(&state, &tree, &none, &node), renamed);
     }
 }

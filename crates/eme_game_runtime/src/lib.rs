@@ -364,36 +364,20 @@ mod asset_tests {
     }
 }
 
-/// Stable identity of one node inside a model instance.
-///
-/// The path is the child ordinal from the instance root, which survives a
-/// document reindex and can be recovered from the spawned entity tree. The name
-/// rides along so a reorder or rename is *detected* rather than silently applied
-/// to the wrong node.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct NodeKey {
-    /// Child ordinals from the root to this node.
-    pub path: Vec<u32>,
-    /// Node name at the time it was recorded.
-    pub name: String,
-}
+pub use eme_game_scene::NodeKey;
 
 /// One key, built the same way by the importer and by the scene tagger.
 pub fn extend(parent: &[u32], ordinal: usize, name: &str) -> NodeKey {
-    let mut path = parent.to_vec();
-    path.push(ordinal as u32);
     NodeKey {
-        path,
-        name: name.to_owned(),
+        path: parent.to_vec(),
+        name: String::new(),
     }
+    .child(ordinal, name)
 }
 
 /// The key for a model root.
 pub fn root_key(name: &str) -> NodeKey {
-    NodeKey {
-        path: Vec::new(),
-        name: name.to_owned(),
-    }
+    NodeKey::root(name)
 }
 
 #[cfg(test)]

@@ -13,9 +13,11 @@ use eme::render::render_resource::Face;
 use eme::ui::widget::ViewportNode;
 use eme::window::{PrimaryWindow, Window};
 use eme_editor_core::Selection;
+use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, NodeKey, SceneBehaviour};
 use eme_game_scene::{Behaviour, ObjectKind, ObjectTransform, SceneDoc, SceneObject};
 
+use crate::console::ConsoleLog;
 use crate::orbit::{FlyMove, ViewMode};
 use crate::play::PlayState;
 use crate::tokens;
@@ -128,6 +130,31 @@ impl Default for ModelIndex {
         Self(GuidIndex::scan(crate::asset_root()))
     }
 }
+
+/// Selected node inside an instanced model.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct NodeSelection {
+    /// Scene object that owns the model.
+    pub object: Option<u64>,
+    /// Node key the inspector shows.
+    pub key: Option<NodeKey>,
+}
+
+impl NodeSelection {
+    /// Clears the node selection.
+    pub fn clear(&mut self) {
+        self.object = None;
+        self.key = None;
+    }
+}
+
+/// Links a spawned model root back to its scene object id.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ModelOwner(pub u64);
+
+/// Asks the spawner to rebuild one model tree, used when a node is included again.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ReloadModel;
 
 impl SceneState {
     /// Replaces the selection with `target`, or clears it; the anchor follows.
@@ -538,6 +565,7 @@ pub fn reconcile_scene(
                     color,
                     spec,
                     obj.asset.as_ref(),
+                    &obj.overrides,
                 );
                 state.entities.insert(id, entity);
             }
@@ -557,6 +585,7 @@ pub fn reconcile_scene(
                     color,
                     spec,
                     obj.asset.as_ref(),
+                    &obj.overrides,
                 );
                 state.entities.insert(id, entity);
             }
@@ -614,50 +643,79 @@ pub struct ModelInstance {
     pub path: String,
 }
 
-/// Identity of an entity inside its model's node tree.
-#[derive(Component, Clone, Default, PartialEq, Eq)]
-pub struct NodePath(pub NodeKey);
+/// Rebuilds model trees whose overrides need nodes that are currently despawned.
+pub fn respawn_model_roots(
+    mut commands: Commands,
+    mut roots: Query<(Entity, &WorldAssetRoot, &mut ReloadModel)>,
+) {
+    for (entity, root, _) in &mut roots {
+        commands
+            .entity(entity)
+            .insert(WorldAssetRoot(root.0.clone()));
+        commands.entity(entity).remove::<ReloadModel>();
+    }
+}
+
+/// Mirrors authored overrides from the document onto the live model root.
+pub fn sync_model_overrides(
+    state: Res<SceneState>,
+    mut roots: Query<(&ModelOwner, &mut ModelOverrides)>,
+) {
+    for (owner, mut live) in &mut roots {
+        let Some(obj) = state.doc.get(owner.0) else {
+            continue;
+        };
+        if live.0 != obj.overrides {
+            live.0 = obj.overrides.clone();
+        }
+    }
+}
+
+/// Reports orphaned and moved overrides in the console after a spawn or reload.
+pub fn report_override_issues(
+    roots: Query<(&ModelOwner, &ModelInstance, &eme_game_overrides::ModelOverrideStatus)>,
+    mut log: ResMut<ConsoleLog>,
+    mut seen: Local<HashMap<u64, u64>>,
+) {
+    for (owner, instance, status) in &roots {
+        if status.revision == 0 || seen.get(&owner.0) == Some(&status.revision) {
+            continue;
+        }
+        seen.insert(owner.0, status.revision);
+        for (from, to) in &status.moved {
+            log.push(format!(
+                "override moved on {}: {} → {}",
+                instance.path, from.name, to.name
+            ));
+        }
+        for orphan in &status.orphans {
+            let reason = match &orphan.reason {
+                eme_game_overrides::OrphanReason::Missing => "no node with this name".to_string(),
+                eme_game_overrides::OrphanReason::Renamed { found } => {
+                    format!("path now holds \"{found}\"")
+                }
+            };
+            log.push(format!(
+                "override orphaned on {}: {} ({reason})",
+                instance.path, orphan.key.name
+            ));
+        }
+    }
+}
+
+/// Drops a node selection when the primary object changes.
+pub fn sync_node_selection(state: Res<SceneState>, mut node: ResMut<NodeSelection>) {
+    if node
+        .object
+        .is_some_and(|object| state.primary() != Some(object))
+    {
+        node.clear();
+    }
+}
 
 /// Stand-in shown when a model's asset cannot be found.
 #[derive(Component, Clone, Copy, Default)]
 pub struct ModelPlaceholder;
-
-/// Stamps every node of a freshly spawned model with its index path.
-pub fn tag_model_nodes(
-    mut commands: Commands,
-    roots: Query<(Entity, &Children), With<ModelInstance>>,
-    children: Query<&Children>,
-    names: Query<&Name>,
-    tagged: Query<(), With<NodePath>>,
-) {
-    for (_root, kids) in &roots {
-        let root = NodeKey::default();
-        let mut stack: Vec<(Entity, NodeKey)> = kids
-            .iter()
-            .enumerate()
-            .map(|(ordinal, child)| {
-                let label = names
-                    .get(child)
-                    .map_or_else(|_| String::new(), |name| name.as_str().to_owned());
-                (child, eme_game_runtime::extend(&root.path, ordinal, &label))
-            })
-            .collect();
-        while let Some((entity, key)) = stack.pop() {
-            if tagged.get(entity).is_err() {
-                commands.entity(entity).insert(NodePath(key.clone()));
-            }
-            if let Ok(kids) = children.get(entity) {
-                for (ordinal, child) in kids.iter().enumerate() {
-                    let label = names
-                        .get(child)
-                        .map_or_else(|_| String::new(), |name| name.as_str().to_owned());
-                    let next = eme_game_runtime::extend(&key.path, ordinal, &label);
-                    stack.push((child, next));
-                }
-            }
-        }
-    }
-}
 
 /// Resolves an asset reference to an AssetServer-relative path and its pivot settings.
 ///
@@ -773,6 +831,7 @@ fn spawn_entity(
     color: Option<[f32; 4]>,
     spec: Behaviour,
     asset: Option<&eme_game_scene::AssetRef>,
+    overrides: &[eme_game_scene::NodeOverride],
 ) -> Entity {
     let trs = to_transform(transform);
     let behaviour = SceneBehaviour { spec, base: trs };
@@ -839,6 +898,8 @@ fn spawn_entity(
                                     model.spawn((
                                         WorldAssetRoot(handle),
                                         ModelInstance { guid, path: rel },
+                                        ModelOwner(id),
+                                        ModelOverrides(overrides.to_vec()),
                                     ));
                                 });
                         })
@@ -1698,6 +1759,42 @@ mod tests {
     }
 
     #[test]
+    fn orphan_warnings_reach_the_console() {
+        use eme::ecs::system::RunSystemOnce;
+        use eme_game_overrides::{ModelOverrideStatus, OrphanOverride, OrphanReason};
+
+        let mut world = World::new();
+        world.insert_resource(ConsoleLog::default());
+        world.spawn((
+            ModelOwner(1),
+            ModelInstance::default(),
+            ModelOverrideStatus {
+                revision: 1,
+                orphans: vec![OrphanOverride {
+                    key: NodeKey {
+                        path: vec![0],
+                        name: "Old".into(),
+                    },
+                    reason: OrphanReason::Renamed {
+                        found: "New".into(),
+                    },
+                }],
+                ..Default::default()
+            },
+        ));
+        world.run_system_once(report_override_issues).unwrap();
+
+        let log = world.resource::<ConsoleLog>();
+        assert!(
+            log.lines()
+                .iter()
+                .any(|line| line.contains("orphaned") && line.contains("Old") && line.contains("New")),
+            "{:?}",
+            log.lines()
+        );
+    }
+
+    #[test]
     fn the_importer_and_the_runtime_agree_on_node_keys() {
         use eme::ecs::system::RunSystemOnce;
 
@@ -1717,17 +1814,19 @@ mod tests {
         imported.sort();
 
         let mut world = World::new();
-        let root = world.spawn(ModelInstance::default()).id();
+        let root = world.spawn(ModelOverrides::default()).id();
+        let scene = world.spawn(Name::new("Scene0")).id();
         let first = world.spawn(Name::new("Node")).id();
         let second = world.spawn(Name::new("Node")).id();
         world.entity_mut(first).add_children(&[second]);
-        world.entity_mut(root).add_children(&[first]);
-        world.run_system_once(tag_model_nodes).unwrap();
+        world.entity_mut(scene).add_children(&[first]);
+        world.entity_mut(root).add_children(&[scene]);
+        world.run_system_once(eme_game_overrides::sync_model_nodes).unwrap();
 
-        let mut tagged: Vec<NodeKey> = world
-            .iter_entities()
-            .filter_map(|entity| entity.get::<NodePath>().map(|path| path.0.clone()))
-            .collect();
+        let catalog = world
+            .get::<eme_game_overrides::ModelNodeCatalog>(root)
+            .unwrap();
+        let mut tagged: Vec<NodeKey> = catalog.nodes.iter().map(|node| node.key.clone()).collect();
         tagged.sort();
         assert_eq!(tagged, imported);
         assert_eq!(imported.len(), 2);

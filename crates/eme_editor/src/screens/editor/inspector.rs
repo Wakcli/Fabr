@@ -12,13 +12,16 @@ use eme::text::{
     TextLayout,
 };
 use eme::ui_widgets::{Activate, Button, TextInput};
-use eme_game_scene::{Behaviour, BehaviourKind, ObjectTransform};
+use eme_game_overrides::{ModelNodeCatalog, ModelOverrideStatus, OrphanReason};
+use eme_game_scene::{
+    Behaviour, BehaviourKind, NodeKey, OverrideOp, ObjectTransform,
+};
 use std::path::{Path, PathBuf};
 
 use super::chrome::*;
 use super::docks;
 use super::icons;
-use crate::scene::{self, SceneState};
+use crate::scene::{self, ModelInstance, ModelOwner, NodeSelection, SceneState};
 use crate::tokens;
 use crate::undo::Undo;
 
@@ -47,6 +50,63 @@ pub struct FieldEdit {
 #[derive(Component, Clone, Default)]
 pub struct ObjectTitle;
 
+/// Wrapper hidden unless a model node is selected.
+#[derive(Component, Clone, Default)]
+pub struct NodeSectionRoot;
+
+/// Node name inside the model-node section.
+#[derive(Component, Clone, Default)]
+pub struct NodeTitle;
+
+/// Node visibility value text.
+#[derive(Component, Clone, Default)]
+pub struct NodeVisibleText;
+
+/// Button that flips the selected node's visibility override.
+#[derive(Component, Clone, Copy, Default)]
+pub struct NodeVisibleButton;
+
+/// One editable field in the model-node transform.
+#[derive(Component, Clone, Copy)]
+pub struct NodeAxisValue(pub Prop, pub u8);
+
+/// Remembers which node a focused node field was opened on.
+#[derive(Component, Clone)]
+pub struct NodeFieldEdit(pub u64, pub NodeKey);
+
+/// Host for orphan and diff rows.
+#[derive(Component, Clone, Default)]
+pub struct ModelOverrideRows;
+
+/// Remove one orphaned override.
+#[derive(Component, Clone, Default)]
+pub struct RemoveOrphan(pub u64, pub NodeKey);
+
+/// Expand the node choices for an orphan.
+#[derive(Component, Clone, Default)]
+pub struct ReattachOrphan(pub u64, pub NodeKey);
+
+/// Point an orphan at this node.
+#[derive(Component, Clone, Default)]
+pub struct AttachCandidate(pub u64, pub NodeKey, pub NodeKey);
+
+/// Orphan currently choosing a new node.
+#[derive(Resource, Clone, Default, Debug, PartialEq)]
+pub struct ReattachState {
+    /// Scene object that owns the model.
+    pub object: Option<u64>,
+    /// Orphaned key being reattached.
+    pub key: Option<NodeKey>,
+}
+
+impl ReattachState {
+    /// Forgets the pending reattach.
+    pub fn clear(&mut self) {
+        self.object = None;
+        self.key = None;
+    }
+}
+
 /// Marks the behaviour row's value text so it follows the selection.
 #[derive(Component, Clone, Copy, Default)]
 pub struct BehaviourValue;
@@ -59,6 +119,7 @@ pub enum Section {
     Behaviour,
     Visibility,
     Script,
+    Node,
 }
 
 /// Which inspector sections are open. All sections start open.
@@ -68,6 +129,7 @@ pub struct InspectorSections {
     pub behaviour: bool,
     pub visibility: bool,
     pub script: bool,
+    pub node: bool,
 }
 
 impl Default for InspectorSections {
@@ -77,6 +139,7 @@ impl Default for InspectorSections {
             behaviour: true,
             visibility: true,
             script: true,
+            node: true,
         }
     }
 }
@@ -89,6 +152,7 @@ impl InspectorSections {
             Section::Behaviour => self.behaviour,
             Section::Visibility => self.visibility,
             Section::Script => self.script,
+            Section::Node => self.node,
         }
     }
 
@@ -99,6 +163,7 @@ impl InspectorSections {
             Section::Behaviour => self.behaviour = open,
             Section::Visibility => self.visibility = open,
             Section::Script => self.script = open,
+            Section::Node => self.node = open,
         }
     }
 
@@ -149,6 +214,10 @@ pub fn body() -> Part {
             ImportReportRows
             --
             {object_row()}
+            --
+            {node_section()}
+            --
+            {override_rows()}
             --
             {section(Section::Transform, "Transform", transform_rows())}
             --
@@ -312,6 +381,241 @@ fn blur_field(
         *seat,
         value.value().to_string().as_str(),
     );
+}
+
+fn node_entity(
+    object: u64,
+    key: &NodeKey,
+    catalogs: &Query<(&ModelOwner, &ModelNodeCatalog)>,
+) -> Option<Entity> {
+    catalogs
+        .iter()
+        .find(|(owner, _)| owner.0 == object)
+        .and_then(|(_, catalog)| catalog.nodes.iter().find(|node| &node.key == key))
+        .and_then(|node| node.entity)
+}
+
+fn node_transform(
+    state: &SceneState,
+    object: u64,
+    key: &NodeKey,
+    catalogs: &Query<(&ModelOwner, &ModelNodeCatalog)>,
+    transforms: &Query<&Transform>,
+) -> Option<ObjectTransform> {
+    if let Some(entity) = node_entity(object, key, catalogs)
+        && let Ok(transform) = transforms.get(entity)
+    {
+        return Some(ObjectTransform {
+            translation: transform.translation.to_array(),
+            rotation: transform.rotation.to_array(),
+            scale: transform.scale.to_array(),
+        });
+    }
+    state.doc.overrides(object).iter().find_map(|entry| {
+        if entry.key == *key
+            && let OverrideOp::SetTransform(transform) = &entry.op
+        {
+            return Some(*transform);
+        }
+        None
+    })
+}
+
+fn node_visible(
+    state: &SceneState,
+    object: u64,
+    key: &NodeKey,
+    catalogs: &Query<(&ModelOwner, &ModelNodeCatalog)>,
+    visibilities: &Query<&Visibility>,
+) -> bool {
+    if let Some(value) = state.doc.overrides(object).iter().find_map(|entry| {
+        if entry.key == *key
+            && let OverrideOp::SetVisible { visible } = entry.op
+        {
+            return Some(visible);
+        }
+        None
+    }) {
+        return value;
+    }
+    node_entity(object, key, catalogs)
+        .and_then(|entity| visibilities.get(entity).ok())
+        .is_none_or(|visibility| !matches!(visibility, Visibility::Hidden))
+}
+
+/// Gives a clicked node field the keyboard and remembers which node it edits.
+fn focus_node_field(
+    press: On<PointerPress>,
+    fields: Query<&NodeAxisValue>,
+    node: Res<NodeSelection>,
+    mut values: Query<&mut EditableText>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    if press.button != PointerButton::Primary || !fields.contains(press.entity) {
+        return;
+    }
+    let (Some(object), Some(key)) = (node.object, node.key.clone()) else {
+        return;
+    };
+    commands.entity(press.entity).insert(NodeFieldEdit(object, key));
+    if let Ok(mut value) = values.get_mut(press.entity) {
+        value.queue_edit(TextEdit::SelectAll);
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
+
+/// Commits a node field on Enter, reverts on Escape.
+fn node_field_key(
+    key: On<FocusedInput<KeyboardInput>>,
+    fields: Query<(&NodeAxisValue, &EditableText)>,
+    edits: Query<&NodeFieldEdit>,
+    catalogs: Query<(&ModelOwner, &ModelNodeCatalog)>,
+    transforms: Query<&Transform>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    let input = &key.input;
+    if !input.state.is_pressed() || input.repeat {
+        return;
+    }
+    let entity = key.focused_entity;
+    let Ok((seat, value)) = fields.get(entity) else {
+        return;
+    };
+    if input.key_code == KeyCode::Escape {
+        commands.entity(entity).remove::<NodeFieldEdit>();
+        return;
+    }
+    if input.key_code != KeyCode::Enter {
+        return;
+    }
+    if let Ok(edit) = edits.get(entity) {
+        commit_node_field(
+            &mut state,
+            &mut undo,
+            *seat,
+            value.value().to_string().as_str(),
+            edit,
+            &catalogs,
+            &transforms,
+        );
+    }
+    commands.entity(entity).remove::<NodeFieldEdit>();
+    focus.clear();
+}
+
+/// Commits a node field that lost focus.
+fn blur_node_field(
+    lost: On<FocusLost>,
+    edits: Query<&NodeFieldEdit>,
+    fields: Query<(&NodeAxisValue, &EditableText)>,
+    catalogs: Query<(&ModelOwner, &ModelNodeCatalog)>,
+    transforms: Query<&Transform>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut commands: Commands,
+) {
+    let entity = lost.event_target();
+    let Ok(edit) = edits.get(entity) else {
+        return;
+    };
+    commands.entity(entity).remove::<NodeFieldEdit>();
+    let Ok((seat, value)) = fields.get(entity) else {
+        return;
+    };
+    commit_node_field(
+        &mut state,
+        &mut undo,
+        *seat,
+        value.value().to_string().as_str(),
+        edit,
+        &catalogs,
+        &transforms,
+    );
+}
+
+/// Parses a node field and stores it as a transform override with one checkpoint.
+fn commit_node_field(
+    state: &mut SceneState,
+    undo: &mut Undo,
+    seat: NodeAxisValue,
+    raw: &str,
+    edit: &NodeFieldEdit,
+    catalogs: &Query<(&ModelOwner, &ModelNodeCatalog)>,
+    transforms: &Query<&Transform>,
+) -> bool {
+    let Some(value) = parse_num(raw) else {
+        return false;
+    };
+    let Some(before) = node_transform(state, edit.0, &edit.1, catalogs, transforms) else {
+        return false;
+    };
+    let axis = seat.1 as usize;
+    if axis >= 3 {
+        return false;
+    }
+    let (label, want) = match seat.0 {
+        Prop::Position => {
+            let mut translation = before.translation;
+            translation[axis] = value;
+            (
+                "Edit Node Position",
+                ObjectTransform {
+                    translation,
+                    ..before
+                },
+            )
+        }
+        Prop::Rotation => {
+            let mut angles = degrees(before.rotation);
+            angles[axis] = value;
+            let rotation = euler_quat(angles);
+            ("Edit Node Rotation", ObjectTransform { rotation, ..before })
+        }
+        Prop::Scale => {
+            let Some(scale) = clamp_scale(value) else {
+                return false;
+            };
+            let mut axes = before.scale;
+            axes[axis] = scale;
+            ("Edit Node Scale", ObjectTransform { scale: axes, ..before })
+        }
+    };
+    if want == before {
+        return false;
+    }
+    undo.checkpoint(state, label);
+    state.doc
+        .set_override(edit.0, edit.1.clone(), OverrideOp::SetTransform(want));
+    state.touch();
+    true
+}
+
+/// Flips the selected node's visibility override.
+fn toggle_node_visible(
+    _: On<Activate>,
+    node: Res<NodeSelection>,
+    catalogs: Query<(&ModelOwner, &ModelNodeCatalog)>,
+    visibilities: Query<&Visibility>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+) {
+    let (Some(object), Some(key)) = (node.object, node.key.clone()) else {
+        return;
+    };
+    let current = node_visible(&state, object, &key, &catalogs, &visibilities);
+    undo.checkpoint(&state, "Toggle Node Visibility");
+    state.doc.set_override(
+        object,
+        key,
+        OverrideOp::SetVisible {
+            visible: !current,
+        },
+    );
+    state.touch();
 }
 
 /// Parses one field and writes it to the primary object, with one undo checkpoint.
@@ -509,6 +813,240 @@ fn transform_rows() -> Vec<Part> {
             ],
         ),
     ]
+}
+
+/// Container hidden unless a model node is selected.
+fn node_section() -> Part {
+    Box::new(bsn! {
+        Node {
+            display: Display::None,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+        }
+        NodeSectionRoot
+        Children [
+            {section(Section::Node, "Model Node", node_rows())}
+        ]
+    })
+}
+
+/// Host that the orphan and diff rows are rebuilt into.
+fn override_rows() -> Part {
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: px(2),
+        }
+        ModelOverrideRows
+    })
+}
+
+fn node_rows() -> Vec<Part> {
+    vec![
+        Box::new(bsn! {
+            Node {
+                height: px(PROPERTY_ROW_H),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(10)),
+            }
+            Children [ {node_title()} ]
+        }) as Part,
+        node_property(
+            "Position",
+            Prop::Position,
+            [
+                ("X", tokens::AXIS_X, tokens::AXIS_X_TEXT, "0"),
+                ("Y", tokens::AXIS_Y, tokens::AXIS_Y_TEXT, "0"),
+                ("Z", tokens::AXIS_Z, tokens::AXIS_Z_TEXT, "0"),
+            ],
+        ),
+        node_property(
+            "Rotation",
+            Prop::Rotation,
+            [
+                ("X", tokens::AXIS_X, tokens::AXIS_X_TEXT, "0"),
+                ("Y", tokens::AXIS_Y, tokens::AXIS_Y_TEXT, "0"),
+                ("Z", tokens::AXIS_Z, tokens::AXIS_Z_TEXT, "0"),
+            ],
+        ),
+        node_property(
+            "Scale",
+            Prop::Scale,
+            [
+                ("X", tokens::AXIS_X, tokens::AXIS_X_TEXT, "1"),
+                ("Y", tokens::AXIS_Y, tokens::AXIS_Y_TEXT, "1"),
+                ("Z", tokens::AXIS_Z, tokens::AXIS_Z_TEXT, "1"),
+            ],
+        ),
+        node_visible_row(),
+    ]
+}
+
+fn node_title() -> Part {
+    Box::new(bsn! {
+        Node { flex_grow: 1.0, display: Display::Flex, align_items: AlignItems::Center }
+        Children [ {node_title_text()} ]
+    })
+}
+
+fn node_title_text() -> Part {
+    Box::new(bsn! {
+        Text("No node")
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        NodeTitle
+    })
+}
+
+fn node_property(label: &str, prop: Prop, axes: [(&str, ThemeToken, ThemeToken, &str); 3]) -> Part {
+    let mut fields = Vec::new();
+    for (i, (letter, line, letter_tint, value)) in axes.into_iter().enumerate() {
+        fields.push(node_axis_field(
+            letter,
+            line,
+            letter_tint,
+            value,
+            NodeAxisValue(prop, i as u8),
+        ));
+    }
+
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect {
+                left: px(10),
+                right: px(8),
+                top: px(4),
+                bottom: px(4),
+            },
+            column_gap: px(6),
+        }
+        Children [
+            {label_cell(label)}
+            --
+            Node {
+                flex_grow: 1.0,
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(4),
+            }
+            Children [ {fields} ]
+        ]
+    })
+}
+
+fn node_axis_field(
+    letter: &str,
+    line: ThemeToken,
+    letter_tint: ThemeToken,
+    value: &str,
+    seat: NodeAxisValue,
+) -> Part {
+    let axis = text(letter, 9.0, letter_tint);
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            height: px(20),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(3)),
+            border: UiRect { left: px(2) },
+            column_gap: px(3),
+            overflow: Overflow::clip(),
+        }
+        ThemeBackgroundColor(tokens::FIELD)
+        ThemeBorderColor(line)
+        Children [
+            {axis}
+            --
+            {node_value_text(value.to_owned(), seat)}
+        ]
+    })
+}
+
+fn node_value_text(value: String, seat: NodeAxisValue) -> Part {
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
+        }
+        EditableText::new(value)
+        TextInput
+        TabIndex(0)
+        TextLayout {
+            linebreak: LineBreak::NoWrap,
+        }
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        seat
+        on(focus_node_field)
+        on(blur_node_field)
+        on(node_field_key)
+    })
+}
+
+fn node_visible_row() -> Part {
+    let toggle = Box::new(bsn! {
+        Node {
+            height: px(22),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(8)),
+        }
+        Button
+        NodeVisibleButton
+        Children [ {node_visible_value()} ]
+        on(toggle_node_visible)
+    }) as Part;
+    Box::new(bsn! {
+        Node {
+            height: px(PROPERTY_ROW_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(10)),
+            column_gap: px(6),
+        }
+        Children [
+            {label_cell("Visible")}
+            --
+            {spacer()}
+            --
+            {toggle}
+        ]
+    })
+}
+
+fn node_visible_value() -> Part {
+    Box::new(bsn! {
+        Text("yes")
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::ACCENT)
+        NodeVisibleText
+    })
 }
 
 fn label_cell(label: &str) -> Part {
@@ -827,6 +1365,286 @@ pub fn sync_inspector(
     }
 }
 
+/// Keeps the model-node section in step with the node selection.
+pub fn sync_node_inspector(
+    node: Res<NodeSelection>,
+    state: Res<SceneState>,
+    catalogs: Query<(&ModelOwner, &ModelNodeCatalog)>,
+    transforms: Query<&Transform>,
+    visibilities: Query<&Visibility>,
+    mut roots: Query<&mut Node, With<NodeSectionRoot>>,
+    mut titles: Query<&mut Text, (With<NodeTitle>, Without<NodeVisibleText>)>,
+    mut visibles: Query<&mut Text, (With<NodeVisibleText>, Without<NodeTitle>)>,
+    mut fields: Query<(Entity, &NodeAxisValue, &mut EditableText, Option<&NodeFieldEdit>)>,
+) {
+    let selected = node
+        .object
+        .zip(node.key.clone())
+        .filter(|_| state.doc.get(node.object.unwrap_or_default()).is_some());
+    for mut root in &mut roots {
+        let want = if selected.is_some() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if root.display != want {
+            root.display = want;
+        }
+    }
+    let Some((object, key)) = selected else {
+        return;
+    };
+
+    let title = if key.path.is_empty() {
+        key.name.clone()
+    } else {
+        let path = key.path.iter().map(u32::to_string).collect::<Vec<_>>().join(".");
+        format!("{}  [{}]", key.name, path)
+    };
+    for mut text in &mut titles {
+        if text.0 != title {
+            text.0 = title.clone();
+        }
+    }
+    let visible = node_visible(&state, object, &key, &catalogs, &visibilities);
+    let label = if visible { "yes" } else { "no" };
+    for mut text in &mut visibles {
+        if text.0 != label {
+            text.0 = label.into();
+        }
+    }
+
+    let Some(transform) = node_transform(&state, object, &key, &catalogs, &transforms) else {
+        return;
+    };
+    for (_entity, seat, mut value, edit) in &mut fields {
+        if edit.is_some() {
+            continue;
+        }
+        let text = match seat.0 {
+            Prop::Position => fmt_num(transform.translation[seat.1 as usize]),
+            Prop::Rotation => fmt_num(degrees(transform.rotation)[seat.1 as usize]),
+            Prop::Scale => fmt_num(transform.scale[seat.1 as usize]),
+        };
+        if value.value().to_string() != text {
+            value.editor.set_text(&text);
+        }
+    }
+}
+
+/// Finds the latest import diff for a live instance, matching files by real path.
+fn latest_diff<'a>(
+    service: &'a crate::import::ImportService,
+    instance: &ModelInstance,
+) -> Option<&'a crate::import::NodeDiff> {
+    let want = std::fs::canonicalize(crate::asset_root().join(&instance.path)).ok()?;
+    service.diffs.iter().find_map(|(path, diff)| {
+        (std::fs::canonicalize(path).ok().as_deref() == Some(want.as_path())).then_some(diff)
+    })
+}
+
+/// Rebuilds the diff and orphan rows for the selected model.
+pub fn sync_override_panel(
+    mut commands: Commands,
+    state: Res<SceneState>,
+    node: Res<NodeSelection>,
+    service: Res<crate::import::ImportService>,
+    roots: Query<(
+        &ModelOwner,
+        &ModelNodeCatalog,
+        &ModelOverrideStatus,
+        &ModelInstance,
+    )>,
+    mut reattach: ResMut<ReattachState>,
+    hosts: Query<Entity, With<ModelOverrideRows>>,
+    mut shown: Local<Option<(Entity, String)>>,
+) {
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    let object = node.object.or_else(|| state.primary());
+    let model = object.and_then(|id| {
+        roots
+            .iter()
+            .find(|(owner, ..)| owner.0 == id)
+            .map(|(_, catalog, status, instance)| (catalog, status, instance))
+    });
+    if reattach
+        .object
+        .is_some_and(|pending| Some(pending) != object)
+    {
+        reattach.clear();
+    }
+    let signature = match model {
+        Some((catalog, status, instance)) => {
+            let diff = latest_diff(&service, instance).map_or_else(String::new, |diff| {
+                let mut text = diff.headline();
+                for line in diff.summary_lines() {
+                    text.push('\n');
+                    text.push_str(&line);
+                }
+                text
+            });
+            format!(
+                "{:?}|{}|{}|{:?}|{diff}",
+                object,
+                status.revision,
+                catalog.nodes.len(),
+                reattach
+            )
+        }
+        None => format!("{:?}|none", object),
+    };
+    if shown.as_ref() == Some(&(host, signature.clone())) {
+        return;
+    }
+    *shown = Some((host, signature));
+    commands.entity(host).despawn_children();
+    let Some((catalog, status, instance)) = model else {
+        return;
+    };
+    let Some(object) = object else {
+        return;
+    };
+
+    if let Some(diff) = latest_diff(&service, instance) {
+        let headline = text(
+            format!("node diff: {}", diff.headline()),
+            FONT_SIZE,
+            tokens::TEXT_DIM,
+        );
+        commands.spawn_scene(bsn! {
+            Node { display: Display::Flex, padding: UiRect::horizontal(px(8)) }
+            ChildOf(host)
+            Children [ {headline} ]
+        });
+        for line in diff.summary_lines() {
+            let row = text(line, FONT_SIZE, tokens::TEXT_DIM);
+            commands.spawn_scene(bsn! {
+                Node {
+                    display: Display::Flex,
+                    padding: UiRect { left: px(14), right: px(8) },
+                }
+                ChildOf(host)
+                Children [ {row} ]
+            });
+        }
+    }
+
+    for orphan in &status.orphans {
+        let reason = match &orphan.reason {
+            OrphanReason::Missing => "no node with this name".to_string(),
+            OrphanReason::Renamed { found } => format!("path now holds \"{found}\""),
+        };
+        let label = format!("orphan {}: {reason}", orphan.key.name);
+        let title = text(label, FONT_SIZE, tokens::TEXT_DIM);
+        let remove_key = orphan.key.clone();
+        let reattach_key = orphan.key.clone();
+        let remove_label = text("Remove", FONT_SIZE, tokens::TEXT);
+        let reattach_label = text("Reattach", FONT_SIZE, tokens::ACCENT);
+        let remove = Box::new(bsn! {
+            Node { padding: UiRect::horizontal(px(6)), height: px(22), display: Display::Flex, align_items: AlignItems::Center }
+            Button
+            RemoveOrphan(object, remove_key)
+            Children [ {remove_label} ]
+            on(remove_orphan)
+        }) as Part;
+        let reattach_button = Box::new(bsn! {
+            Node { padding: UiRect::horizontal(px(6)), height: px(22), display: Display::Flex, align_items: AlignItems::Center }
+            Button
+            ReattachOrphan(object, reattach_key)
+            Children [ {reattach_label} ]
+            on(reattach_orphan)
+        }) as Part;
+        commands.spawn_scene(bsn! {
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(2),
+                padding: UiRect::horizontal(px(8)),
+            }
+            ChildOf(host)
+            Children [ {title} -- {spacer()} -- {reattach_button} -- {remove} ]
+        });
+
+        if reattach.object == Some(object) && reattach.key.as_ref() == Some(&orphan.key) {
+            for candidate in &catalog.nodes {
+                if candidate.key == orphan.key {
+                    continue;
+                }
+                let from_key = orphan.key.clone();
+                let to_key = candidate.key.clone();
+                let candidate_label = text(
+                    format!("{}  [{}]", candidate.key.name, candidate.key.path.iter().map(u32::to_string).collect::<Vec<_>>().join(".")),
+                    FONT_SIZE,
+                    tokens::TEXT_DIM,
+                );
+                commands
+                    .spawn_scene(bsn! {
+                        Node {
+                            padding: UiRect { left: px(20), right: px(8), top: px(2), bottom: px(2) },
+                            display: Display::Flex,
+                            align_items: AlignItems::Center,
+                        }
+                        Button
+                        AttachCandidate(object, from_key, to_key)
+                        ChildOf(host)
+                        Children [ {candidate_label} ]
+                        on(attach_candidate)
+                    });
+            }
+        }
+    }
+}
+
+/// Removes every override attached to an orphaned key.
+fn remove_orphan(
+    activate: On<Activate>,
+    rows: Query<&RemoveOrphan>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+) {
+    let Ok(row) = rows.get(activate.entity) else {
+        return;
+    };
+    undo.checkpoint(&state, "Remove Override");
+    if state.doc.remove_node_overrides(row.0, &row.1) {
+        state.touch();
+    }
+}
+
+/// Starts choosing a new node for an orphan.
+fn reattach_orphan(
+    activate: On<Activate>,
+    rows: Query<&ReattachOrphan>,
+    mut reattach: ResMut<ReattachState>,
+) {
+    let Ok(row) = rows.get(activate.entity) else {
+        return;
+    };
+    reattach.object = Some(row.0);
+    reattach.key = Some(row.1.clone());
+}
+
+/// Points an orphan at the chosen node.
+fn attach_candidate(
+    activate: On<Activate>,
+    rows: Query<&AttachCandidate>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut reattach: ResMut<ReattachState>,
+) {
+    let Ok(row) = rows.get(activate.entity) else {
+        return;
+    };
+    undo.checkpoint(&state, "Reattach Override");
+    if state.doc.reattach_override(row.0, &row.1, row.2.clone()) {
+        state.touch();
+    }
+    reattach.clear();
+}
+
 /// Keeps scene hotkeys off while a transform field is typing.
 ///
 /// `keyboard_edit` reads key state directly rather than the focused input
@@ -835,12 +1653,13 @@ pub fn sync_inspector(
 pub fn typing_guard(
     focus: Res<InputFocus>,
     fields: Query<&AxisValue>,
+    node_fields: Query<&NodeAxisValue>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
 ) {
     let Some(entity) = focus.get() else {
         return;
     };
-    if !fields.contains(entity) {
+    if !fields.contains(entity) && !node_fields.contains(entity) {
         return;
     }
     for key in [

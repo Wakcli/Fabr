@@ -13,7 +13,7 @@ use eme::text::{
 };
 use eme::ui_widgets::{Activate, Button, TextInput};
 use eme_game_scene::{Behaviour, BehaviourKind, ObjectTransform};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::chrome::*;
 use super::docks;
@@ -1101,6 +1101,27 @@ pub struct ImportReportRows;
 #[derive(Component, Clone, Default)]
 pub struct Reimport(pub PathBuf);
 
+/// Marks the Options button and carries the file it opens options for.
+#[derive(Component, Clone, Default)]
+pub struct ImportOptions(pub PathBuf);
+
+fn open_options(
+    clicked: On<Activate>,
+    buttons: Query<&ImportOptions>,
+    mut panel: ResMut<crate::import::OptionsPanel>,
+) {
+    let Ok(button) = buttons.get(clicked.entity) else {
+        return;
+    };
+    let folder = button
+        .0
+        .parent()
+        .and_then(|parent| parent.strip_prefix(crate::build::workspace_dir()).ok())
+        .map_or_else(|| PathBuf::from("assets"), Path::to_path_buf);
+    let source = button.0.clone();
+    panel.open_for(&source, &folder);
+}
+
 /// Renders the report of the model selected in the `FileSystem` dock.
 pub fn sync_import_report(
     mut commands: Commands,
@@ -1163,6 +1184,7 @@ pub fn sync_import_report(
     }
 
     let path = report.file.path.clone();
+    let reimport_path = path.clone();
     let label = text("Reimport", FONT_SIZE, tokens::ACCENT);
     commands
         .spawn_scene(bsn! {
@@ -1173,11 +1195,27 @@ pub fn sync_import_report(
                 padding: UiRect::horizontal(px(6)),
             }
             Button
-            Reimport(path)
+            Reimport(reimport_path)
             ChildOf(host)
             Children [ {label} ]
         })
         .observe(reimport);
+
+    let options_label = text("Import options…", FONT_SIZE, tokens::TEXT);
+    commands
+        .spawn_scene(bsn! {
+            Node {
+                height: px(PROPERTY_ROW_H),
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(6)),
+            }
+            Button
+            ImportOptions(path)
+            ChildOf(host)
+            Children [ {options_label} ]
+        })
+        .observe(open_options);
 }
 
 fn reimport(

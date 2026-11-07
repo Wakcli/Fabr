@@ -16,4 +16,4 @@ pub use panel::{OptionsPanel, panel, sync as sync_panel};
 pub use sidecar::Sidecar;
 pub use report::{ImportError, ImportReport};
 pub use service::{ImportRequest, ImportService, ImportStatus, poll_system, status_system};
-pub use settings::ImportSettings;
+pub use settings::{ImportSettings, UpAxis};

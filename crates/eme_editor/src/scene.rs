@@ -7,6 +7,7 @@ use eme::color::LinearRgba;
 use eme::feathers::theme::UiTheme;
 use eme::gizmos::transform_gizmo::TransformGizmoState;
 use eme::math::{ops, Rect};
+use eme::gltf::GltfAssetLabel;
 use eme::prelude::*;
 use eme::render::render_resource::Face;
 use eme::ui::widget::ViewportNode;
@@ -409,7 +410,7 @@ pub fn cell(slot: usize) -> (f32, f32) {
 /// The resting transform for a freshly spawned kind.
 fn resting(kind: ObjectKind, x: f32, z: f32) -> ObjectTransform {
     let y = match kind {
-        ObjectKind::Empty => 0.0,
+        ObjectKind::Empty | ObjectKind::Model => 0.0,
         ObjectKind::Cube | ObjectKind::Sphere | ObjectKind::Cylinder => CUBE / 2.0,
         ObjectKind::Plane => PLANE_Y,
         ObjectKind::PointLight => 3.0,
@@ -524,6 +525,7 @@ pub fn reconcile_scene(
                     &transform,
                     color,
                     spec,
+                    obj.asset.as_ref(),
                 );
                 state.entities.insert(id, entity);
             }
@@ -541,11 +543,113 @@ pub fn reconcile_scene(
                     &transform,
                     color,
                     spec,
+                    obj.asset.as_ref(),
                 );
                 state.entities.insert(id, entity);
             }
         }
     }
+}
+
+impl SceneState {
+    /// Adds a model object for `rel` (assets-relative), returning its id.
+    ///
+    /// The sidecar GUID is read (or created) here so the scene stores the durable
+    /// identity rather than only a path.
+    pub fn spawn_model(&mut self, rel: &str, at: [f32; 3]) -> Option<u64> {
+        let full = crate::asset_root().join(rel);
+        if !full.is_file() {
+            warn!("cannot instance {rel}: file is missing");
+            return None;
+        }
+        let sidecar = crate::import::Sidecar::load_or_new(&full);
+        let name = full
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Model".into());
+        let mut transform = ObjectTransform::from_translation(at);
+        let scale = sidecar.settings.transform.scale;
+        transform = transform.with_scale([scale, scale, scale]);
+        if sidecar.settings.transform.up_axis == crate::import::UpAxis::Z {
+            let tilt = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+            transform = transform.with_rotation(tilt.to_array());
+        }
+        let id = self.doc.add(ObjectKind::Model, name, transform);
+        self.doc.set_asset(
+            id,
+            Some(eme_game_scene::AssetRef {
+                guid: sidecar.guid,
+                path: rel.to_owned(),
+            }),
+        );
+        self.select_only(id);
+        self.touch();
+        Some(id)
+    }
+}
+
+/// One instanced model; the root of a spawned glTF scene.
+#[derive(Component, Clone, Default)]
+#[expect(dead_code, reason = "hot reload watches these fields")]
+pub struct ModelInstance {
+    /// Sidecar GUID of the asset this instance came from.
+    pub guid: String,
+    /// AssetServer-relative path it was loaded from.
+    pub path: String,
+}
+
+/// Position of an entity inside its model's node tree, root to leaf.
+#[derive(Component, Clone, Default, PartialEq, Eq)]
+pub struct NodePath(pub Vec<u32>);
+
+/// Stand-in shown when a model's asset cannot be found.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ModelPlaceholder;
+
+/// Stamps every node of a freshly spawned model with its index path.
+pub fn tag_model_nodes(
+    mut commands: Commands,
+    roots: Query<(Entity, &Children), With<ModelInstance>>,
+    children: Query<&Children>,
+    tagged: Query<(), With<NodePath>>,
+) {
+    for (root, kids) in &roots {
+        if tagged.get(root).is_err() {
+            commands.entity(root).insert(NodePath(Vec::new()));
+        }
+        let mut stack: Vec<(Entity, Vec<u32>)> = kids
+            .iter()
+            .enumerate()
+            .map(|(index, child)| (child, vec![index as u32]))
+            .collect();
+        while let Some((entity, path)) = stack.pop() {
+            if tagged.get(entity).is_err() {
+                commands.entity(entity).insert(NodePath(path.clone()));
+            }
+            if let Ok(kids) = children.get(entity) {
+                for (index, child) in kids.iter().enumerate() {
+                    let mut next = path.clone();
+                    next.push(index as u32);
+                    stack.push((child, next));
+                }
+            }
+        }
+    }
+}
+
+/// Resolves an asset reference to an AssetServer-relative path.
+///
+/// GUID first, so renaming or moving the file keeps the scene working; the stored
+/// path is the fallback for assets imported before the sidecar existed.
+fn resolve_model(asset: &eme_game_scene::AssetRef, _asset_server: &AssetServer) -> Option<String> {
+    let root = crate::asset_root();
+    let found = eme_game_runtime::find_by_guid(&root, &asset.guid)
+        .or_else(|| {
+            let candidate = root.join(&asset.path);
+            candidate.is_file().then_some(candidate)
+        })?;
+    let rel = found.strip_prefix(&root).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
 }
 
 /// Carries the change `before` → current on `id` onto every descendant of `id`.
@@ -633,6 +737,7 @@ fn spawn_entity(
     transform: &ObjectTransform,
     color: Option<[f32; 4]>,
     spec: Behaviour,
+    asset: Option<&eme_game_scene::AssetRef>,
 ) -> Entity {
     let trs = to_transform(transform);
     let behaviour = SceneBehaviour { spec, base: trs };
@@ -681,6 +786,45 @@ fn spawn_entity(
                 .observe(drag_start)
                 .observe(drag_object);
             entity
+        }
+        ObjectKind::Model => {
+            let resolved = asset.and_then(|asset| resolve_model(asset, asset_server));
+            match resolved {
+                Some(rel) => {
+                    let handle = asset_server
+                        .load(GltfAssetLabel::Scene(0).from_asset(rel.clone()));
+                    let guid = asset.map(|asset| asset.guid.clone()).unwrap_or_default();
+                    commands
+                        .spawn((
+                            trs,
+                            WorldAssetRoot(handle),
+                            ModelInstance {
+                                guid,
+                                path: rel,
+                            },
+                        ))
+                        .id()
+                }
+                None => {
+                    warn!(
+                        "model asset missing for object {id}: {}",
+                        asset.map_or_else(|| "<no reference>".into(), |asset| asset.path.clone())
+                    );
+                    let material = materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.85, 0.15, 0.45),
+                        emissive: Color::srgb(0.35, 0.02, 0.15).into(),
+                        ..default()
+                    });
+                    commands
+                        .spawn((
+                            Mesh3d(assets.cube(meshes)),
+                            MeshMaterial3d(material),
+                            trs,
+                            ModelPlaceholder,
+                        ))
+                        .id()
+                }
+            }
         }
         ObjectKind::Cube | ObjectKind::Sphere | ObjectKind::Cylinder | ObjectKind::Plane => {
             let mesh = match kind {

@@ -283,7 +283,7 @@ fn host_rect(
 fn kind_badge(kind: ObjectKind) -> Part {
     match kind {
         ObjectKind::Empty => icons::mono(icons::EMPTY, tokens::CLASS_NODE),
-        ObjectKind::Cube => icons::badge(icons::MESH),
+        ObjectKind::Cube | ObjectKind::Model => icons::badge(icons::MESH),
         ObjectKind::Sphere => icons::mono(icons::SPHERE, tokens::CLASS_MESH),
         ObjectKind::Cylinder => icons::mono(icons::CYLINDER, tokens::CLASS_MESH),
         ObjectKind::Plane => icons::mono(icons::PLANE, tokens::CLASS_MESH),

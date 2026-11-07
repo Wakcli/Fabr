@@ -222,6 +222,9 @@ fn scan_dir(
         if name.starts_with('.') || SKIP.contains(&name.as_str()) {
             continue;
         }
+        if name.ends_with(".import.ron") || name.ends_with(".import-preset.ron") {
+            continue;
+        }
         let meta = entry.metadata().ok().map(|meta| (meta.len(), mtime(&meta)));
         entries.push((name, file_type.is_dir(), meta));
     }
@@ -530,6 +533,7 @@ fn spawn_entry(
         Children [ {kids} ]
         on(click_file)
         on(open_folder_menu)
+        on(start_asset_drag)
     };
     commands.spawn_scene(row);
 }
@@ -771,6 +775,61 @@ mod tests {
         let scan = scan(&tmp.0.join("absent"), &HashSet::new());
         assert!(scan.missing);
         assert_eq!(rows(&scan, &HashSet::new()), [Row::MissingRoot]);
+    }
+}
+
+/// A model being dragged out of the tree towards the viewport.
+#[derive(Resource, Default)]
+pub struct AssetDrag(pub Option<String>);
+
+pub fn start_asset_drag(
+    start: On<PointerDragStart>,
+    rows: Query<&FileRow>,
+    mut drag: ResMut<AssetDrag>,
+) {
+    if start.button != PointerButton::Primary {
+        return;
+    }
+    let Ok(row) = rows.get(start.entity) else {
+        return;
+    };
+    if row.is_dir || !is_model(Path::new(&row.rel)) {
+        return;
+    }
+    drag.0 = Some(row.rel.clone());
+}
+
+pub fn drop_asset(
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut drag: ResMut<AssetDrag>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    panels: Query<(&ComputedNode, &UiGlobalTransform), With<super::viewport::ViewportPanel>>,
+    mut state: ResMut<SceneState>,
+    mut log: ResMut<ConsoleLog>,
+) {
+    let Some(rel) = drag.0.clone() else {
+        return;
+    };
+    if mouse.pressed(MouseButton::Left) {
+        return;
+    }
+    drag.0 = None;
+
+    let Ok((panel, global)) = panels.single() else {
+        return;
+    };
+    let rect = Rect::from_center_size(global.translation.trunc(), panel.size());
+    let inside = window
+        .cursor_position()
+        .map(|pos| pos * window.scale_factor())
+        .is_some_and(|pos| rect.contains(pos));
+    if !inside {
+        log.push(format!("dropped {rel} outside the viewport; nothing instanced"));
+        return;
+    }
+    match state.spawn_model(&rel, [0.0, 0.0, 0.0]) {
+        Some(_) => log.push(format!("instanced {rel} at the origin")),
+        None => log.push(format!("could not instance {rel}")),
     }
 }
 

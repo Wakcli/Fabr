@@ -33,11 +33,13 @@ pub enum ObjectKind {
     Sun,
     /// Camera.
     Camera,
+    /// A glTF/GLB model instanced from an imported asset.
+    Model,
 }
 
 impl ObjectKind {
     /// Every kind the create menu offers, in menu order.
-    pub const ALL: [ObjectKind; 8] = [
+    pub const ALL: [ObjectKind; 9] = [
         ObjectKind::Empty,
         ObjectKind::Cube,
         ObjectKind::Sphere,
@@ -46,6 +48,7 @@ impl ObjectKind {
         ObjectKind::PointLight,
         ObjectKind::Sun,
         ObjectKind::Camera,
+        ObjectKind::Model,
     ];
 
     /// Stable index for per-kind tables; must stay in `ALL` order.
@@ -64,6 +67,7 @@ impl ObjectKind {
             ObjectKind::PointLight => "Point Light",
             ObjectKind::Sun => "Sun",
             ObjectKind::Camera => "Camera",
+            ObjectKind::Model => "Model",
         }
     }
 }
@@ -168,6 +172,19 @@ impl Default for Behaviour {
     }
 }
 
+/// Pointer from a scene object to an imported model asset.
+///
+/// The GUID is the durable identity: moving or renaming the file keeps it, and a
+/// scene resolves by GUID first. The path is a readable fallback for when the
+/// sidecar cannot be found.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct AssetRef {
+    /// GUID stored in `<asset>.import.ron`.
+    pub guid: String,
+    /// Project-relative path, used when the GUID lookup fails.
+    pub path: String,
+}
+
 /// One authored object. `id` is stable for the life of the document.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct SceneObject {
@@ -191,6 +208,9 @@ pub struct SceneObject {
     /// authored base.
     #[serde(default)]
     pub behaviour: Behaviour,
+    /// Imported model this object instances, for [`ObjectKind::Model`].
+    #[serde(default)]
+    pub asset: Option<AssetRef>,
 }
 
 impl SceneObject {
@@ -280,6 +300,7 @@ impl SceneDoc {
             scale: transform.scale,
             color: None,
             behaviour: Behaviour::default(),
+            asset: None,
         });
         id
     }
@@ -359,6 +380,17 @@ impl SceneDoc {
         match self.get_mut(id) {
             Some(obj) => {
                 obj.behaviour = behaviour;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Points an object at an imported asset, or clears it.
+    pub fn set_asset(&mut self, id: u64, asset: Option<AssetRef>) -> bool {
+        match self.get_mut(id) {
+            Some(obj) => {
+                obj.asset = asset;
                 true
             }
             None => false,
@@ -683,6 +715,55 @@ mod tests {
             SceneDoc::from_ron(&doc.to_ron().unwrap()),
             Err(SceneError::DuplicateId(1))
         );
+    }
+
+    #[test]
+    fn a_model_object_round_trips_with_its_asset() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Model,
+            "chair",
+            ObjectTransform::from_translation([1.0, 0.0, 2.0]),
+        );
+        doc.set_asset(
+            id,
+            Some(AssetRef {
+                guid: "0123456789abcdef".into(),
+                path: "models/chair.glb".into(),
+            }),
+        );
+
+        let text = doc.to_ron().unwrap();
+        let back = SceneDoc::from_ron(&text).unwrap();
+        let object = back.get(id).unwrap();
+        assert_eq!(object.kind, ObjectKind::Model);
+        assert_eq!(
+            object.asset,
+            Some(AssetRef {
+                guid: "0123456789abcdef".into(),
+                path: "models/chair.glb".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn objects_without_an_asset_still_load() {
+        let text = r#"(
+            format_version: 1,
+            objects: [(
+                id: 1,
+                name: "old",
+                kind: Cube,
+                parent: None,
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0),
+                color: None,
+            )],
+        )"#;
+        let doc = SceneDoc::from_ron(text).unwrap();
+        assert_eq!(doc.objects[0].asset, None);
+        assert_eq!(doc.objects[0].kind, ObjectKind::Cube);
     }
 
     #[test]

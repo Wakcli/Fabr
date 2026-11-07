@@ -207,6 +207,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::console::ConsoleLog>()
             .init_resource::<crate::import::ImportService>()
             .init_resource::<files::ImportMenu>()
+            .init_resource::<files::AssetDrag>()
             .init_resource::<crate::import::OptionsPanel>()
                         .add_observer(menu::request_object_menu)
             .add_systems(
@@ -221,6 +222,7 @@ impl Plugin for EditorPlugin {
                     scene::face_viewport_camera,
                     scene::keyboard_edit,
                     scene::draw_camera_frusta,
+                    scene::tag_model_nodes,
                     crate::selection_outline::sync_outlines,
                     (
                         crate::console::sync,
@@ -228,6 +230,7 @@ impl Plugin for EditorPlugin {
                         crate::import::status_system,
                         crate::import::sync_panel,
                         (
+                            files::drop_asset,
                             files::accept_drop,
                             files::sync_import_menu,
                             files::close_import_menu,

@@ -83,6 +83,7 @@ enum Body {
     PointLight,
     Sun,
     Camera,
+    Model,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,6 +92,18 @@ enum Shape {
     Sphere,
     Cylinder,
     Plane,
+}
+
+/// Resolves a model reference the same way the editor does: GUID, then path.
+fn model_path(asset: &eme_game_scene::AssetRef) -> Option<String> {
+    let root = PathBuf::from("assets");
+    let found = eme_game_runtime::find_by_guid(&root, &asset.guid)
+        .or_else(|| {
+            let candidate = root.join(&asset.path);
+            candidate.is_file().then_some(candidate)
+        })?;
+    let rel = found.strip_prefix(&root).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
 }
 
 fn body(kind: ObjectKind) -> Body {
@@ -103,6 +116,7 @@ fn body(kind: ObjectKind) -> Body {
         ObjectKind::PointLight => Body::PointLight,
         ObjectKind::Sun => Body::Sun,
         ObjectKind::Camera => Body::Camera,
+        ObjectKind::Model => Body::Model,
     }
 }
 
@@ -152,6 +166,7 @@ pub fn spawn_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
     scene: Res<LoadedScene>,
 ) {
     let mut view: Option<Transform> = None;
@@ -171,6 +186,24 @@ pub fn spawn_scene(
             }
             Body::Camera => {
                 view.get_or_insert(trs);
+            }
+            Body::Model => {
+                let Some(asset) = obj.asset.as_ref() else {
+                    warn!("model object {} has no asset reference", obj.name);
+                    continue;
+                };
+                let resolved = model_path(asset);
+                match resolved {
+                    Some(rel) => {
+                        let handle =
+                            asset_server.load(GltfAssetLabel::Scene(0).from_asset(rel));
+                        commands.spawn((trs, WorldAssetRoot(handle), behaviour, name));
+                    }
+                    None => warn!(
+                        "model asset missing for {}: {}",
+                        obj.name, asset.path
+                    ),
+                }
             }
             Body::PointLight => {
                 commands.spawn((
@@ -312,6 +345,7 @@ mod tests {
             (ObjectKind::PointLight, Body::PointLight),
             (ObjectKind::Sun, Body::Sun),
             (ObjectKind::Camera, Body::Camera),
+            (ObjectKind::Model, Body::Model),
         ];
         for (kind, want) in expected {
             assert_eq!(body(kind), want, "{}", kind.label());

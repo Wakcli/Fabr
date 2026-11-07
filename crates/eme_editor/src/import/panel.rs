@@ -334,7 +334,7 @@ fn material_rows(panel: &OptionsPanel) -> Vec<Part> {
         option("Extract materials", "", None),
         option("Keep overrides on reimport", "", None),
         option(
-            "Max texture size",
+            "Max texture size (report only)",
             &format!("{} px", panel.settings.materials.max_texture_size),
             Some(Action::MaxTexture),
         ),

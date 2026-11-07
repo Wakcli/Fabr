@@ -5,6 +5,8 @@
 //! time, so a behaviour never writes back into the document.
 
 use eme_ecs::prelude::*;
+use std::path::{Path, PathBuf};
+
 use eme_game_scene::{Behaviour, BehaviourKind};
 use eme_math::prelude::*;
 use eme_time::Time;
@@ -101,5 +103,73 @@ mod tests {
         let base = base();
         let idle = Behaviour::default();
         assert_eq!(advance(&idle, &base, 12.5), base);
+    }
+}
+
+/// Finds the model file whose sidecar carries `guid`, under `assets`.
+///
+/// Sidecars are `<model>.import.ron`; the model path is the sidecar path with that
+/// suffix removed. The walk is bounded so a huge asset folder cannot stall a spawn.
+pub fn find_by_guid(assets: &Path, guid: &str) -> Option<PathBuf> {
+    find_in(assets, guid, 0)
+}
+
+fn find_in(dir: &Path, guid: &str, depth: usize) -> Option<PathBuf> {
+    if depth > 6 {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut dirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            dirs.push(path);
+            continue;
+        }
+        if path.to_string_lossy().ends_with(".import.ron")
+            && sidecar_guid(&path).as_deref() == Some(guid)
+        {
+            let name = path.file_name()?.to_string_lossy();
+            let model = name.strip_suffix(".import.ron")?;
+            return Some(path.with_file_name(model));
+        }
+    }
+    for dir in dirs {
+        if let Some(found) = find_in(&dir, guid, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn sidecar_guid(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let at = text.find("guid:")? + "guid:".len();
+    let rest = &text[at..];
+    let open = rest.find('"')? + 1;
+    let after = &rest[open..];
+    let close = after.find('"')?;
+    Some(after[..close].to_owned())
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+
+    #[test]
+    fn a_guid_finds_its_model_after_a_rename() {
+        let dir = std::env::temp_dir().join(format!("fabr-guid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("models")).unwrap();
+        let model = dir.join("models/moved.glb");
+        std::fs::write(&model, b"glTF").unwrap();
+        std::fs::write(
+            dir.join("models/moved.glb.import.ron"),
+            "(version: 1, guid: \"abc123\", settings: ())",
+        )
+        .unwrap();
+
+        assert_eq!(find_by_guid(&dir, "abc123"), Some(model));
+        assert_eq!(find_by_guid(&dir, "nope"), None);
     }
 }

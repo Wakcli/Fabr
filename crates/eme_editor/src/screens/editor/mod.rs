@@ -306,6 +306,8 @@ impl Plugin for EditorPlugin {
 fn autoload_scene(
     mut state: ResMut<scene::SceneState>,
     mut node: ResMut<scene::NodeSelection>,
+    index: Res<scene::ModelIndex>,
+    mut log: ResMut<crate::console::ConsoleLog>,
 ) {
     if std::env::var_os("EME_EDITOR_DEMO").is_some() {
         return;
@@ -319,7 +321,8 @@ fn autoload_scene(
         Some(path) => persist::load_from(&path.to_string_lossy()),
         None => persist::load(),
     };
-    if let Ok(Some(doc)) = loaded {
+    if let Ok(Some(mut doc)) = loaded {
+        crate::import::migrate_doc(&mut doc, &crate::asset_root(), &index.0, &mut log);
         let count = doc.len();
         state.replace_doc(doc);
         info!("loaded {count} objects");

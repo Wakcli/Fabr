@@ -212,8 +212,13 @@ impl NodeKey {
 /// What an author changed on one model node.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum OverrideOp {
-    /// Replace the node's local transform.
+    /// Absolute local transform written by scenes before deltas existed.
+    ///
+    /// Loading such a scene in the editor migrates these to
+    /// [`OverrideOp::SetTransformDelta`]; the player still applies them as-is.
     SetTransform(ObjectTransform),
+    /// Offset applied on top of the imported node transform.
+    SetTransformDelta(TransformDelta),
     /// Show or hide the node.
     SetVisible {
         /// Whether the node renders.
@@ -241,7 +246,9 @@ impl OverrideOp {
     /// The field this op writes.
     pub fn kind(&self) -> OverrideKind {
         match self {
-            OverrideOp::SetTransform(_) => OverrideKind::Transform,
+            OverrideOp::SetTransform(_) | OverrideOp::SetTransformDelta(_) => {
+                OverrideKind::Transform
+            }
             OverrideOp::SetVisible { .. } => OverrideKind::Visible,
             OverrideOp::SetExcluded { .. } => OverrideKind::Excluded,
         }
@@ -299,6 +306,93 @@ pub struct SceneObject {
     /// Author edits to the instanced model's nodes, kept beside the source asset.
     #[serde(default)]
     pub overrides: Vec<NodeOverride>,
+}
+
+/// Offset applied on top of an imported node's transform.
+///
+/// A new edit never stores the absolute transform: translation is an offset,
+/// rotation is composed onto the imported rotation, and scale is a multiplier,
+/// so changing the source node still shows through.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransformDelta {
+    /// Added to the imported translation.
+    pub translation: [f32; 3],
+    /// Composed after the imported rotation.
+    pub rotation: [f32; 4],
+    /// Multiplied into the imported scale.
+    pub scale: [f32; 3],
+}
+
+impl Default for TransformDelta {
+    fn default() -> Self {
+        Self {
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        }
+    }
+}
+
+impl TransformDelta {
+    /// The delta that turns `base` into `absolute`.
+    pub fn from_absolute(absolute: ObjectTransform, base: ObjectTransform) -> Self {
+        let inverse = [
+            -base.rotation[0],
+            -base.rotation[1],
+            -base.rotation[2],
+            base.rotation[3],
+        ];
+        Self {
+            translation: [
+                absolute.translation[0] - base.translation[0],
+                absolute.translation[1] - base.translation[1],
+                absolute.translation[2] - base.translation[2],
+            ],
+            rotation: mul_quat(inverse, absolute.rotation),
+            scale: [
+                div_or_one(absolute.scale[0], base.scale[0]),
+                div_or_one(absolute.scale[1], base.scale[1]),
+                div_or_one(absolute.scale[2], base.scale[2]),
+            ],
+        }
+    }
+
+    /// Applies this delta on top of the imported transform.
+    pub fn apply(&self, base: ObjectTransform) -> ObjectTransform {
+        ObjectTransform {
+            translation: [
+                base.translation[0] + self.translation[0],
+                base.translation[1] + self.translation[1],
+                base.translation[2] + self.translation[2],
+            ],
+            rotation: mul_quat(base.rotation, self.rotation),
+            scale: [
+                base.scale[0] * self.scale[0],
+                base.scale[1] * self.scale[1],
+                base.scale[2] * self.scale[2],
+            ],
+        }
+    }
+}
+
+fn div_or_one(value: f32, divisor: f32) -> f32 {
+    if divisor.abs() < f32::EPSILON {
+        1.0
+    } else {
+        value / divisor
+    }
+}
+
+fn mul_quat(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let (ax, ay, az, aw) = (a[0], a[1], a[2], a[3]);
+    let (bx, by, bz, bw) = (b[0], b[1], b[2], b[3]);
+    [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
 }
 
 impl SceneObject {
@@ -957,6 +1051,34 @@ mod tests {
         assert!(overrides
             .iter()
             .any(|entry| entry.op == OverrideOp::SetExcluded { excluded: true }));
+    }
+
+    #[test]
+    fn a_transform_delta_round_trips_and_composes() {
+        let base = ObjectTransform {
+            translation: [1.0, 2.0, 3.0],
+            rotation: [0.0, 0.707_106_77, 0.0, 0.707_106_77],
+            scale: [2.0, 2.0, 2.0],
+        };
+        let absolute = ObjectTransform {
+            translation: [4.0, 2.0, 3.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [4.0, 4.0, 4.0],
+        };
+        let delta = TransformDelta::from_absolute(absolute, base);
+        let back = delta.apply(base);
+        for axis in 0..3 {
+            assert!((back.translation[axis] - absolute.translation[axis]).abs() < 1e-5);
+            assert!((back.scale[axis] - absolute.scale[axis]).abs() < 1e-5);
+        }
+        assert!(back.rotation[3].abs() > 0.99);
+
+        let text = ron::ser::to_string(&delta).unwrap();
+        let decoded: TransformDelta = ron::from_str(&text).unwrap();
+        assert_eq!(decoded, delta);
+
+        let empty: TransformDelta = ron::from_str("()").unwrap();
+        assert_eq!(empty, TransformDelta::default());
     }
 
     #[test]

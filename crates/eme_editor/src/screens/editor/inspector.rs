@@ -14,7 +14,7 @@ use eme::text::{
 use eme::ui_widgets::{Activate, Button, TextInput};
 use eme_game_overrides::{ModelNodeCatalog, ModelOverrideStatus, OrphanReason};
 use eme_game_scene::{
-    Behaviour, BehaviourKind, NodeKey, OverrideOp, ObjectTransform,
+    Behaviour, BehaviourKind, NodeKey, OverrideOp, ObjectTransform, TransformDelta,
 };
 use std::path::{Path, PathBuf};
 
@@ -411,14 +411,30 @@ fn node_transform(
             scale: transform.scale.to_array(),
         });
     }
-    state.doc.overrides(object).iter().find_map(|entry| {
-        if entry.key == *key
-            && let OverrideOp::SetTransform(transform) = &entry.op
-        {
-            return Some(*transform);
+    let base = node_base(object, key, catalogs).unwrap_or_default();
+    let overridden = state.doc.overrides(object).iter().find_map(|entry| {
+        if entry.key != *key {
+            return None;
         }
-        None
-    })
+        match &entry.op {
+            OverrideOp::SetTransform(absolute) => Some(*absolute),
+            OverrideOp::SetTransformDelta(delta) => Some(delta.apply(base)),
+            _ => None,
+        }
+    });
+    Some(overridden.unwrap_or(base))
+}
+
+fn node_base(
+    object: u64,
+    key: &NodeKey,
+    catalogs: &Query<(&ModelOwner, &ModelNodeCatalog)>,
+) -> Option<ObjectTransform> {
+    catalogs
+        .iter()
+        .find(|(owner, _)| owner.0 == object)
+        .and_then(|(_, catalog)| catalog.nodes.iter().find(|node| &node.key == key))
+        .map(|node| node.base)
 }
 
 fn node_visible(
@@ -587,9 +603,13 @@ fn commit_node_field(
     if want == before {
         return false;
     }
+    let base = node_base(edit.0, &edit.1, catalogs).unwrap_or(before);
     undo.checkpoint(state, label);
-    state.doc
-        .set_override(edit.0, edit.1.clone(), OverrideOp::SetTransform(want));
+    state.doc.set_override(
+        edit.0,
+        edit.1.clone(),
+        OverrideOp::SetTransformDelta(TransformDelta::from_absolute(want, base)),
+    );
     state.touch();
     true
 }
@@ -1634,6 +1654,7 @@ fn attach_candidate(
     mut state: ResMut<SceneState>,
     mut undo: ResMut<Undo>,
     mut reattach: ResMut<ReattachState>,
+    mut node: ResMut<NodeSelection>,
 ) {
     let Ok(row) = rows.get(activate.entity) else {
         return;
@@ -1641,6 +1662,9 @@ fn attach_candidate(
     undo.checkpoint(&state, "Reattach Override");
     if state.doc.reattach_override(row.0, &row.1, row.2.clone()) {
         state.touch();
+    }
+    if node.object == Some(row.0) && node.key.as_ref() == Some(&row.1) {
+        node.key = Some(row.2.clone());
     }
     reattach.clear();
 }

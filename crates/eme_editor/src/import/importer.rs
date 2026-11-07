@@ -291,11 +291,17 @@ fn collect_nodes(
         .name()
         .map_or_else(|| format!("GltfNode{}", node.index()), str::to_owned);
     let key = eme_game_runtime::extend(parent, ordinal, &name);
+    let (translation, rotation, scale) = node.transform().decomposed();
     out.push(super::report::NodeInfo {
         index: node.index(),
         name,
         depth,
         key: key.clone(),
+        transform: eme_game_scene::ObjectTransform {
+            translation,
+            rotation,
+            scale,
+        },
     });
     for (child_ordinal, child) in node.children().enumerate() {
         collect_nodes(&child, depth + 1, &key.path, child_ordinal, out);

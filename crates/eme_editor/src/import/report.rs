@@ -119,7 +119,7 @@ impl Bounds {
 }
 
 /// One node of the scene graph, in document order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NodeInfo {
     /// glTF node index; stable inside the file and the key Phase 5 will use.
     pub index: usize,
@@ -129,6 +129,8 @@ pub struct NodeInfo {
     pub depth: usize,
     /// Shared identity used by overrides and hot reload.
     pub key: eme_game_runtime::NodeKey,
+    /// Local transform the node had in the source file.
+    pub transform: eme_game_scene::ObjectTransform,
 }
 
 /// One texture that came with the file.

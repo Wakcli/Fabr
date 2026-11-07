@@ -547,6 +547,8 @@ fn activate_row(
     mut scene: ResMut<SceneState>,
     mut clip: ResMut<Clipboard>,
     mut undo: ResMut<Undo>,
+    index: Res<scene::ModelIndex>,
+    mut log: ResMut<crate::console::ConsoleLog>,
 ) {
     let Ok(MenuRow(act)) = rows.get(activate.entity) else {
         return;
@@ -565,7 +567,7 @@ fn activate_row(
             menu.open = None;
         }
         Act::Open => {
-            persist::open_path_into(&mut scene, persist::SCENE_PATH);
+            persist::open_path_into(&mut scene, persist::SCENE_PATH, &index, &mut log);
             menu.open = None;
         }
         Act::Copy => {

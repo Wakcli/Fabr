@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use eme_camera::visibility::Visibility;
 use eme_ecs::prelude::*;
-use eme_game_scene::{NodeKey, NodeOverride, OverrideOp};
+use eme_game_scene::{NodeKey, NodeOverride, ObjectTransform, OverrideOp};
 use eme_math::prelude::*;
 use eme_mesh::Mesh3d;
 use eme_transform::prelude::Transform;
@@ -26,6 +26,10 @@ pub struct ModelNode {
     pub depth: usize,
 }
 
+/// Imported local transform of a node, kept so deltas survive edits and reloads.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct ModelNodeBase(pub Transform);
+
 /// One node of the current instance, including nodes excluded from spawning.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelNodeInfo {
@@ -37,6 +41,8 @@ pub struct ModelNodeInfo {
     pub present: bool,
     /// Live entity, when spawned.
     pub entity: Option<Entity>,
+    /// Imported local transform, before any override.
+    pub base: ObjectTransform,
 }
 
 /// Node tree built from the last spawn or reload, for the tree and inspector.
@@ -101,13 +107,19 @@ pub enum MatchTarget {
 /// Exact match wins. Otherwise a name that is unique among the nodes is treated
 /// as a move. If the recorded path still exists under another name the override is
 /// orphaned and reports the new name; anything else is missing.
-pub fn match_key(key: &NodeKey, nodes: &[NodeKey]) -> MatchTarget {
+pub fn match_key(key: &NodeKey, old: &[NodeKey], nodes: &[NodeKey]) -> MatchTarget {
     if nodes.iter().any(|node| node == key) {
         return MatchTarget::Exact(key.clone());
     }
-    let mut named = nodes.iter().filter(|node| node.name == key.name);
-    if let Some(only) = named.next()
-        && named.next().is_none()
+    let unique_in_new = {
+        let mut named = nodes.iter().filter(|node| node.name == key.name);
+        named.next().is_some() && named.next().is_none()
+    };
+    let unique_in_old =
+        old.is_empty() || old.iter().filter(|node| node.name == key.name).count() == 1;
+    if unique_in_new
+        && unique_in_old
+        && let Some(only) = nodes.iter().find(|node| node.name == key.name)
     {
         return MatchTarget::Moved {
             from: key.clone(),
@@ -170,6 +182,8 @@ pub fn sync_model_nodes(
     children: Query<&Children>,
     names: Query<&Name>,
     meshes: Query<(), With<Mesh3d>>,
+    bases: Query<&ModelNodeBase>,
+    transforms: Query<&Transform>,
 ) {
     for (root, overrides, kids, catalog, status) in &mut roots {
         let previous = catalog
@@ -192,6 +206,7 @@ pub fn sync_model_nodes(
             }
         }
 
+        let old_keys: Vec<NodeKey> = previous.iter().map(|info| info.key.clone()).collect();
         let mut known: Vec<NodeKey> = found.iter().map(|(_, key, _)| key.clone()).collect();
         for info in &previous {
             if !known.contains(&info.key) {
@@ -200,8 +215,25 @@ pub fn sync_model_nodes(
         }
 
         let mut live: HashMap<NodeKey, Entity> = HashMap::new();
+        let mut base_of: HashMap<NodeKey, ObjectTransform> = HashMap::new();
         for (entity, key, depth) in &found {
             live.insert(key.clone(), *entity);
+            let base = bases.get(*entity).map_or_else(
+                |_| {
+                    let trs = transforms.get(*entity).copied().unwrap_or_default();
+                    commands.entity(*entity).insert(ModelNodeBase(trs));
+                    trs
+                },
+                |base| base.0,
+            );
+            base_of.insert(
+                key.clone(),
+                ObjectTransform {
+                    translation: base.translation.to_array(),
+                    rotation: base.rotation.to_array(),
+                    scale: base.scale.to_array(),
+                },
+            );
             commands.entity(*entity).insert(ModelNode {
                 key: key.clone(),
                 depth: *depth,
@@ -217,7 +249,7 @@ pub fn sync_model_nodes(
         let mut hidden: Vec<NodeKey> = Vec::new();
 
         for entry in &overrides.0 {
-            let target = match_key(&entry.key, &known);
+            let target = match_key(&entry.key, &old_keys, &known);
             let (key, applied) = match &target {
                 MatchTarget::Exact(key) => (Some(key.clone()), true),
                 MatchTarget::Moved { from, to } => {
@@ -249,6 +281,18 @@ pub fn sync_model_nodes(
                         scale: Vec3::from_array(transform.scale),
                     });
                 }
+                OverrideOp::SetTransformDelta(delta) => {
+                    let base = base_of
+                        .get(&key)
+                        .copied()
+                        .unwrap_or_else(ObjectTransform::default);
+                    let result = delta.apply(base);
+                    commands.entity(entity).insert(Transform {
+                        translation: Vec3::from_array(result.translation),
+                        rotation: Quat::from_array(result.rotation),
+                        scale: Vec3::from_array(result.scale),
+                    });
+                }
                 OverrideOp::SetVisible { visible } => {
                     let visibility = if *visible {
                         Visibility::Inherited
@@ -274,6 +318,10 @@ pub fn sync_model_nodes(
                 depth: *depth,
                 present: true,
                 entity: Some(*entity),
+                base: base_of
+                    .get(key)
+                    .copied()
+                    .unwrap_or_else(ObjectTransform::default),
             })
             .collect();
         for info in &previous {
@@ -312,6 +360,7 @@ pub fn sync_model_nodes(
 mod tests {
     use super::*;
     use eme_ecs::system::RunSystemOnce;
+    use eme_game_scene::TransformDelta;
 
     fn key(path: &[u32], name: &str) -> NodeKey {
         NodeKey {
@@ -324,7 +373,7 @@ mod tests {
     fn exact_matches_first() {
         let nodes = vec![key(&[0], "A"), key(&[0, 1], "B")];
         assert_eq!(
-            match_key(&key(&[0, 1], "B"), &nodes),
+            match_key(&key(&[0, 1], "B"), &nodes, &nodes),
             MatchTarget::Exact(key(&[0, 1], "B"))
         );
     }
@@ -333,7 +382,7 @@ mod tests {
     fn a_unique_name_at_a_new_path_is_a_move() {
         let nodes = vec![key(&[2], "A"), key(&[3], "B")];
         assert_eq!(
-            match_key(&key(&[0], "B"), &nodes),
+            match_key(&key(&[0], "B"), &[], &nodes),
             MatchTarget::Moved {
                 from: key(&[0], "B"),
                 to: key(&[3], "B")
@@ -342,10 +391,56 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicate_name_is_not_guessed() {
-        let nodes = vec![key(&[1], "Leg"), key(&[2], "Leg")];
+    fn reordered_children_move_by_unique_name() {
+        let old = vec![key(&[0], "A"), key(&[1], "B")];
+        let new = vec![key(&[0], "B"), key(&[1], "A")];
         assert_eq!(
-            match_key(&key(&[0], "Leg"), &nodes),
+            match_key(&key(&[0], "A"), &old, &new),
+            MatchTarget::Moved {
+                from: key(&[0], "A"),
+                to: key(&[1], "A")
+            }
+        );
+        assert_eq!(
+            match_key(&key(&[1], "B"), &old, &new),
+            MatchTarget::Moved {
+                from: key(&[1], "B"),
+                to: key(&[0], "B")
+            }
+        );
+    }
+
+    #[test]
+    fn two_nodes_named_the_same_are_only_matched_by_path() {
+        let nodes = vec![key(&[1], "Cube"), key(&[2], "Cube")];
+        assert_eq!(
+            match_key(&key(&[2], "Cube"), &nodes, &nodes),
+            MatchTarget::Exact(key(&[2], "Cube"))
+        );
+        assert_eq!(
+            match_key(&key(&[0], "Cube"), &nodes, &nodes),
+            MatchTarget::Orphaned(OrphanReason::Missing)
+        );
+    }
+
+    #[test]
+    fn a_name_that_was_not_unique_in_the_old_file_does_not_move() {
+        let old = vec![key(&[0], "Cube"), key(&[1], "Cube")];
+        let new = vec![key(&[0], "Box"), key(&[1], "Cube")];
+        assert_eq!(
+            match_key(&key(&[0], "Cube"), &old, &new),
+            MatchTarget::Orphaned(OrphanReason::Renamed {
+                found: "Box".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_deleted_node_is_orphaned() {
+        let old = vec![key(&[0], "Chair")];
+        let new = vec![key(&[0], "Table")];
+        assert_eq!(
+            match_key(&key(&[1], "Removed"), &old, &new),
             MatchTarget::Orphaned(OrphanReason::Missing)
         );
     }
@@ -354,7 +449,7 @@ mod tests {
     fn a_renamed_node_at_the_same_path_is_reported() {
         let nodes = vec![key(&[0], "NewName")];
         assert_eq!(
-            match_key(&key(&[0], "OldName"), &nodes),
+            match_key(&key(&[0], "OldName"), &nodes, &nodes),
             MatchTarget::Orphaned(OrphanReason::Renamed {
                 found: "NewName".into()
             })
@@ -368,7 +463,7 @@ mod tests {
                 NodeOverride {
                     key: key(&[0], "Seat"),
                     op: OverrideOp::SetTransform(
-                        eme_game_scene::ObjectTransform::from_translation([1.0, 2.0, 3.0]),
+                        ObjectTransform::from_translation([1.0, 2.0, 3.0]),
                     ),
                 },
                 NodeOverride {
@@ -425,12 +520,55 @@ mod tests {
     }
 
     #[test]
+    fn a_delta_follows_a_changed_imported_transform() {
+        let mut world = World::new();
+        let delta = TransformDelta {
+            translation: [1.0, 0.0, 0.0],
+            scale: [2.0, 2.0, 2.0],
+            ..Default::default()
+        };
+        let root = world
+            .spawn(ModelOverrides(vec![NodeOverride {
+                key: key(&[0], "Seat"),
+                op: OverrideOp::SetTransformDelta(delta),
+            }]))
+            .id();
+        let scene = world.spawn(Name::new("Scene0")).id();
+        let seat = world
+            .spawn((Name::new("Seat"), Transform::from_xyz(0.0, 2.0, 0.0)))
+            .id();
+        world.entity_mut(scene).add_children(&[seat]);
+        world.entity_mut(root).add_children(&[scene]);
+        world.run_system_once(sync_model_nodes).unwrap();
+
+        let applied = *world.get::<Transform>(seat).unwrap();
+        assert_eq!(applied.translation, Vec3::new(1.0, 2.0, 0.0));
+        assert_eq!(applied.scale, Vec3::splat(2.0));
+        assert_eq!(
+            world.get::<ModelNodeBase>(seat).unwrap().0.translation,
+            Vec3::new(0.0, 2.0, 0.0)
+        );
+
+        world.entity_mut(seat).despawn();
+        let replacement = world
+            .spawn((Name::new("Seat"), Transform::from_xyz(0.0, 5.0, 0.0)))
+            .id();
+        world.entity_mut(scene).add_children(&[replacement]);
+        world.run_system_once(sync_model_nodes).unwrap();
+
+        assert_eq!(
+            world.get::<Transform>(replacement).unwrap().translation,
+            Vec3::new(1.0, 5.0, 0.0)
+        );
+    }
+
+    #[test]
     fn a_moved_override_applies_at_the_unique_name() {
         let mut world = World::new();
         let root = world
             .spawn(ModelOverrides(vec![NodeOverride {
                 key: key(&[0], "Seat"),
-                op: OverrideOp::SetTransform(eme_game_scene::ObjectTransform::from_translation([
+                op: OverrideOp::SetTransform(ObjectTransform::from_translation([
                     3.0, 0.0, 0.0,
                 ])),
             }]))

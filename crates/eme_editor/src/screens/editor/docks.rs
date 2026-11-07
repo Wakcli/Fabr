@@ -494,7 +494,15 @@ pub fn rebuild_scene_rows(
             && let Some(nodes) = catalogues.get(&id)
         {
             for info in nodes {
-                spawn_node_row(&mut commands, host, id, depth + 1, info, &obj.overrides, &node_selection);
+                spawn_node_row(
+                    &mut commands,
+                    host,
+                    id,
+                    depth + 1 + info.depth,
+                    info,
+                    &obj.overrides,
+                    &node_selection,
+                );
             }
         }
     }
@@ -548,7 +556,6 @@ fn spawn_node_row(
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
         }
-        Button
         NodeExclude(object, exclude_key)
         Children [ {mark} ]
         on(toggle_node_excluded)
@@ -566,7 +573,6 @@ fn spawn_node_row(
             column_gap: px(6),
         }
         ThemeBackgroundColor(bg)
-        Button
         SceneNodeRow(object, row_key)
         ChildOf(host)
         Children [
@@ -583,12 +589,15 @@ fn spawn_node_row(
 
 /// Clicking a node row selects the node and its owning object.
 fn select_node_row(
-    activate: On<Activate>,
+    click: On<PointerClick>,
     rows: Query<&SceneNodeRow>,
     mut state: ResMut<SceneState>,
     mut node: ResMut<NodeSelection>,
 ) {
-    let Ok(row) = rows.get(activate.entity) else {
+    if click.button != PointerButton::Primary {
+        return;
+    }
+    let Ok(row) = rows.get(click.entity) else {
         return;
     };
     state.select_only(row.0);

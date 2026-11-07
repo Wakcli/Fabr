@@ -14,7 +14,8 @@ use eme_game_scene::{SceneDoc, SceneError};
 use crate::app::Screen;
 use crate::build::BuildState;
 use crate::clipboard::{self, Clipboard};
-use crate::scene::SceneState;
+use crate::console::ConsoleLog;
+use crate::scene::{ModelIndex, SceneState};
 use crate::undo::Undo;
 
 /// The main scene tab's path, and the scene Ctrl+O reads by default.
@@ -75,9 +76,20 @@ pub fn load_from(path: &str) -> Result<Option<SceneDoc>, PersistError> {
 }
 
 /// Replaces the editor document with the saved scene at `path`, if it exists.
-pub fn open_path_into(state: &mut SceneState, path: &str) {
+pub fn open_path_into(
+    state: &mut SceneState,
+    path: &str,
+    index: &ModelIndex,
+    log: &mut ConsoleLog,
+) {
     match load_from(path) {
-        Ok(Some(doc)) => {
+        Ok(Some(mut doc)) => {
+            crate::import::migrate_doc(
+                &mut doc,
+                &crate::asset_root(),
+                &index.0,
+                log,
+            );
             let count = doc.len();
             state.replace_doc(doc);
             info!("loaded {count} objects from {path}");
@@ -88,7 +100,12 @@ pub fn open_path_into(state: &mut SceneState, path: &str) {
 }
 
 /// Ctrl+S saves the active tab, Ctrl+O reloads it from disk.
-pub fn scene_shortcuts(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<SceneState>) {
+pub fn scene_shortcuts(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut state: ResMut<SceneState>,
+    index: Res<ModelIndex>,
+    mut log: ResMut<ConsoleLog>,
+) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     if !ctrl {
         return;
@@ -101,7 +118,7 @@ pub fn scene_shortcuts(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<SceneS
         }
     }
     if keys.just_pressed(KeyCode::KeyO) {
-        open_path_into(&mut state, SCENE_PATH);
+        open_path_into(&mut state, SCENE_PATH, &index, &mut log);
     }
 }
 

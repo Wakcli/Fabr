@@ -6,6 +6,7 @@
 
 mod diff;
 mod importer;
+mod migrate;
 mod panel;
 mod report;
 mod sidecar;
@@ -15,6 +16,7 @@ mod watch;
 
 pub use diff::NodeDiff;
 pub use importer::import;
+pub use migrate::migrate_doc;
 pub use panel::{OptionsPanel, panel, sync as sync_panel};
 pub use sidecar::Sidecar;
 pub use report::{ImportError, ImportReport};

@@ -41,6 +41,7 @@ enum JobKind {
 struct Job {
     name: String,
     kind: JobKind,
+    instance: bool,
     settings: ImportSettings,
     rx: Mutex<Receiver<JobResult>>,
 }
@@ -59,6 +60,9 @@ pub struct ImportService {
     pub finished: Vec<PathBuf>,
     /// Files whose hot reimport finished, for instance refresh.
     pub reloaded: Vec<PathBuf>,
+    /// Finished imports that should be placed in the scene even when the
+    /// instance-after-import option is off.
+    pub instantiate: Vec<PathBuf>,
     /// Dry-run outcomes keyed by source path, for the options panel.
     pub dry: HashMap<PathBuf, Result<ImportReport, String>>,
     /// Latest node-list change per asset, for the inspector.
@@ -71,7 +75,17 @@ impl ImportService {
     /// Path selection, collision handling and the rename message all happen here
     /// on the caller's thread so the log line is ordered before the work starts.
     pub fn start(&mut self, request: ImportRequest, root: &Path, log: &mut ConsoleLog) -> bool {
-        self.launch(request, root, log, JobKind::Import)
+        self.launch(request, root, log, JobKind::Import, false)
+    }
+
+    /// Imports a file and places the finished model in the scene.
+    pub fn start_in_scene(
+        &mut self,
+        request: ImportRequest,
+        root: &Path,
+        log: &mut ConsoleLog,
+    ) -> bool {
+        self.launch(request, root, log, JobKind::Import, true)
     }
 
     /// Rereads an already imported model after its file changed on disk.
@@ -86,6 +100,7 @@ impl ImportService {
             Path::new(""),
             log,
             JobKind::Reload,
+            false,
         )
     }
 
@@ -106,6 +121,7 @@ impl ImportService {
             Path::new(""),
             log,
             JobKind::Dry,
+            false,
         )
     }
 
@@ -115,6 +131,7 @@ impl ImportService {
         root: &Path,
         log: &mut ConsoleLog,
         kind: JobKind,
+        instance: bool,
     ) -> bool {
         let ImportRequest {
             source,
@@ -182,6 +199,7 @@ impl ImportService {
         self.jobs.push(Job {
             name,
             kind,
+            instance,
             settings,
             rx: Mutex::new(rx),
         });
@@ -207,6 +225,7 @@ impl ImportService {
             };
             if let Some(result) = outcome {
                 let kind = job.kind;
+                let instance = job.instance;
                 finished.push(index);
                 changed = true;
                 match result {
@@ -233,6 +252,9 @@ impl ImportService {
                                 self.reports.insert(path.clone(), report);
                                 if kind == JobKind::Import {
                                     self.finished.push(path.clone());
+                                    if instance {
+                                        self.instantiate.push(path.clone());
+                                    }
                                 } else {
                                     self.reloaded.push(path.clone());
                                 }

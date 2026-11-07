@@ -230,6 +230,7 @@ impl Plugin for EditorPlugin {
                         crate::import::status_system,
                         crate::import::sync_panel,
                         (
+                            files::instance_imports,
                             files::drop_asset,
                             files::accept_drop,
                             files::sync_import_menu,

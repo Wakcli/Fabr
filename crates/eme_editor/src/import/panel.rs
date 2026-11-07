@@ -101,6 +101,8 @@ pub enum Action {
     Close,
     /// Expand one warning.
     Warning(usize),
+    /// Toggle instancing after an import.
+    Instance,
 }
 
 /// Scale ladder offered by the panel.
@@ -361,7 +363,11 @@ fn scene_rows(_: &OptionsPanel) -> Vec<Part> {
 fn output_rows(panel: &OptionsPanel) -> Vec<Part> {
     vec![
         option("Folder", &panel.folder.display().to_string(), None),
-        option("Instance after import", "", None),
+        option(
+            "Instance after import",
+            if panel.settings.output.instance_after_import { "yes" } else { "no" },
+            Some(Action::Instance),
+        ),
     ]
 }
 
@@ -513,6 +519,10 @@ pub fn activate(
                 .find(|value| *value > current)
                 .unwrap_or(TEXTURE_LIMITS[0]);
             panel.settings.materials.max_texture_size = next;
+            panel.bump();
+        }
+        Action::Instance => {
+            panel.settings.output.instance_after_import = !panel.settings.output.instance_after_import;
             panel.bump();
         }
         Action::Close => {

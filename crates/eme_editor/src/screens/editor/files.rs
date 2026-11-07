@@ -778,6 +778,31 @@ mod tests {
     }
 }
 
+/// Instances models that just finished importing, when the option is on.
+pub fn instance_imports(
+    mut service: ResMut<ImportService>,
+    mut state: ResMut<SceneState>,
+    mut log: ResMut<ConsoleLog>,
+) {
+    if service.finished.is_empty() {
+        return;
+    }
+    let wanted = service.settings.output.instance_after_import;
+    let assets = crate::asset_root();
+    for path in std::mem::take(&mut service.finished) {
+        if !wanted {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(&assets) else {
+            continue;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if state.spawn_model(&rel, [0.0, 0.5, 0.0]).is_some() {
+            log.push(format!("instanced {rel}"));
+        }
+    }
+}
+
 /// A model being dragged out of the tree towards the viewport.
 #[derive(Resource, Default)]
 pub struct AssetDrag(pub Option<String>);

@@ -46,6 +46,8 @@ pub struct ImportService {
     pub reports: HashMap<PathBuf, ImportReport>,
     /// Settings used by the next plain import.
     pub settings: ImportSettings,
+    /// Files that finished importing since the last drain.
+    pub finished: Vec<PathBuf>,
 }
 
 impl ImportService {
@@ -152,6 +154,7 @@ impl ImportService {
                             }
                         }
                         self.reports.insert(path.clone(), report);
+                        self.finished.push(path.clone());
                         let sidecar = Sidecar {
                             version: crate::import::sidecar::SIDECAR_VERSION,
                             guid: Sidecar::load_or_new(&path).guid,

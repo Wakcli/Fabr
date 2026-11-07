@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeToken};
 use eme::prelude::*;
 use eme::scene::bsn;
-use eme::ui_widgets::{Activate, Button};
+use eme::ui_widgets::{Activate, Button, ScrollArea};
 
 use super::report::ImportReport;
 use super::service::ImportService;
@@ -136,7 +136,11 @@ pub fn panel() -> Part {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Stretch,
+                flex_grow: 1.0,
+                min_height: px(0),
+                overflow: Overflow::scroll_y(),
             }
+            ScrollArea
             PanelHost
         ]
     })
@@ -415,6 +419,8 @@ fn buttons() -> Part {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             column_gap: px(2),
+            row_gap: px(2),
+            flex_wrap: FlexWrap::Wrap,
             padding: UiRect::horizontal(px(6)),
             border: UiRect { top: px(1), bottom: px(1) },
         }

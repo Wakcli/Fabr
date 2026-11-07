@@ -833,13 +833,21 @@ pub struct AssetDrag(pub Option<String>);
 pub fn start_asset_drag(
     start: On<PointerDragStart>,
     rows: Query<&FileRow>,
+    parents: Query<&ChildOf>,
     mut drag: ResMut<AssetDrag>,
 ) {
     if start.button != PointerButton::Primary {
         return;
     }
-    let Ok(row) = rows.get(start.entity) else {
-        return;
+    let mut entity = start.entity;
+    let row = loop {
+        if let Ok(row) = rows.get(entity) {
+            break row;
+        }
+        let Ok(parent) = parents.get(entity) else {
+            return;
+        };
+        entity = parent.parent();
     };
     if row.is_dir || !is_model(Path::new(&row.rel)) {
         return;
@@ -902,8 +910,20 @@ pub struct ImportMenu {
     pub at: Option<Vec2>,
     /// Folder it targets, relative to the project root.
     pub folder: Option<String>,
-    /// Model files found in the project when the menu opened.
+    /// Model files under `assets/` when the picker opened.
     pub choices: Vec<String>,
+    /// Which page the menu shows.
+    pub stage: ImportMenuStage,
+}
+
+/// Project menu pages: the entry row, then the model picker.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ImportMenuStage {
+    /// A single Import row.
+    #[default]
+    Root,
+    /// The model list.
+    Models,
 }
 
 /// Host for the model rows rebuilt in the Project import menu.
@@ -913,6 +933,10 @@ pub struct ImportMenuRows;
 /// One model row in the Project import menu.
 #[derive(Component, Clone, Default)]
 pub struct ImportChoice(pub String);
+
+/// The single entry row that opens the model picker.
+#[derive(Component, Clone, Default)]
+pub struct OpenModelPicker;
 
 /// Marks the import menu's root node.
 #[derive(Component, Clone, Copy, Default)]
@@ -938,29 +962,30 @@ pub fn open_folder_menu(
 }
 
 /// Opens the same menu from the Project entry in the menu bar.
-pub fn open_project_menu(_: On<Activate>, mut menu: ResMut<ImportMenu>, tree: Res<FileTree>) {
+pub fn open_project_menu(_: On<Activate>, mut menu: ResMut<ImportMenu>) {
     menu.at = Some(Vec2::new(8.0, 34.0));
     menu.folder = None;
-    menu.choices = model_choices(&tree.root);
-    if let Some(selected) = tree.selected()
-        && is_model(Path::new(selected))
-        && !menu.choices.iter().any(|choice| choice == selected)
-    {
-        menu.choices.insert(0, selected.to_owned());
-    }
+    menu.stage = ImportMenuStage::Root;
+    menu.choices.clear();
+}
+
+/// Switches the Project menu from its entry row to the model list.
+fn open_model_picker(_: On<Activate>, mut menu: ResMut<ImportMenu>) {
+    menu.stage = ImportMenuStage::Models;
+    menu.choices = model_choices(&crate::asset_root());
 }
 
 /// Every model the project can import, relative to the project root.
-fn model_choices(root: &Path) -> Vec<String> {
+fn model_choices(assets: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    collect_models(root, root, 0, &mut out);
+    collect_models(assets, assets, 0, &mut out);
     out.sort_by_key(|path| (path.matches('/').count(), path.clone()));
-    out.truncate(40);
+    out.truncate(30);
     out
 }
 
-fn collect_models(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
-    if depth > 6 || out.len() >= 500 {
+fn collect_models(assets: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
+    if depth > 6 || out.len() >= 300 {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -970,15 +995,15 @@ fn collect_models(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) 
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with('.') || name == "target" || name == "build" {
+        if name.starts_with('.') {
             continue;
         }
         if path.is_dir() {
-            collect_models(root, &path, depth + 1, out);
+            collect_models(assets, &path, depth + 1, out);
             continue;
         }
         if is_model(&path)
-            && let Ok(rel) = path.strip_prefix(root)
+            && let Ok(rel) = path.strip_prefix(assets)
         {
             out.push(rel.to_string_lossy().replace('\\', "/"));
         }
@@ -998,7 +1023,7 @@ pub fn sync_import_menu(
     mut roots: Query<&mut Node, With<ImportMenuRoot>>,
     hosts: Query<Entity, With<ImportMenuRows>>,
     mut commands: Commands,
-    mut shown: Local<Option<(Entity, Vec2, usize)>>,
+    mut shown: Local<Option<(Entity, Vec2, usize, ImportMenuStage)>>,
 ) {
     for mut node in &mut roots {
         let want = if menu.at.is_some() {
@@ -1021,12 +1046,29 @@ pub fn sync_import_menu(
         *shown = None;
         return;
     };
-    let signature = (host, at, menu.choices.len());
+    let signature = (host, at, menu.choices.len(), menu.stage);
     if shown.as_ref() == Some(&signature) {
         return;
     }
     *shown = Some(signature);
     commands.entity(host).despawn_children();
+    if menu.stage == ImportMenuStage::Root {
+        commands.spawn_scene(bsn! {
+            Node {
+                height: px(TREE_ROW_H),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(10)),
+            }
+            Button
+            OpenModelPicker
+            ChildOf(host)
+            Children [ {text("Import glTF…", FONT_SIZE, tokens::TEXT)} ]
+            on(open_model_picker)
+        });
+        return;
+    }
     if menu.choices.is_empty() {
         let hint = text(
             "no .glb/.gltf in the project; drop one in or import from FileSystem",
@@ -1072,7 +1114,6 @@ pub fn sync_import_menu(
 fn choose_import(
     activate: On<Activate>,
     rows: Query<&ImportChoice>,
-    tree: Res<FileTree>,
     mut menu: ResMut<ImportMenu>,
     mut panel: ResMut<OptionsPanel>,
     mut log: ResMut<ConsoleLog>,
@@ -1080,15 +1121,16 @@ fn choose_import(
     let Ok(choice) = rows.get(activate.entity) else {
         return;
     };
-    let source = tree.root.join(&choice.0);
+    let assets = crate::asset_root();
+    let source = assets.join(&choice.0);
     if !is_model(&source) {
         log.push(format!("import: {} is not a .glb or .gltf file", choice.0));
         return;
     }
     let folder = source
         .parent()
-        .and_then(|parent| parent.strip_prefix(&tree.root).ok())
-        .map_or_else(PathBuf::new, Path::to_path_buf);
+        .and_then(|parent| parent.strip_prefix(&assets).ok())
+        .map_or_else(|| PathBuf::from("assets"), |parent| PathBuf::from("assets").join(parent));
     menu.at = None;
     panel.open_for(&source, &folder);
     log.push(format!("opened import options for {}", choice.0));
@@ -1102,8 +1144,8 @@ pub fn import_menu() -> Part {
             display: Display::None,
             left: px(0),
             top: px(0),
-            min_width: px(260),
-            max_width: px(420),
+            min_width: px(300),
+            max_width: px(440),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Stretch,
             border: px(1),
@@ -1119,7 +1161,10 @@ pub fn import_menu() -> Part {
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Stretch,
+                max_height: px(380),
+                overflow: Overflow::scroll_y(),
             }
+            ScrollArea
             ImportMenuRows
         ]
     })

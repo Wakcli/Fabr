@@ -202,6 +202,7 @@ pub fn sync(
 fn rows(panel: &OptionsPanel) -> Vec<Part> {
     vec![
         header(panel),
+        source_row(panel),
         section(panel, "transform", "Transform", transform_rows(panel)),
         section(panel, "geometry", "Geometry", geometry_rows(panel)),
         section(panel, "materials", "Materials", material_rows(panel)),
@@ -238,6 +239,29 @@ fn header(panel: &OptionsPanel) -> Part {
             --
             {button_row("Close", Action::Close)}
         ]
+    })
+}
+
+fn source_row(panel: &OptionsPanel) -> Part {
+    let rel = panel
+        .source
+        .strip_prefix(crate::build::workspace_dir())
+        .map_or_else(
+            |_| panel.source.display().to_string(),
+            |rel| rel.to_string_lossy().replace('\\', "/"),
+        );
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            padding: UiRect {
+                left: px(8),
+                right: px(8),
+                top: px(2),
+                bottom: px(3),
+            },
+        }
+        Children [ {text(format!("from {rel}"), FONT_SIZE, tokens::TEXT_DIM)} ]
     })
 }
 

@@ -1086,10 +1086,7 @@ pub fn sync_import_menu(
         return;
     }
     for choice in &menu.choices {
-        let label_text = Path::new(choice)
-            .file_name()
-            .map_or_else(|| choice.clone(), |name| name.to_string_lossy().into_owned());
-        let label = text(label_text, FONT_SIZE, tokens::TEXT);
+        let label = text_clipped(choice.clone(), FONT_SIZE, tokens::TEXT);
         let rel = choice.clone();
         commands
             .spawn_scene(bsn! {
@@ -1099,6 +1096,7 @@ pub fn sync_import_menu(
                     flex_direction: FlexDirection::Row,
                     align_items: AlignItems::Center,
                     padding: UiRect::horizontal(px(10)),
+                    overflow: Overflow::clip(),
                 }
                 Button
                 ThemeBackgroundColor(tokens::PANEL)

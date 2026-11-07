@@ -6,7 +6,7 @@ use eme::feathers::{
 };
 use eme::prelude::*;
 use eme::scene::{bsn, SceneList};
-use eme::text::{FontSize, FontSourceTemplate, FontWeight, TextFont};
+use eme::text::{FontSize, FontSourceTemplate, FontWeight, LineBreak, TextFont, TextLayout};
 use eme::ui::widget::Text;
 
 use crate::tokens;
@@ -211,5 +211,22 @@ pub fn field(kids: Vec<Part>, height: f32) -> Part {
         ThemeBackgroundColor(tokens::FIELD)
         ThemeBorderColor(tokens::FIELD_LINE)
         Children [ {kids} ]
+    })
+}
+
+/// One-line text that clips instead of wrapping; used for long file paths.
+pub fn text_clipped(value: impl Into<String>, size: f32, token: ThemeToken) -> Part {
+    let value = value.into();
+    Box::new(bsn! {
+        Text(value)
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(size),
+            weight: FontWeight::NORMAL,
+        }
+        TextLayout {
+            linebreak: LineBreak::NoWrap,
+        }
+        ThemeTextColor(token)
     })
 }

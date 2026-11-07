@@ -30,8 +30,17 @@ pub struct ImportRequest {
     pub copy: bool,
 }
 
+/// Why a job is running; it decides where the finished report goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JobKind {
+    Import,
+    Reload,
+    Dry,
+}
+
 struct Job {
     name: String,
+    kind: JobKind,
     settings: ImportSettings,
     rx: Mutex<Receiver<JobResult>>,
 }
@@ -48,6 +57,10 @@ pub struct ImportService {
     pub settings: ImportSettings,
     /// Files that finished importing since the last drain.
     pub finished: Vec<PathBuf>,
+    /// Files whose hot reimport finished, for instance refresh.
+    pub reloaded: Vec<PathBuf>,
+    /// Dry-run outcomes keyed by source path, for the options panel.
+    pub dry: HashMap<PathBuf, Result<ImportReport, String>>,
 }
 
 impl ImportService {
@@ -56,6 +69,51 @@ impl ImportService {
     /// Path selection, collision handling and the rename message all happen here
     /// on the caller's thread so the log line is ordered before the work starts.
     pub fn start(&mut self, request: ImportRequest, root: &Path, log: &mut ConsoleLog) -> bool {
+        self.launch(request, root, log, JobKind::Import)
+    }
+
+    /// Rereads an already imported model after its file changed on disk.
+    pub fn reload(&mut self, source: &Path, log: &mut ConsoleLog) -> bool {
+        self.launch(
+            ImportRequest {
+                source: source.to_path_buf(),
+                folder: PathBuf::new(),
+                settings: ImportSettings::default(),
+                copy: false,
+            },
+            Path::new(""),
+            log,
+            JobKind::Reload,
+        )
+    }
+
+    /// Parses a model without writing a sidecar, for the options panel.
+    pub fn dry_run(
+        &mut self,
+        source: &Path,
+        settings: ImportSettings,
+        log: &mut ConsoleLog,
+    ) -> bool {
+        self.launch(
+            ImportRequest {
+                source: source.to_path_buf(),
+                folder: PathBuf::new(),
+                settings,
+                copy: false,
+            },
+            Path::new(""),
+            log,
+            JobKind::Dry,
+        )
+    }
+
+    fn launch(
+        &mut self,
+        request: ImportRequest,
+        root: &Path,
+        log: &mut ConsoleLog,
+        kind: JobKind,
+    ) -> bool {
         let ImportRequest {
             source,
             folder,
@@ -97,8 +155,13 @@ impl ImportService {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| dest.display().to_string());
-        // a stored sidecar is the authoring state; a reimport must honour it
-        let settings = Sidecar::load(&dest).map_or(settings, |sidecar| sidecar.settings);
+        // a stored sidecar is the authoring state; a reimport must honour it,
+        // while a dry run shows the options the panel currently has
+        let settings = if kind == JobKind::Dry {
+            settings
+        } else {
+            Sidecar::load(&dest).map_or(settings, |sidecar| sidecar.settings)
+        };
         self.status = Some(format!("importing {name}…"));
 
         let (tx, rx) = channel();
@@ -111,9 +174,12 @@ impl ImportService {
             let _ = tx.send(result);
         });
 
-        self.settings = settings.clone();
+        if kind != JobKind::Dry {
+            self.settings = settings.clone();
+        }
         self.jobs.push(Job {
             name,
+            kind,
             settings,
             rx: Mutex::new(rx),
         });
@@ -138,6 +204,7 @@ impl ImportService {
                 Err(_) => None,
             };
             if let Some(result) = outcome {
+                let kind = job.kind;
                 finished.push(index);
                 changed = true;
                 match result {
@@ -153,32 +220,49 @@ impl ImportService {
                                 log.push(format!("  {}: {}{target}", warning.severity, warning.message));
                             }
                         }
-                        self.reports.insert(path.clone(), report);
-                        self.finished.push(path.clone());
-                        let sidecar = Sidecar {
-                            version: crate::import::sidecar::SIDECAR_VERSION,
-                            guid: Sidecar::load_or_new(&path).guid,
-                            settings: self
-                                .jobs
-                                .get(index)
-                                .map_or_else(ImportSettings::default, |job| job.settings.clone()),
-                        };
-                        if let Err(err) = sidecar.save(&path) {
-                            log.push(format!("could not save sidecar: {err}"));
+                        match kind {
+                            JobKind::Dry => {
+                                self.dry.insert(path, Ok(report));
+                            }
+                            JobKind::Import | JobKind::Reload => {
+                                self.reports.insert(path.clone(), report);
+                                if kind == JobKind::Import {
+                                    self.finished.push(path.clone());
+                                } else {
+                                    self.reloaded.push(path.clone());
+                                }
+                                let sidecar = Sidecar {
+                                    version: crate::import::sidecar::SIDECAR_VERSION,
+                                    guid: Sidecar::load_or_new(&path).guid,
+                                    settings: self
+                                        .jobs
+                                        .get(index)
+                                        .map_or_else(ImportSettings::default, |job| {
+                                            job.settings.clone()
+                                        }),
+                                };
+                                if let Err(err) = sidecar.save(&path) {
+                                    log.push(format!("could not save sidecar: {err}"));
+                                }
+                            }
                         }
                     }
-                    Err((_, err)) => log.push(format!("import failed: {err}")),
+                    Err((path, err)) => {
+                        if kind == JobKind::Dry {
+                            log.push(format!("dry run failed: {err}"));
+                            self.dry.insert(path, Err(err.to_string()));
+                        } else {
+                            log.push(format!("import failed: {err}"));
+                        }
+                    }
                 }
             }
         }
 
         for index in finished.into_iter().rev() {
-            let job = self.jobs.remove(index);
+            self.jobs.remove(index);
             if self.jobs.is_empty() {
                 self.status = None;
-            }
-            if self.jobs.is_empty() {
-                let _ = job.name;
             }
         }
         if !self.jobs.is_empty() {
@@ -198,9 +282,17 @@ impl ImportService {
 #[derive(Component, Clone, Copy, Default)]
 pub struct ImportStatus;
 
-/// Drains finished imports into the console.
-pub fn poll_system(mut service: ResMut<ImportService>, mut log: ResMut<ConsoleLog>) {
-    service.poll(&mut log);
+/// Drains finished imports into the console and keeps the GUID index current.
+pub fn poll_system(
+    mut service: ResMut<ImportService>,
+    mut index: ResMut<crate::scene::ModelIndex>,
+    mut log: ResMut<ConsoleLog>,
+) {
+    if service.poll(&mut log) {
+        for path in service.finished.iter().chain(service.reloaded.iter()) {
+            index.0.upsert(path);
+        }
+    }
 }
 
 /// Mirrors the service status into the status bar.
@@ -395,5 +487,40 @@ mod tests {
         assert!(!started, "copying a missing file must fail");
         assert!(log.lines().last().unwrap().contains("import failed"));
         assert!(service.status.is_none());
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_old_instance() {
+        use crate::scene::ModelInstance;
+
+        let dir = scratch("failed-reload");
+        let broken = dir.join("broken.glb");
+        std::fs::write(&broken, b"not a model").unwrap();
+        std::fs::write(
+            Sidecar::path_for(&broken),
+            "(version: 1, guid: \"broken-guid\", settings: ())",
+        )
+        .unwrap();
+
+        let mut log = ConsoleLog::default();
+        let mut service = ImportService::default();
+        assert!(service.reload(&broken, &mut log));
+        settle(&mut service, &mut log, |service| service.jobs.is_empty());
+
+        let mut world = World::new();
+        let old = world
+            .spawn(ModelInstance {
+                guid: "broken-guid".into(),
+                path: "broken.glb".into(),
+            })
+            .id();
+        assert!(service.reloaded.is_empty());
+        assert!(world.get_entity(old).is_ok());
+        assert!(world.get::<ModelInstance>(old).is_some());
+        assert!(
+            log.lines().iter().any(|line| line.contains("import failed")),
+            "{:?}",
+            log.lines()
+        );
     }
 }

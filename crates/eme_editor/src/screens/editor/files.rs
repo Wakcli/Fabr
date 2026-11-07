@@ -828,7 +828,8 @@ pub fn drop_asset(
     mouse: Res<ButtonInput<MouseButton>>,
     mut drag: ResMut<AssetDrag>,
     window: Single<&Window, With<PrimaryWindow>>,
-    panels: Query<(&ComputedNode, &UiGlobalTransform), With<super::viewport::ViewportPanel>>,
+    viewport: Query<(&ComputedNode, &UiGlobalTransform), With<super::viewport::ViewportPanel>>,
+    tree: Query<(&ComputedNode, &UiGlobalTransform), With<super::docks::SceneTreePanel>>,
     mut state: ResMut<SceneState>,
     mut log: ResMut<ConsoleLog>,
 ) {
@@ -840,19 +841,25 @@ pub fn drop_asset(
     }
     drag.0 = None;
 
-    let Ok((panel, global)) = panels.single() else {
-        return;
+    let inside = |panel: &ComputedNode, global: &UiGlobalTransform| {
+        let rect = Rect::from_center_size(global.translation.trunc(), panel.size());
+        window
+            .cursor_position()
+            .map(|pos| pos * window.scale_factor())
+            .is_some_and(|pos| rect.contains(pos))
     };
-    let rect = Rect::from_center_size(global.translation.trunc(), panel.size());
-    let inside = window
-        .cursor_position()
-        .map(|pos| pos * window.scale_factor())
-        .is_some_and(|pos| rect.contains(pos));
-    if !inside {
-        log.push(format!("dropped {rel} outside the viewport; nothing instanced"));
+    let in_viewport = viewport
+        .single()
+        .is_ok_and(|(panel, global)| inside(panel, global));
+    let in_tree = tree
+        .single()
+        .is_ok_and(|(panel, global)| inside(panel, global));
+    if !in_viewport && !in_tree {
+        log.push(format!("dropped {rel} outside the viewport and scene tree"));
         return;
     }
     match state.spawn_model(&rel, [0.0, 0.0, 0.0]) {
+        Some(_) if in_tree => log.push(format!("instanced {rel} from the scene tree")),
         Some(_) => log.push(format!("instanced {rel} at the origin")),
         None => log.push(format!("could not instance {rel}")),
     }

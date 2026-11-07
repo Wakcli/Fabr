@@ -106,19 +106,80 @@ mod tests {
     }
 }
 
-/// Finds the model file whose sidecar carries `guid`, under `assets`.
+/// Index from sidecar GUID to the model file that carries it.
 ///
-/// Sidecars are `<model>.import.ron`; the model path is the sidecar path with that
-/// suffix removed. The walk is bounded so a huge asset folder cannot stall a spawn.
-pub fn find_by_guid(assets: &Path, guid: &str) -> Option<PathBuf> {
-    find_in(assets, guid, 0)
+/// Built once per asset root and updated when a sidecar appears or changes, so a
+/// scene resolve is a map lookup instead of a walk over `assets/`.
+#[derive(Clone, Debug, Default)]
+pub struct GuidIndex {
+    root: PathBuf,
+    by_guid: std::collections::HashMap<String, PathBuf>,
 }
 
-fn find_in(dir: &Path, guid: &str, depth: usize) -> Option<PathBuf> {
-    if depth > 6 {
-        return None;
+impl GuidIndex {
+    /// Walks `root` and records every sidecar it finds.
+    pub fn scan(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let mut index = Self {
+            root: root.clone(),
+            by_guid: std::collections::HashMap::new(),
+        };
+        index.rebuild();
+        index
     }
-    let entries = std::fs::read_dir(dir).ok()?;
+
+    /// The asset root this index was built from.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Forgets everything and walks the asset root again.
+    pub fn rebuild(&mut self) {
+        self.by_guid.clear();
+        collect_sidecars(&self.root, 0, &mut self.by_guid);
+    }
+
+    /// The model file whose sidecar carries `guid`.
+    pub fn get(&self, guid: &str) -> Option<&Path> {
+        self.by_guid.get(guid).map(PathBuf::as_path)
+    }
+
+    /// Records `model` again after its sidecar changed on disk.
+    pub fn upsert(&mut self, model: &Path) {
+        let Some(guid) = sidecar_guid(&sidecar_path(model)) else {
+            return;
+        };
+        self.by_guid.retain(|_, path| path != model);
+        self.by_guid.insert(guid, model.to_path_buf());
+    }
+
+    /// Drops `model` from the index.
+    pub fn remove(&mut self, model: &Path) {
+        self.by_guid.retain(|_, path| path != model);
+    }
+
+    /// Number of indexed models.
+    pub fn len(&self) -> usize {
+        self.by_guid.len()
+    }
+
+    /// True when no sidecar was found under the asset root.
+    pub fn is_empty(&self) -> bool {
+        self.by_guid.is_empty()
+    }
+}
+
+fn collect_sidecars(
+    dir: &Path,
+    depth: usize,
+    out: &mut std::collections::HashMap<String, PathBuf>,
+) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut dirs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -126,20 +187,27 @@ fn find_in(dir: &Path, guid: &str, depth: usize) -> Option<PathBuf> {
             dirs.push(path);
             continue;
         }
-        if path.to_string_lossy().ends_with(".import.ron")
-            && sidecar_guid(&path).as_deref() == Some(guid)
-        {
-            let name = path.file_name()?.to_string_lossy();
-            let model = name.strip_suffix(".import.ron")?;
-            return Some(path.with_file_name(model));
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(model_name) = name.strip_suffix(SIDECAR_SUFFIX) else {
+            continue;
+        };
+        if let Some(guid) = sidecar_guid(&path) {
+            out.insert(guid, path.with_file_name(model_name));
         }
     }
     for dir in dirs {
-        if let Some(found) = find_in(&dir, guid, depth + 1) {
-            return Some(found);
-        }
+        collect_sidecars(&dir, depth + 1, out);
     }
-    None
+}
+
+fn sidecar_path(model: &Path) -> PathBuf {
+    let name = model
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    model.with_file_name(format!("{name}{SIDECAR_SUFFIX}"))
 }
 
 fn sidecar_guid(path: &Path) -> Option<String> {
@@ -152,24 +220,197 @@ fn sidecar_guid(path: &Path) -> Option<String> {
     Some(after[..close].to_owned())
 }
 
+/// Suffix shared with the editor's per-asset import sidecar.
+pub const SIDECAR_SUFFIX: &str = ".import.ron";
+
+/// Which source axis the model treats as up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UpAxis {
+    /// glTF's own convention.
+    #[default]
+    Y,
+    /// Blender's default export when not converted.
+    Z,
+}
+
+/// The imported-model settings that affect how an instance is placed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelImport {
+    /// Uniform scale in metres per source unit.
+    pub scale: f32,
+    /// Source up axis.
+    pub up_axis: UpAxis,
+}
+
+impl Default for ModelImport {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            up_axis: UpAxis::Y,
+        }
+    }
+}
+
+/// Reads scale and up-axis from a model's sidecar, falling back to identity.
+pub fn read_model_import(model: &Path) -> ModelImport {
+    let Ok(text) = std::fs::read_to_string(sidecar_path(model)) else {
+        return ModelImport::default();
+    };
+    let scale = read_number(&text, "scale").unwrap_or(1.0);
+    let up_axis = match read_word(&text, "up_axis").as_deref() {
+        Some("Z") => UpAxis::Z,
+        _ => UpAxis::Y,
+    };
+    ModelImport { scale, up_axis }
+}
+
+fn read_number(text: &str, key: &str) -> Option<f32> {
+    let at = text.find(key)? + key.len();
+    let rest = text[at..].trim_start().strip_prefix(':')?.trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E')))
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+fn read_word(text: &str, key: &str) -> Option<String> {
+    let at = text.find(key)? + key.len();
+    let rest = text[at..].trim_start().strip_prefix(':')?.trim_start();
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(rest.len());
+    (end > 0).then(|| rest[..end].to_owned())
+}
+
+/// The transform the import settings put on the pivot between object and model.
+pub fn pivot_transform(import: ModelImport) -> Transform {
+    let rotation = match import.up_axis {
+        UpAxis::Y => Quat::IDENTITY,
+        UpAxis::Z => Quat::from_rotation_x(-core::f32::consts::FRAC_PI_2),
+    };
+    Transform::from_scale(Vec3::splat(import.scale)).with_rotation(rotation)
+}
+
 #[cfg(test)]
 mod asset_tests {
     use super::*;
 
-    #[test]
-    fn a_guid_finds_its_model_after_a_rename() {
-        let dir = std::env::temp_dir().join(format!("fabr-guid-{}", std::process::id()));
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fabr-guid-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("models")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_guid_finds_its_model_after_a_rename() {
+        let dir = scratch("rename");
         let model = dir.join("models/moved.glb");
         std::fs::write(&model, b"glTF").unwrap();
         std::fs::write(
-            dir.join("models/moved.glb.import.ron"),
-            "(version: 1, guid: \"abc123\", settings: ())",
+            sidecar_path(&model),
+            "(version: 1, guid: \"abc123\", settings: (transform: (scale: 1.0, up_axis: Y)))",
         )
         .unwrap();
 
-        assert_eq!(find_by_guid(&dir, "abc123"), Some(model));
-        assert_eq!(find_by_guid(&dir, "nope"), None);
+        let index = GuidIndex::scan(&dir);
+        assert_eq!(index.get("abc123"), Some(model.as_path()));
+        assert_eq!(index.get("nope"), None);
+    }
+
+    #[test]
+    fn a_new_sidecar_is_indexed_without_a_rescan() {
+        let dir = scratch("upsert");
+        let model = dir.join("models/late.glb");
+        std::fs::write(&model, b"glTF").unwrap();
+        let mut index = GuidIndex::scan(&dir);
+        assert!(index.is_empty());
+
+        std::fs::write(
+            sidecar_path(&model),
+            "(version: 1, guid: \"late-guid\", settings: ())",
+        )
+        .unwrap();
+        index.upsert(&model);
+        assert_eq!(index.get("late-guid"), Some(model.as_path()));
+    }
+
+    #[test]
+    fn a_sidecar_supplies_the_pivot_transform() {
+        let dir = scratch("pivot");
+        let model = dir.join("models/blob.glb");
+        std::fs::write(&model, b"glTF").unwrap();
+        std::fs::write(
+            sidecar_path(&model),
+            r#"(version: 1, guid: "g", settings: (transform: (scale: 2.5, up_axis: Z)))"#,
+        )
+        .unwrap();
+
+        let import = read_model_import(&model);
+        assert_eq!(import.scale, 2.5);
+        assert_eq!(import.up_axis, UpAxis::Z);
+        let pivot = pivot_transform(import);
+        assert_eq!(pivot.scale, Vec3::splat(2.5));
+        let tilted = pivot.rotation * Vec3::Y;
+        assert!((tilted - Vec3::NEG_Z).length() < 1e-5, "{tilted:?}");
+    }
+
+    #[test]
+    fn a_missing_sidecar_keeps_the_identity_pivot() {
+        let dir = scratch("missing");
+        let model = dir.join("models/plain.glb");
+        std::fs::write(&model, b"glTF").unwrap();
+        assert_eq!(read_model_import(&model), ModelImport::default());
+    }
+}
+
+/// Stable identity of one node inside a model instance.
+///
+/// The path is the child ordinal from the instance root, which survives a
+/// document reindex and can be recovered from the spawned entity tree. The name
+/// rides along so a reorder or rename is *detected* rather than silently applied
+/// to the wrong node.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeKey {
+    /// Child ordinals from the root to this node.
+    pub path: Vec<u32>,
+    /// Node name at the time it was recorded.
+    pub name: String,
+}
+
+/// One key, built the same way by the importer and by the scene tagger.
+pub fn extend(parent: &[u32], ordinal: usize, name: &str) -> NodeKey {
+    let mut path = parent.to_vec();
+    path.push(ordinal as u32);
+    NodeKey {
+        path,
+        name: name.to_owned(),
+    }
+}
+
+/// The key for a model root.
+pub fn root_key(name: &str) -> NodeKey {
+    NodeKey {
+        path: Vec::new(),
+        name: name.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn keys_carry_path_and_name() {
+        let a = extend(&[], 2, "Cube");
+        assert_eq!(a.path, vec![2]);
+        assert_eq!(a.name, "Cube");
+        let b = extend(&a.path, 0, "Cube");
+        assert_eq!(b.path, vec![2, 0]);
+    }
+
+    #[test]
+    fn the_same_ordinal_with_a_new_name_is_a_different_key() {
+        assert_ne!(extend(&[], 1, "Cube"), extend(&[], 1, "Chair"));
     }
 }

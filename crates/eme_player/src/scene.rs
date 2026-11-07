@@ -2,7 +2,7 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 
 use eme::prelude::*;
-use eme_game_runtime::SceneBehaviour;
+use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
 use eme_game_scene::{
     Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
 };
@@ -95,15 +95,23 @@ enum Shape {
 }
 
 /// Resolves a model reference the same way the editor does: GUID, then path.
-fn model_path(asset: &eme_game_scene::AssetRef) -> Option<String> {
-    let root = PathBuf::from("assets");
-    let found = eme_game_runtime::find_by_guid(&root, &asset.guid)
+fn model_path(
+    asset: &eme_game_scene::AssetRef,
+    index: &GuidIndex,
+) -> Option<(String, ModelImport)> {
+    let found = index
+        .get(&asset.guid)
+        .map(Path::to_path_buf)
+        .filter(|path| path.is_file())
         .or_else(|| {
-            let candidate = root.join(&asset.path);
+            let candidate = index.root().join(&asset.path);
             candidate.is_file().then_some(candidate)
         })?;
-    let rel = found.strip_prefix(&root).ok()?;
-    Some(rel.to_string_lossy().replace('\\', "/"))
+    let rel = found.strip_prefix(index.root()).ok()?;
+    Some((
+        rel.to_string_lossy().replace('\\', "/"),
+        eme_game_runtime::read_model_import(&found),
+    ))
 }
 
 fn body(kind: ObjectKind) -> Body {
@@ -169,6 +177,7 @@ pub fn spawn_scene(
     asset_server: Res<AssetServer>,
     scene: Res<LoadedScene>,
 ) {
+    let index = GuidIndex::scan("assets");
     let mut view: Option<Transform> = None;
     let mut cache: [Option<Handle<Mesh>>; 4] = [const { None }; 4];
     // the editor viewport owns a shadow-casting sun; the player has none, so the
@@ -192,12 +201,21 @@ pub fn spawn_scene(
                     warn!("model object {} has no asset reference", obj.name);
                     continue;
                 };
-                let resolved = model_path(asset);
+                let resolved = model_path(asset, &index);
                 match resolved {
-                    Some(rel) => {
+                    Some((rel, import)) => {
                         let handle =
                             asset_server.load(GltfAssetLabel::Scene(0).from_asset(rel));
-                        commands.spawn((trs, WorldAssetRoot(handle), behaviour, name));
+                        let pivot = eme_game_runtime::pivot_transform(import);
+                        commands
+                            .spawn((trs, behaviour, name, Visibility::Inherited))
+                            .with_children(|parent| {
+                                parent
+                                    .spawn((pivot, Visibility::Inherited))
+                                    .with_children(|pivot| {
+                                        pivot.spawn(WorldAssetRoot(handle));
+                                    });
+                            });
                     }
                     None => warn!(
                         "model asset missing for {}: {}",

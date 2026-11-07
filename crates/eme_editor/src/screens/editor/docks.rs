@@ -18,6 +18,10 @@ use crate::scene::SceneState;
 use crate::tokens;
 use crate::undo::Undo;
 
+/// Marks the scene-tree body so a model drop can find it.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SceneTreePanel;
+
 /// Hierarchy panel body: the scene tree toolbar, filter, and rows.
 pub fn hierarchy() -> Part {
     let toolbar = Box::new(bsn! {
@@ -76,6 +80,7 @@ pub fn hierarchy() -> Part {
             padding: UiRect { top: px(3) },
             overflow: Overflow::clip(),
         }
+        SceneTreePanel
         ThemeBackgroundColor(tokens::INSET)
         on(open_tree_menu)
         Children [ {tree_rows()} ]

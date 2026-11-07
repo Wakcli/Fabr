@@ -6,14 +6,14 @@ use std::collections::HashMap;
 use eme::color::LinearRgba;
 use eme::feathers::theme::UiTheme;
 use eme::gizmos::transform_gizmo::TransformGizmoState;
-use eme::math::{ops, Rect};
 use eme::gltf::GltfAssetLabel;
+use eme::math::{ops, Rect};
 use eme::prelude::*;
 use eme::render::render_resource::Face;
 use eme::ui::widget::ViewportNode;
 use eme::window::{PrimaryWindow, Window};
 use eme_editor_core::Selection;
-use eme_game_runtime::SceneBehaviour;
+use eme_game_runtime::{GuidIndex, ModelImport, NodeKey, SceneBehaviour};
 use eme_game_scene::{Behaviour, ObjectKind, ObjectTransform, SceneDoc, SceneObject};
 
 use crate::orbit::{FlyMove, ViewMode};
@@ -116,7 +116,17 @@ pub struct SceneState {
     /// Bumped when the document is replaced wholesale, so history can drop.
     epoch: u64,
     next_slot: usize,
-    counts: [u32; 8],
+    counts: [u32; 9],
+}
+
+/// GUID resolution for model instances, built once from the asset root.
+#[derive(Resource)]
+pub struct ModelIndex(pub GuidIndex);
+
+impl Default for ModelIndex {
+    fn default() -> Self {
+        Self(GuidIndex::scan(crate::asset_root()))
+    }
 }
 
 impl SceneState {
@@ -311,7 +321,7 @@ impl SceneState {
     }
 
     pub(crate) fn resync_counts(&mut self) {
-        let mut counts = [0u32; 8];
+        let mut counts = [0u32; 9];
         for obj in &self.doc.objects {
             counts[obj.kind.index()] += 1;
         }
@@ -467,6 +477,7 @@ pub fn reconcile_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
+    index: Res<ModelIndex>,
     theme: Res<UiTheme>,
     play: Res<PlayState>,
     view: Res<ViewMode>,
@@ -518,6 +529,7 @@ pub fn reconcile_scene(
                     &mut meshes,
                     &mut materials,
                     &asset_server,
+                    &index.0,
                     &theme,
                     id,
                     kind,
@@ -536,6 +548,7 @@ pub fn reconcile_scene(
                     &mut meshes,
                     &mut materials,
                     &asset_server,
+                    &index.0,
                     &theme,
                     id,
                     kind,
@@ -557,7 +570,17 @@ impl SceneState {
     /// The sidecar GUID is read (or created) here so the scene stores the durable
     /// identity rather than only a path.
     pub fn spawn_model(&mut self, rel: &str, at: [f32; 3]) -> Option<u64> {
-        let full = crate::asset_root().join(rel);
+        self.spawn_model_in(&crate::asset_root(), rel, at)
+    }
+
+    /// Adds a model object for `rel`, resolved against `root`.
+    pub fn spawn_model_in(
+        &mut self,
+        root: &std::path::Path,
+        rel: &str,
+        at: [f32; 3],
+    ) -> Option<u64> {
+        let full = root.join(rel);
         if !full.is_file() {
             warn!("cannot instance {rel}: file is missing");
             return None;
@@ -567,13 +590,7 @@ impl SceneState {
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Model".into());
-        let mut transform = ObjectTransform::from_translation(at);
-        let scale = sidecar.settings.transform.scale;
-        transform = transform.with_scale([scale, scale, scale]);
-        if sidecar.settings.transform.up_axis == crate::import::UpAxis::Z {
-            let tilt = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-            transform = transform.with_rotation(tilt.to_array());
-        }
+        let transform = ObjectTransform::from_translation(at);
         let id = self.doc.add(ObjectKind::Model, name, transform);
         self.doc.set_asset(
             id,
@@ -590,7 +607,6 @@ impl SceneState {
 
 /// One instanced model; the root of a spawned glTF scene.
 #[derive(Component, Clone, Default)]
-#[expect(dead_code, reason = "hot reload watches these fields")]
 pub struct ModelInstance {
     /// Sidecar GUID of the asset this instance came from.
     pub guid: String,
@@ -598,9 +614,9 @@ pub struct ModelInstance {
     pub path: String,
 }
 
-/// Position of an entity inside its model's node tree, root to leaf.
+/// Identity of an entity inside its model's node tree.
 #[derive(Component, Clone, Default, PartialEq, Eq)]
-pub struct NodePath(pub Vec<u32>);
+pub struct NodePath(pub NodeKey);
 
 /// Stand-in shown when a model's asset cannot be found.
 #[derive(Component, Clone, Copy, Default)]
@@ -611,25 +627,31 @@ pub fn tag_model_nodes(
     mut commands: Commands,
     roots: Query<(Entity, &Children), With<ModelInstance>>,
     children: Query<&Children>,
+    names: Query<&Name>,
     tagged: Query<(), With<NodePath>>,
 ) {
-    for (root, kids) in &roots {
-        if tagged.get(root).is_err() {
-            commands.entity(root).insert(NodePath(Vec::new()));
-        }
-        let mut stack: Vec<(Entity, Vec<u32>)> = kids
+    for (_root, kids) in &roots {
+        let root = NodeKey::default();
+        let mut stack: Vec<(Entity, NodeKey)> = kids
             .iter()
             .enumerate()
-            .map(|(index, child)| (child, vec![index as u32]))
+            .map(|(ordinal, child)| {
+                let label = names
+                    .get(child)
+                    .map_or_else(|_| String::new(), |name| name.as_str().to_owned());
+                (child, eme_game_runtime::extend(&root.path, ordinal, &label))
+            })
             .collect();
-        while let Some((entity, path)) = stack.pop() {
+        while let Some((entity, key)) = stack.pop() {
             if tagged.get(entity).is_err() {
-                commands.entity(entity).insert(NodePath(path.clone()));
+                commands.entity(entity).insert(NodePath(key.clone()));
             }
             if let Ok(kids) = children.get(entity) {
-                for (index, child) in kids.iter().enumerate() {
-                    let mut next = path.clone();
-                    next.push(index as u32);
+                for (ordinal, child) in kids.iter().enumerate() {
+                    let label = names
+                        .get(child)
+                        .map_or_else(|_| String::new(), |name| name.as_str().to_owned());
+                    let next = eme_game_runtime::extend(&key.path, ordinal, &label);
                     stack.push((child, next));
                 }
             }
@@ -637,20 +659,32 @@ pub fn tag_model_nodes(
     }
 }
 
-/// Resolves an asset reference to an AssetServer-relative path.
+/// Resolves an asset reference to an AssetServer-relative path and its pivot settings.
 ///
 /// GUID first, so renaming or moving the file keeps the scene working; the stored
 /// path is the fallback for assets imported before the sidecar existed.
-fn resolve_model(asset: &eme_game_scene::AssetRef, _asset_server: &AssetServer) -> Option<String> {
-    let root = crate::asset_root();
-    let found = eme_game_runtime::find_by_guid(&root, &asset.guid)
+fn resolve_model(
+    asset: &eme_game_scene::AssetRef,
+    index: &GuidIndex,
+) -> Option<(String, ModelImport)> {
+    let found = index
+        .get(&asset.guid)
+        .map(std::path::Path::to_path_buf)
+        .filter(|path| path.is_file())
         .or_else(|| {
-            let candidate = root.join(&asset.path);
+            let candidate = index.root().join(&asset.path);
             candidate.is_file().then_some(candidate)
         })?;
-    let rel = found.strip_prefix(&root).ok()?;
-    Some(rel.to_string_lossy().replace('\\', "/"))
+    let rel = found.strip_prefix(index.root()).ok()?;
+    Some((
+        rel.to_string_lossy().replace('\\', "/"),
+        eme_game_runtime::read_model_import(&found),
+    ))
 }
+
+/// Parent of a model's scene root; carries scale and up-axis conversion only.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ImportPivot;
 
 /// Carries the change `before` → current on `id` onto every descendant of `id`.
 ///
@@ -730,6 +764,7 @@ fn spawn_entity(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     asset_server: &AssetServer,
+    index: &GuidIndex,
     theme: &UiTheme,
     id: u64,
     kind: ObjectKind,
@@ -788,21 +823,25 @@ fn spawn_entity(
             entity
         }
         ObjectKind::Model => {
-            let resolved = asset.and_then(|asset| resolve_model(asset, asset_server));
+            let resolved = asset.and_then(|asset| resolve_model(asset, index));
             match resolved {
-                Some(rel) => {
-                    let handle = asset_server
-                        .load(GltfAssetLabel::Scene(0).from_asset(rel.clone()));
+                Some((rel, import)) => {
+                    let handle =
+                        asset_server.load(GltfAssetLabel::Scene(0).from_asset(rel.clone()));
                     let guid = asset.map(|asset| asset.guid.clone()).unwrap_or_default();
+                    let pivot = eme_game_runtime::pivot_transform(import);
                     commands
-                        .spawn((
-                            trs,
-                            WorldAssetRoot(handle),
-                            ModelInstance {
-                                guid,
-                                path: rel,
-                            },
-                        ))
+                        .spawn((trs, Visibility::Inherited))
+                        .with_children(|pivot_entity| {
+                            pivot_entity
+                                .spawn((pivot, ImportPivot, Visibility::Inherited))
+                                .with_children(|model| {
+                                    model.spawn((
+                                        WorldAssetRoot(handle),
+                                        ModelInstance { guid, path: rel },
+                                    ));
+                                });
+                        })
                         .id()
                 }
                 None => {
@@ -1616,5 +1655,81 @@ mod tests {
         );
         assert_eq!(state.primary(), Some(child));
         assert_eq!(state.anchor, Some(parent));
+    }
+
+    #[test]
+    fn a_sidecar_scale_change_leaves_the_authored_transform_alone() {
+        let dir = std::env::temp_dir().join(format!("fabr-pivot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("chair.glb");
+        std::fs::write(&model, b"glTF").unwrap();
+        let sidecar = model.with_file_name("chair.glb.import.ron");
+        std::fs::write(
+            &sidecar,
+            "(version: 1, guid: \"chair-guid\", settings: (transform: (scale: 1.0, up_axis: Y)))",
+        )
+        .unwrap();
+
+        let mut state = SceneState::default();
+        let id = state
+            .spawn_model_in(&dir, "chair.glb", [2.5, 1.0, -4.0])
+            .unwrap();
+        let authored = state.doc.get(id).unwrap().transform();
+        assert_eq!(authored.translation, [2.5, 1.0, -4.0]);
+        assert_eq!(authored.scale, [1.0, 1.0, 1.0]);
+        assert_eq!(authored.rotation, [0.0, 0.0, 0.0, 1.0]);
+
+        std::fs::write(
+            &sidecar,
+            "(version: 1, guid: \"chair-guid\", settings: (transform: (scale: 3.0, up_axis: Z)))",
+        )
+        .unwrap();
+        let asset = state.doc.get(id).unwrap().asset.clone().unwrap();
+        let index = GuidIndex::scan(&dir);
+        let (_, import) = resolve_model(&asset, &index).unwrap();
+        let pivot = eme_game_runtime::pivot_transform(import);
+        assert_eq!(pivot.scale, Vec3::splat(3.0));
+
+        let after = state.doc.get(id).unwrap().transform();
+        assert_eq!(after.translation, authored.translation);
+        assert_eq!(after.scale, authored.scale);
+        assert_eq!(after.rotation, authored.rotation);
+    }
+
+    #[test]
+    fn the_importer_and_the_runtime_agree_on_node_keys() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let dir = std::env::temp_dir().join(format!("fabr-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dupes.gltf");
+        std::fs::write(
+            &path,
+            r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+                "nodes":[{"name":"Node","children":[1]},{"name":"Node"}]}"#,
+        )
+        .unwrap();
+        let report =
+            crate::import::import(&path, &crate::import::ImportSettings::default()).unwrap();
+        let mut imported: Vec<NodeKey> = report.nodes.iter().map(|node| node.key.clone()).collect();
+        imported.sort();
+
+        let mut world = World::new();
+        let root = world.spawn(ModelInstance::default()).id();
+        let first = world.spawn(Name::new("Node")).id();
+        let second = world.spawn(Name::new("Node")).id();
+        world.entity_mut(first).add_children(&[second]);
+        world.entity_mut(root).add_children(&[first]);
+        world.run_system_once(tag_model_nodes).unwrap();
+
+        let mut tagged: Vec<NodeKey> = world
+            .iter_entities()
+            .filter_map(|entity| entity.get::<NodePath>().map(|path| path.0.clone()))
+            .collect();
+        tagged.sort();
+        assert_eq!(tagged, imported);
+        assert_eq!(imported.len(), 2);
     }
 }

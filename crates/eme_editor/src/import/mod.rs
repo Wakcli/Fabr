@@ -10,10 +10,12 @@ mod report;
 mod sidecar;
 mod service;
 mod settings;
+mod watch;
 
 pub use importer::import;
 pub use panel::{OptionsPanel, panel, sync as sync_panel};
 pub use sidecar::Sidecar;
 pub use report::{ImportError, ImportReport};
 pub use service::{ImportRequest, ImportService, ImportStatus, poll_system, status_system};
-pub use settings::{ImportSettings, UpAxis};
+pub use settings::ImportSettings;
+pub use watch::{apply_reloads, watch_models, ModelWatcher};

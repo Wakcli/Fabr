@@ -127,6 +127,8 @@ pub struct NodeInfo {
     pub name: String,
     /// Nesting depth, roots at 0.
     pub depth: usize,
+    /// Shared identity used by overrides and hot reload.
+    pub key: eme_game_runtime::NodeKey,
 }
 
 /// One texture that came with the file.

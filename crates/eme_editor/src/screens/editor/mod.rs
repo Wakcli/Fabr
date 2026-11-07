@@ -206,6 +206,8 @@ impl Plugin for EditorPlugin {
             .init_resource::<files::FileTree>()
             .init_resource::<crate::console::ConsoleLog>()
             .init_resource::<crate::import::ImportService>()
+            .init_resource::<crate::import::ModelWatcher>()
+            .init_resource::<scene::ModelIndex>()
             .init_resource::<files::ImportMenu>()
             .init_resource::<files::AssetDrag>()
             .init_resource::<crate::import::OptionsPanel>()
@@ -227,6 +229,7 @@ impl Plugin for EditorPlugin {
                     (
                         crate::console::sync,
                         crate::import::poll_system,
+                        crate::import::apply_reloads,
                         crate::import::status_system,
                         crate::import::sync_panel,
                         (
@@ -251,6 +254,9 @@ impl Plugin for EditorPlugin {
                         files::sync_file_rows,
                         files::poll_files.run_if(eme::time::common_conditions::on_timer(
                             core::time::Duration::from_secs(3),
+                        )),
+                        crate::import::watch_models.run_if(eme::time::common_conditions::on_timer(
+                            core::time::Duration::from_millis(500),
                         )),
                     ),
                     (
@@ -286,14 +292,21 @@ impl Plugin for EditorPlugin {
 }
 
 fn autoload_scene(mut state: ResMut<scene::SceneState>) {
-    if std::env::var_os("EME_EDITOR_DEMO").is_some()
-        || std::env::var_os("EME_EDITOR_SHOT").is_some()
-    {
+    if std::env::var_os("EME_EDITOR_DEMO").is_some() {
         return;
     }
-    if let Ok(Some(doc)) = persist::load() {
+    // headless captures normally start empty; an explicit scene is loaded even then
+    let explicit = std::env::var_os("EME_EDITOR_SCENE").map(std::path::PathBuf::from);
+    if explicit.is_none() && std::env::var_os("EME_EDITOR_SHOT").is_some() {
+        return;
+    }
+    let loaded = match &explicit {
+        Some(path) => persist::load_from(&path.to_string_lossy()),
+        None => persist::load(),
+    };
+    if let Ok(Some(doc)) = loaded {
         let count = doc.len();
         state.replace_doc(doc);
-        info!("loaded {count} objects from {}", persist::SCENE_PATH);
+        info!("loaded {count} objects");
     }
 }

@@ -9,7 +9,7 @@ use eme::scene::bsn;
 use eme::ui_widgets::{Activate, Button};
 
 use super::report::ImportReport;
-use super::service::{ImportRequest, ImportService};
+use super::service::ImportService;
 use super::settings::{ImportSettings, UpAxis};
 use super::sidecar::Sidecar;
 use crate::console::ConsoleLog;
@@ -148,12 +148,19 @@ pub struct OptionsRoot;
 
 /// Shows or hides the panel and rebuilds its body when the state changes.
 pub fn sync(
-    panel: Res<OptionsPanel>,
+    mut panel: ResMut<OptionsPanel>,
+    mut service: ResMut<ImportService>,
     mut commands: Commands,
     mut roots: Query<&mut Node, With<OptionsRoot>>,
     hosts: Query<Entity, With<PanelHost>>,
     mut last: Local<Option<(Entity, u64, bool)>>,
 ) {
+    if panel.open
+        && let Some(outcome) = service.dry.remove(&panel.source)
+    {
+        panel.report = outcome.ok();
+        panel.bump();
+    }
     for mut node in &mut roots {
         let want = if panel.open {
             Display::Flex
@@ -530,21 +537,12 @@ pub fn activate(
             panel.bump();
         }
         Action::DryRun => {
-            let settings = panel.settings.clone();
             let source = panel.source.clone();
-            let folder = panel.folder.clone();
-            match super::import(&source, &settings) {
-                Ok(report) => {
-                    log.push(report.summary());
-                    panel.report = Some(report);
-                }
-                Err(err) => {
-                    log.push(format!("dry run failed: {err}"));
-                    panel.report = None;
-                }
+            let settings = panel.settings.clone();
+            if service.dry_run(&source, settings, &mut log) {
+                panel.report = None;
+                panel.bump();
             }
-            let _ = folder;
-            panel.bump();
         }
         Action::CopyReport => {
             let body = panel
@@ -597,19 +595,7 @@ pub fn activate(
             if let Err(err) = sidecar.save(&panel.source) {
                 log.push(format!("could not save sidecar: {err}"));
             }
-            let settings = panel.settings.clone();
-            let source = panel.source.clone();
-            let folder = panel.folder.clone();
-            service.start(
-                ImportRequest {
-                    source: source.clone(),
-                    folder,
-                    settings,
-                    copy: false,
-                },
-                &crate::build::workspace_dir(),
-                &mut log,
-            );
+            service.reload(&panel.source, &mut log);
             panel.open = false;
             panel.bump();
         }

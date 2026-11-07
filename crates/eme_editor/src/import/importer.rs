@@ -249,8 +249,8 @@ pub fn import(path: &Path, settings: &ImportSettings) -> Result<ImportReport, Im
         Some(scene) => scene.nodes().collect(),
         None => doc.nodes().collect(),
     };
-    for root in roots {
-        collect_nodes(&root, 0, &mut nodes);
+    for (ordinal, root) in roots.iter().enumerate() {
+        collect_nodes(root, 0, &[], ordinal, &mut nodes);
     }
 
     warnings.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.target.cmp(&b.target)));
@@ -280,16 +280,25 @@ pub fn import(path: &Path, settings: &ImportSettings) -> Result<ImportReport, Im
     })
 }
 
-fn collect_nodes(node: &gltf::Node<'_>, depth: usize, out: &mut Vec<super::report::NodeInfo>) {
+fn collect_nodes(
+    node: &gltf::Node<'_>,
+    depth: usize,
+    parent: &[u32],
+    ordinal: usize,
+    out: &mut Vec<super::report::NodeInfo>,
+) {
+    let name = node
+        .name()
+        .map_or_else(|| format!("GltfNode{}", node.index()), str::to_owned);
+    let key = eme_game_runtime::extend(parent, ordinal, &name);
     out.push(super::report::NodeInfo {
         index: node.index(),
-        name: node
-            .name()
-            .map_or_else(|| format!("GltfNode{}", node.index()), str::to_owned),
+        name,
         depth,
+        key: key.clone(),
     });
-    for child in node.children() {
-        collect_nodes(&child, depth + 1, out);
+    for (child_ordinal, child) in node.children().enumerate() {
+        collect_nodes(&child, depth + 1, &key.path, child_ordinal, out);
     }
 }
 

@@ -435,7 +435,8 @@ fn package(
 
     let out_dir = target_dir();
     say(tx, Level::Step, format!("target dir {}", out_dir.display()));
-    let player = resolve_player(&out_dir, profile, target, tx)?;
+    let export_dir = out_dir.join("export");
+    let player = resolve_player(&export_dir, profile, target, tx)?;
 
     let out = PathBuf::from(target.out_dir());
     let assets = Path::new(ASSET_DIR);
@@ -452,12 +453,12 @@ fn package(
 
 /// Picks the player binary, building it first when cargo has not produced one.
 fn resolve_player(
-    target_dir: &Path,
+    export_dir: &Path,
     profile: Profile,
     target: Target,
     tx: &Sender<Msg>,
 ) -> Result<PathBuf, String> {
-    let chosen = player_path(target_dir, target, profile);
+    let chosen = player_path(export_dir, target, profile);
     if chosen.is_file() {
         say(
             tx,
@@ -479,7 +480,7 @@ fn resolve_player(
                 .unwrap_or_default()
         ),
     );
-    build_player(tx, profile, target)?;
+    build_player(tx, profile, target, export_dir)?;
     if chosen.is_file() {
         say(tx, Level::Step, "player built");
         return Ok(chosen);
@@ -507,13 +508,24 @@ fn candidates(target: &Path) -> [PathBuf; 2] {
     ]
 }
 
-fn build_player(tx: &Sender<Msg>, profile: Profile, target: Target) -> Result<(), String> {
+fn build_player(
+    tx: &Sender<Msg>,
+    profile: Profile,
+    target: Target,
+    export_dir: &Path,
+) -> Result<(), String> {
     let cargo = cargo_command(target);
     say(tx, Level::Step, format!("toolchain {}", cargo.label));
+    say(
+        tx,
+        Level::Step,
+        "static player: external plugins load in the editor and dev player only",
+    );
     let mut command = Command::new(&cargo.program);
     command
-        .args(["build", "-p", PLAYER_PKG])
-        .args(profile.cargo_flags());
+        .args(["build", "-p", PLAYER_PKG, "--no-default-features"])
+        .args(profile.cargo_flags())
+        .env("CARGO_TARGET_DIR", export_dir);
     if let Some(triple) = target.cargo_target() {
         command.args(["--target", triple]);
         if triple == WINDOWS_TRIPLE {

@@ -194,7 +194,7 @@ pub fn spawn_scene(
     asset_server: Res<AssetServer>,
     scene: Res<LoadedScene>,
 ) {
-    let index = GuidIndex::scan("assets");
+    let index = GuidIndex::scan(crate::asset_root());
     let mut view: Option<Transform> = None;
     let mut cache: [Option<Handle<Mesh>>; 4] = [const { None }; 4];
     // the editor viewport owns a shadow-casting sun; the player has none, so the

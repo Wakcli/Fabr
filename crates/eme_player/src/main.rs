@@ -5,12 +5,26 @@ mod scene;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use eme::asset::AssetPlugin;
 use eme::prelude::*;
 use eme::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
 use eme::window::{PresentMode, WindowResolution};
 
 const DEMO_PATH: &str = "scenes/player-demo.ember";
 const SHOT_FRAME: u32 = 40;
+
+/// Assets next to the executable when shipped, otherwise the development folder.
+pub(crate) fn asset_root() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent().map(|dir| dir.join("assets"))
+        && dir.is_dir()
+    {
+        return dir;
+    }
+    std::env::current_dir()
+        .map(|dir| dir.join("assets"))
+        .unwrap_or_else(|_| PathBuf::from("assets"))
+}
 
 #[derive(Default)]
 struct Args {
@@ -68,8 +82,12 @@ fn main() {
         PresentMode::AutoNoVsync
     };
 
+    let assets = asset_root();
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
+        .add_plugins(DefaultPlugins.set(AssetPlugin {
+            file_path: assets.to_string_lossy().into_owned(),
+            ..default()
+        }).set(WindowPlugin {
             primary_window: Some(Window {
                 title: title.clone(),
                 resolution: WindowResolution::new(settings.player.width, settings.player.height),
@@ -80,7 +98,7 @@ fn main() {
         }))
         .add_plugins(fabr::ScriptPlugin)
         .insert_resource(fabr::ScriptsActive(true))
-        .insert_resource(fabr::ScriptRoot(PathBuf::from("assets")))
+        .insert_resource(fabr::ScriptRoot(assets))
         .insert_resource(actions)
         .insert_resource(scene::PlayerMsaa(settings.graphics.msaa))
         .insert_resource(scene::PlayerShadows(settings.quality.shadows))

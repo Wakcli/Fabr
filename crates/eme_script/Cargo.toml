@@ -1,0 +1,24 @@
+[package]
+name = "eme_script"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Lua gameplay scripting shared by the Fabr editor and runtime"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["fabr", "scripting", "lua", "runtime"]
+rust-version = "1.96.0"
+
+[dependencies]
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_game_runtime = { path = "../eme_game_runtime", version = "0.20.0-dev" }
+eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }
+eme_input = { path = "../eme_input", version = "0.20.0-dev", features = ["keyboard", "mouse"] }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_time = { path = "../eme_time", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+
+[lints]
+workspace = true

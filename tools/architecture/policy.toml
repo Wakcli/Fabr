@@ -77,6 +77,7 @@
 "eme_render" = 13
 "eme_render_macros" = 3
 "eme_scene" = 9
+"eme_script" = 12
 "eme_scene_macros" = 3
 "eme_shader" = 9
 "eme_shape" = 5

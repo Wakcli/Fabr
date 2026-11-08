@@ -4,6 +4,9 @@
 //! can read a scene without pulling in the editor, rendering, or windowing.
 
 use core::fmt;
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -264,6 +267,48 @@ pub struct NodeOverride {
     pub op: OverrideOp,
 }
 
+/// Value a script exposes as an editable property.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ScriptValue {
+    /// Boolean property.
+    Bool(bool),
+    /// Numeric property.
+    Number(f64),
+    /// Text property.
+    Text(String),
+}
+
+impl Default for ScriptValue {
+    fn default() -> Self {
+        Self::Text(String::new())
+    }
+}
+
+impl ScriptValue {
+    /// Short type name used by editor readers that cannot show the value.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            ScriptValue::Bool(_) => "bool",
+            ScriptValue::Number(_) => "number",
+            ScriptValue::Text(_) => "text",
+        }
+    }
+}
+
+/// Script attached to a scene object.
+///
+/// The path is relative to the project's `assets/` folder. Properties are
+/// author overrides for the defaults declared in the script module.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct ScriptRef {
+    /// Path below `assets/`, for example `scripts/spin.lua`.
+    pub path: String,
+    /// Author overrides of the script's declared properties.
+    #[serde(default)]
+    pub properties: BTreeMap<String, ScriptValue>,
+}
+
 /// Pointer from a scene object to an imported model asset.
 ///
 /// The GUID is the durable identity: moving or renaming the file keeps it, and a
@@ -306,6 +351,9 @@ pub struct SceneObject {
     /// Author edits to the instanced model's nodes, kept beside the source asset.
     #[serde(default)]
     pub overrides: Vec<NodeOverride>,
+    /// Optional gameplay script attached to this object.
+    #[serde(default)]
+    pub script: Option<ScriptRef>,
 }
 
 /// Offset applied on top of an imported node's transform.
@@ -484,6 +532,7 @@ impl SceneDoc {
             behaviour: Behaviour::default(),
             asset: None,
             overrides: Vec::new(),
+            script: None,
         });
         id
     }
@@ -578,6 +627,55 @@ impl SceneDoc {
             }
             None => false,
         }
+    }
+
+    /// The script attached to `id`, if any.
+    pub fn script(&self, id: u64) -> Option<&ScriptRef> {
+        self.get(id).and_then(|obj| obj.script.as_ref())
+    }
+
+    /// Attaches or clears the script on `id`.
+    pub fn set_script(&mut self, id: u64, script: Option<ScriptRef>) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        if obj.script == script {
+            return false;
+        }
+        obj.script = script;
+        true
+    }
+
+    /// Sets one author override for the script on `id`.
+    pub fn set_script_property(
+        &mut self,
+        id: u64,
+        key: impl Into<String>,
+        value: ScriptValue,
+    ) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        let Some(script) = obj.script.as_mut() else {
+            return false;
+        };
+        let key = key.into();
+        if script.properties.get(&key) == Some(&value) {
+            return false;
+        }
+        script.properties.insert(key, value);
+        true
+    }
+
+    /// Drops one script property override, falling back to the script default.
+    pub fn remove_script_property(&mut self, id: u64, key: &str) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        let Some(script) = obj.script.as_mut() else {
+            return false;
+        };
+        script.properties.remove(key).is_some()
     }
 
     /// The authored overrides for `id`, or an empty slice.
@@ -1079,6 +1177,83 @@ mod tests {
 
         let empty: TransformDelta = ron::from_str("()").unwrap();
         assert_eq!(empty, TransformDelta::default());
+    }
+
+    #[test]
+    fn a_script_round_trips_with_properties() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Cube,
+            "Spinner",
+            ObjectTransform::from_translation([0.0; 3]),
+        );
+        let mut properties = BTreeMap::new();
+        properties.insert("speed".to_string(), ScriptValue::Number(2.5));
+        properties.insert("label".to_string(), ScriptValue::Text("spin".into()));
+        assert!(doc.set_script(
+            id,
+            Some(ScriptRef {
+                path: "scripts/spin.lua".into(),
+                properties,
+            })
+        ));
+
+        let text = doc.to_ron().unwrap();
+        let back = SceneDoc::from_ron(&text).unwrap();
+        let script = back.script(id).unwrap();
+        assert_eq!(script.path, "scripts/spin.lua");
+        assert_eq!(
+            script.properties.get("speed"),
+            Some(&ScriptValue::Number(2.5))
+        );
+        assert_eq!(
+            script.properties.get("label"),
+            Some(&ScriptValue::Text("spin".into()))
+        );
+        assert!(text.contains("script: Some"));
+    }
+
+    #[test]
+    fn an_old_scene_without_a_script_still_loads() {
+        let text = r#"(
+            format_version: 1,
+            objects: [(
+                id: 1,
+                name: "old",
+                kind: Cube,
+                parent: None,
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0),
+                color: None,
+            )],
+        )"#;
+        let doc = SceneDoc::from_ron(text).unwrap();
+        assert!(doc.script(1).is_none());
+    }
+
+    #[test]
+    fn script_properties_can_be_set_and_removed() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Cube,
+            "Spinner",
+            ObjectTransform::from_translation([0.0; 3]),
+        );
+        doc.set_script(
+            id,
+            Some(ScriptRef {
+                path: "scripts/spin.lua".into(),
+                properties: BTreeMap::new(),
+            }),
+        );
+        assert!(doc.set_script_property(id, "speed", ScriptValue::Bool(true)));
+        assert_eq!(
+            doc.script(id).unwrap().properties.get("speed"),
+            Some(&ScriptValue::Bool(true))
+        );
+        assert!(doc.remove_script_property(id, "speed"));
+        assert!(doc.script(id).unwrap().properties.is_empty());
     }
 
     #[test]

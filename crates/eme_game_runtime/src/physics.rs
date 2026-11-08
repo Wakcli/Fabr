@@ -243,6 +243,8 @@ pub struct PhysicsBody {
     pub half_extents: Vec3,
     /// Current linear velocity.
     pub velocity: Vec3,
+    /// Current angular velocity in radians per second around world axes.
+    pub angular_velocity: Vec3,
     /// Whether the body rested on the ground or a static box in the last step.
     pub grounded: bool,
 }
@@ -254,10 +256,35 @@ impl PhysicsBody {
             dynamic: spec.dynamic,
             half_extents: Vec3::from_array(spec.half_extents),
             velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
             grounded: false,
         }
     }
+
+    /// Applies an angular impulse (world axes) through the box inertia approximation.
+    pub fn apply_angular_impulse(&mut self, impulse: Vec3, mass: f32) {
+        let inertia = box_inertia(self.half_extents, mass.max(0.001));
+        self.angular_velocity += Vec3::new(
+            impulse.x / inertia.x.max(1e-4),
+            impulse.y / inertia.y.max(1e-4),
+            impulse.z / inertia.z.max(1e-4),
+        );
+    }
 }
+
+/// Principal moments of inertia of a solid box of `mass`.
+pub fn box_inertia(half_extents: Vec3, mass: f32) -> Vec3 {
+    let size = half_extents.abs() * 2.0;
+    mass.max(0.0) / 12.0
+        * Vec3::new(
+            size.y * size.y + size.z * size.z,
+            size.x * size.x + size.z * size.z,
+            size.x * size.x + size.y * size.y,
+        )
+}
+
+/// Fraction of angular speed kept after a contact.
+const CONTACT_SPIN_DAMPING: f32 = 0.55;
 
 /// Advances every dynamic body by one frame.
 pub fn step_physics(
@@ -298,6 +325,12 @@ fn integrate(
 ) {
     body.velocity.y -= settings.gravity * dt;
     transform.translation += body.velocity * dt;
+    let spin = body.angular_velocity.length();
+    if spin > 1e-6 {
+        let axis = body.angular_velocity / spin;
+        let delta = Quat::from_axis_angle(axis, spin * dt);
+        transform.rotation = (delta * transform.rotation).normalize();
+    }
     body.grounded = false;
 
     let half = body.half_extents * transform.scale.abs();
@@ -305,6 +338,7 @@ fn integrate(
     if bottom < 0.0 {
         transform.translation.y -= bottom;
         land(body, settings);
+        body.angular_velocity *= CONTACT_SPIN_DAMPING;
         body.grounded = true;
     }
 
@@ -319,6 +353,7 @@ fn integrate(
             transform.translation.y += overlap.y * dir;
             if dir > 0.0 {
                 body.grounded = true;
+                body.angular_velocity *= CONTACT_SPIN_DAMPING;
                 if body.velocity.y < 0.0 {
                     land(body, settings);
                 }
@@ -328,12 +363,14 @@ fn integrate(
         } else if overlap.x <= overlap.z {
             let dir = if delta.x >= 0.0 { 1.0 } else { -1.0 };
             transform.translation.x += overlap.x * dir;
+            body.angular_velocity *= CONTACT_SPIN_DAMPING;
             if (dir > 0.0 && body.velocity.x < 0.0) || (dir < 0.0 && body.velocity.x > 0.0) {
                 body.velocity.x = 0.0;
             }
         } else {
             let dir = if delta.z >= 0.0 { 1.0 } else { -1.0 };
             transform.translation.z += overlap.z * dir;
+            body.angular_velocity *= CONTACT_SPIN_DAMPING;
             if (dir > 0.0 && body.velocity.z < 0.0) || (dir < 0.0 && body.velocity.z > 0.0) {
                 body.velocity.z = 0.0;
             }
@@ -475,6 +512,65 @@ mod tests {
         assert!(walkable(gentle, 45.0));
         assert!(!walkable(steep, 45.0));
         assert!(!walkable(Vec3::NEG_Y, 45.0));
+    }
+
+    #[test]
+    fn a_spinning_body_rotates_in_free_flight() {
+        let mut transform = Transform::from_xyz(0.0, 5.0, 0.0);
+        let mut body = PhysicsBody {
+            dynamic: true,
+            angular_velocity: Vec3::new(0.0, core::f32::consts::PI, 0.0),
+            ..PhysicsBody::from_spec(&PhysicsBodySpec::default())
+        };
+        let settings = PhysicsSettings {
+            gravity: 0.0,
+            ..PhysicsSettings::default()
+        };
+        for _ in 0..30 {
+            integrate(&mut body, &mut transform, &settings, 1.0 / 60.0, &[]);
+        }
+        let (yaw, _, _) = transform.rotation.to_euler(EulerRot::YXZ);
+        assert!((yaw.abs() - core::f32::consts::FRAC_PI_2).abs() < 1e-3, "{yaw}");
+        assert_eq!(body.angular_velocity, Vec3::new(0.0, core::f32::consts::PI, 0.0));
+    }
+
+    #[test]
+    fn landing_damps_angular_velocity() {
+        let mut transform = Transform::from_xyz(0.0, 2.0, 0.0);
+        let mut body = PhysicsBody {
+            dynamic: true,
+            angular_velocity: Vec3::new(0.0, 4.0, 0.0),
+            ..PhysicsBody::from_spec(&PhysicsBodySpec::default())
+        };
+        for _ in 0..180 {
+            integrate(
+                &mut body,
+                &mut transform,
+                &PhysicsSettings::default(),
+                1.0 / 60.0,
+                &[],
+            );
+        }
+        assert!(body.grounded, "the body should have landed");
+        assert!(
+            body.angular_velocity.length() < 4.0 * 0.5,
+            "spin was not damped: {:?}",
+            body.angular_velocity
+        );
+        assert!(transform.translation.y >= 0.5 - 1e-3, "fell through");
+    }
+
+    #[test]
+    fn box_inertia_and_impulses_agree() {
+        let inertia = box_inertia(Vec3::splat(0.5), 2.0);
+        let expected = 2.0 / 12.0 * (1.0 + 1.0);
+        assert!((inertia.x - expected).abs() < 1e-5);
+        let mut body = PhysicsBody {
+            dynamic: true,
+            ..PhysicsBody::from_spec(&PhysicsBodySpec::default())
+        };
+        body.apply_angular_impulse(Vec3::new(0.0, inertia.y * 2.0, 0.0), 2.0);
+        assert!((body.angular_velocity.y - 2.0).abs() < 1e-4);
     }
 
     #[test]

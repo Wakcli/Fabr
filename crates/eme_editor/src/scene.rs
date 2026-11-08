@@ -579,13 +579,16 @@ pub fn reconcile_scene(
                 entity.insert((Name::new(name), behaviour));
                 match obj.script.clone() {
                     Some(script) => {
-                        entity.insert(ScriptedObject {
-                            object_id: id,
-                            script,
-                        });
+                        entity.insert((
+                            ScriptedObject {
+                                object_id: id,
+                                script,
+                            },
+                            eme_game_runtime::ScriptControlled,
+                        ));
                     }
                     None => {
-                        entity.remove::<ScriptedObject>();
+                        entity.remove::<(ScriptedObject, eme_game_runtime::ScriptControlled)>();
                     }
                 }
                 match obj.physics.as_ref() {
@@ -1035,10 +1038,13 @@ fn spawn_entity(
     };
 
     if let Some(script) = script {
-        commands.entity(entity).insert(ScriptedObject {
-            object_id: id,
-            script: script.clone(),
-        });
+        commands.entity(entity).insert((
+            ScriptedObject {
+                object_id: id,
+                script: script.clone(),
+            },
+            eme_game_runtime::ScriptControlled,
+        ));
     }
     if let Some(physics) = physics {
         if physics.controller {

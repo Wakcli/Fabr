@@ -39,6 +39,15 @@ pub struct SceneBehaviour {
     pub base: Transform,
 }
 
+/// Marks an object whose transform is driven by a script.
+///
+/// Behaviour playback skips these entities so a script's writes survive the
+/// frame; the marker is set wherever a [`ScriptedObject`] is attached.
+///
+/// [`ScriptedObject`]: https://docs.rs/eme_script
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct ScriptControlled;
+
 /// The transform `spec` produces `time` seconds after `base`.
 ///
 /// `Spin` composes around the world Y axis; `Bob` offsets along world Y and
@@ -66,11 +75,15 @@ pub fn run_behaviours(
             Without<PhysicsBody>,
             Without<NavAgent>,
             Without<KinematicController>,
+            Without<ScriptControlled>,
         ),
     >,
 ) {
     let now = time.elapsed_secs();
     for (behaviour, mut transform) in &mut objects {
+        if behaviour.spec.kind == BehaviourKind::None {
+            continue;
+        }
         *transform = advance(&behaviour.spec, &behaviour.base, now);
     }
 }
@@ -78,6 +91,7 @@ pub fn run_behaviours(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eme_ecs::system::RunSystemOnce;
 
     fn spinning() -> Behaviour {
         Behaviour {
@@ -131,6 +145,47 @@ mod tests {
         let base = base();
         let idle = Behaviour::default();
         assert_eq!(advance(&idle, &base, 12.5), base);
+    }
+
+    fn ran(mut world: World) -> World {
+        world.insert_resource(Time::<()>::default());
+        world.run_system_once(run_behaviours).unwrap();
+        world
+    }
+
+    #[test]
+    fn script_controlled_objects_keep_their_transform() {
+        let mut world = World::new();
+        let moved = Transform::from_xyz(9.0, 0.0, 0.0);
+        let entity = world
+            .spawn((
+                SceneBehaviour {
+                    spec: spinning(),
+                    base: base(),
+                },
+                moved,
+                ScriptControlled,
+            ))
+            .id();
+        let world = ran(world);
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation, moved.translation);
+    }
+
+    #[test]
+    fn an_idle_behaviour_does_not_rewrite_a_moved_transform() {
+        let mut world = World::new();
+        let moved = Transform::from_xyz(4.0, 0.0, 0.0);
+        let entity = world
+            .spawn((
+                SceneBehaviour {
+                    spec: Behaviour::default(),
+                    base: base(),
+                },
+                moved,
+            ))
+            .id();
+        let world = ran(world);
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation, moved.translation);
     }
 }
 

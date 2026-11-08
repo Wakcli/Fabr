@@ -8,6 +8,7 @@ use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
 use eme_anim::AnimationSource;
 use eme_game_runtime::{KinematicController, PhysicsBody};
 use eme_net::{NetKind, ReplicatedObject, ReplicatedSpawn};
+use eme_game_runtime::ScriptControlled;
 use fabr::ScriptedObject;
 use eme_game_scene::{
     Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
@@ -414,9 +415,14 @@ fn spawn_doc(
         let trs = to_transform(obj.translation, obj.rotation, obj.scale);
         let behaviour = behaviour_for(obj);
         let name = Name::new(obj.name.clone());
-        let script = obj.script.clone().map(|script| ScriptedObject {
-            object_id: obj.id,
-            script,
+        let script = obj.script.clone().map(|script| {
+            (
+                ScriptedObject {
+                    object_id: obj.id,
+                    script,
+                },
+                ScriptControlled,
+            )
         });
         let physics = obj
             .physics

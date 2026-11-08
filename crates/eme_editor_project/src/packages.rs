@@ -1,12 +1,15 @@
 //! Local packages: folders with a `fabr.package.ron` manifest that contribute
 //! assets to the project and to exported builds.
 
+use alloc::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 /// File listing the project's packages, relative to the project root.
 pub const PACKAGES_FILE: &str = "fabr.packages.ron";
+/// Resolved dependency lock file, relative to the project root.
+pub const LOCK_FILE: &str = "fabr.lock";
 /// Manifest file inside a package folder.
 pub const PACKAGE_MANIFEST_FILE: &str = "fabr.package.ron";
 
@@ -25,6 +28,106 @@ pub struct PackageSet {
     pub packages: Vec<PackageEntry>,
 }
 
+/// One dependency declared by a package.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Dependency {
+    /// Package name.
+    pub name: String,
+    /// Semver requirement: `1.2.3`, `^1.2.0`, `~1.2.0` or `*`.
+    pub version: String,
+}
+
+/// A parsed semantic version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Version {
+    /// Major number.
+    pub major: u32,
+    /// Minor number.
+    pub minor: u32,
+    /// Patch number.
+    pub patch: u32,
+}
+
+impl Version {
+    /// Parses `major.minor.patch`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut parts = text.trim().split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+
+    /// Whether this version satisfies `requirement`.
+    pub fn matches(&self, requirement: &str) -> bool {
+        let requirement = requirement.trim();
+        if requirement == "*" {
+            return true;
+        }
+        if let Some(rest) = requirement.strip_prefix('^') {
+            return Version::parse(rest).is_some_and(|base| {
+                self >= &base && self.major == base.major
+            });
+        }
+        if let Some(rest) = requirement.strip_prefix('~') {
+            return Version::parse(rest).is_some_and(|base| {
+                self >= &base && self.major == base.major && self.minor == base.minor
+            });
+        }
+        Version::parse(requirement).is_some_and(|exact| self == &exact)
+    }
+}
+
+/// One entry of `fabr.lock`, resolved from the installed packages.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct LockedPackage {
+    /// Package name.
+    pub name: String,
+    /// Resolved version.
+    pub version: String,
+    /// Folder relative to the project root.
+    pub path: String,
+}
+
+/// Deterministic resolution of the installed packages and their dependencies.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct Lockfile {
+    /// Packages sorted by name.
+    pub packages: Vec<LockedPackage>,
+}
+
+impl Lockfile {
+    /// Reads `fabr.lock`; missing files produce an empty lock.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        if !path.is_file() {
+            return Ok(Self::default());
+        }
+        let text =
+            std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+        ron::from_str(&text).map_err(|err| format!("{}: {err}", path.display()))
+    }
+
+    /// Writes the lock file.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+            .map_err(|err| err.to_string())?;
+        std::fs::write(path, text).map_err(|err| format!("{}: {err}", path.display()))
+    }
+
+    /// Package names in resolution order.
+    pub fn names(&self) -> Vec<&str> {
+        self.packages.iter().map(|entry| entry.name.as_str()).collect()
+    }
+}
+
 /// Contents of `fabr.package.ron`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
@@ -37,6 +140,9 @@ pub struct PackageManifest {
     pub description: String,
     /// Folder inside the package whose contents are staged into `assets/`.
     pub assets: String,
+    /// Packages this one depends on.
+    #[serde(default)]
+    pub dependencies: Vec<Dependency>,
 }
 
 impl Default for PackageManifest {
@@ -46,6 +152,7 @@ impl Default for PackageManifest {
             version: "0.1.0".into(),
             description: String::new(),
             assets: "assets".into(),
+            dependencies: Vec::new(),
         }
     }
 }
@@ -139,6 +246,47 @@ impl PackageSet {
         Ok(manifest)
     }
 
+    /// Resolves every installed package and its transitive dependencies.
+    ///
+    /// Dependency names resolve against the installed packages; the result is
+    /// sorted by name so builds and lock files are deterministic.
+    pub fn resolve(&self, root: &Path) -> Result<Lockfile, String> {
+        let mut installed: BTreeMap<String, (String, PackageManifest)> = BTreeMap::new();
+        for entry in &self.packages {
+            let manifest = Self::manifest(root, entry)?;
+            if let Some((path, _)) = installed.get(&manifest.name)
+                && path != &entry.path
+            {
+                return Err(format!(
+                    "package {} is installed twice ({} and {})",
+                    manifest.name, path, entry.path
+                ));
+            }
+            installed.insert(manifest.name.clone(), (entry.path.clone(), manifest));
+        }
+        // transitive dependencies also resolve from the local registry folder
+        if let Ok(entries) = std::fs::read_dir(root.join("packages")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let path = format!("packages/{name}");
+                let candidate = PackageEntry { path };
+                if let Ok(manifest) = Self::manifest(root, &candidate) {
+                    installed
+                        .entry(manifest.name.clone())
+                        .or_insert((candidate.path, manifest));
+                }
+            }
+        }
+        let mut locked: BTreeMap<String, LockedPackage> = BTreeMap::new();
+        let mut visiting: Vec<String> = Vec::new();
+        for name in installed.keys() {
+            visit(name, &installed, &mut locked, &mut visiting)?;
+        }
+        Ok(Lockfile {
+            packages: locked.into_values().collect(),
+        })
+    }
+
     /// Removes the package at `index`.
     pub fn remove(&mut self, index: usize) -> bool {
         if index >= self.packages.len() {
@@ -147,6 +295,59 @@ impl PackageSet {
         self.packages.remove(index);
         true
     }
+}
+
+fn visit(
+    name: &str,
+    installed: &BTreeMap<String, (String, PackageManifest)>,
+    locked: &mut BTreeMap<String, LockedPackage>,
+    visiting: &mut Vec<String>,
+) -> Result<(), String> {
+    if locked.contains_key(name) {
+        return Ok(());
+    }
+    if visiting.iter().any(|seen| seen == name) {
+        return Err(format!(
+            "dependency cycle: {} -> {name}",
+            visiting.join(" -> ")
+        ));
+    }
+    let Some((path, manifest)) = installed.get(name) else {
+        return Err(format!("package {name} is not installed"));
+    };
+    let version = Version::parse(&manifest.version)
+        .ok_or_else(|| format!("{name} has invalid version {:?}", manifest.version))?;
+    visiting.push(name.to_string());
+    for dependency in &manifest.dependencies {
+        if dependency.version.trim().is_empty() {
+            return Err(format!("{name} depends on {} without a version", dependency.name));
+        }
+        let Some((_, target)) = installed.get(&dependency.name) else {
+            return Err(format!(
+                "{name} depends on {}, which is not installed",
+                dependency.name
+            ));
+        };
+        let target_version = Version::parse(&target.version)
+            .ok_or_else(|| format!("{} has invalid version {:?}", target.name, target.version))?;
+        if !target_version.matches(&dependency.version) {
+            return Err(format!(
+                "{name} needs {} {}, but {} is installed",
+                dependency.name, dependency.version, target.version
+            ));
+        }
+        visit(&dependency.name, installed, locked, visiting)?;
+    }
+    visiting.pop();
+    locked.insert(
+        name.to_string(),
+        LockedPackage {
+            name: name.to_string(),
+            version: format!("{}.{}.{}", version.major, version.minor, version.patch),
+            path: path.clone(),
+        },
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -233,6 +434,99 @@ mod tests {
         let mut set = PackageSet::default();
         set.add(&root, "packages/a").unwrap();
         assert!(set.add(&root, "packages/b").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn versions_match_ranges() {
+        let version = Version::parse("1.4.2").unwrap();
+        assert!(version.matches("1.4.2"));
+        assert!(!version.matches("1.4.3"));
+        assert!(version.matches("^1.2.0"));
+        assert!(!version.matches("^2.0.0"));
+        assert!(version.matches("~1.4.0"));
+        assert!(!version.matches("~1.3.0"));
+        assert!(version.matches("*"));
+        assert!(Version::parse("1.2").is_none());
+    }
+
+    #[test]
+    fn resolution_follows_transitive_dependencies() {
+        let root = scratch("resolve");
+        package(
+            &root,
+            "packages/base",
+            r#"(name: "base", version: "1.0.0")"#,
+        );
+        package(
+            &root,
+            "packages/art",
+            r#"(name: "art", version: "1.2.0", dependencies: [(name: "base", version: "^1.0.0")])"#,
+        );
+        package(
+            &root,
+            "packages/game",
+            r#"(name: "game", version: "2.0.0", dependencies: [(name: "art", version: "^1.2.0")])"#,
+        );
+        let mut set = PackageSet::default();
+        set.add(&root, "packages/base").unwrap();
+        set.add(&root, "packages/art").unwrap();
+        set.add(&root, "packages/game").unwrap();
+        let lock = set.resolve(&root).unwrap();
+        assert_eq!(lock.names(), ["art", "base", "game"]);
+        assert_eq!(lock.packages[1].version, "1.0.0");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resolution_rejects_missing_and_mismatched_dependencies() {
+        let root = scratch("resolve-bad");
+        package(&root, "packages/base", r#"(name: "base", version: "1.0.0")"#);
+        package(
+            &root,
+            "packages/game",
+            r#"(name: "game", version: "1.0.0", dependencies: [(name: "art", version: "^1.0.0")])"#,
+        );
+        let mut set = PackageSet::default();
+        set.add(&root, "packages/base").unwrap();
+        set.add(&root, "packages/game").unwrap();
+        let err = set.resolve(&root).unwrap_err();
+        assert!(err.contains("not installed"), "{err}");
+
+        package(&root, "packages/art", r#"(name: "art", version: "2.0.0")"#);
+        set.packages.push(PackageEntry { path: "packages/art".into() });
+        let err = set.resolve(&root).unwrap_err();
+        assert!(err.contains("needs art"), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resolution_rejects_cycles() {
+        let root = scratch("resolve-cycle");
+        package(&root, "packages/a", r#"(name: "a", version: "1.0.0", dependencies: [(name: "b", version: "1.0.0")])"#);
+        package(&root, "packages/b", r#"(name: "b", version: "1.0.0", dependencies: [(name: "a", version: "1.0.0")])"#);
+        let mut set = PackageSet::default();
+        set.add(&root, "packages/a").unwrap();
+        set.add(&root, "packages/b").unwrap();
+        let err = set.resolve(&root).unwrap_err();
+        assert!(err.contains("dependency cycle"), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_lockfile_round_trips() {
+        let root = scratch("lock");
+        let lock = Lockfile {
+            packages: vec![LockedPackage {
+                name: "game".into(),
+                version: "1.0.0".into(),
+                path: "packages/game".into(),
+            }],
+        };
+        let path = root.join(LOCK_FILE);
+        lock.save(&path).unwrap();
+        assert_eq!(Lockfile::load(&path).unwrap(), lock);
+        assert_eq!(Lockfile::load(&root.join("missing.lock")).unwrap(), Lockfile::default());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

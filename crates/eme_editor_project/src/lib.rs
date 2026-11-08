@@ -1,5 +1,7 @@
 //! On-disk project format, project creation, and persisted editor state.
 
+extern crate alloc;
+
 /// Project creation and opening.
 pub mod create;
 /// Project errors.
@@ -16,7 +18,8 @@ pub use create::{create_project, open_project};
 pub use error::ProjectError;
 pub use manifest::{Manifest, MANIFEST_FILE, SCHEMA_VERSION};
 pub use packages::{
-    PackageEntry, PackageManifest, PackageSet, PACKAGES_FILE, PACKAGE_MANIFEST_FILE,
+    Dependency, LockedPackage, Lockfile, PackageEntry, PackageManifest, PackageSet, LOCK_FILE,
+    PACKAGES_FILE, PACKAGE_MANIFEST_FILE, Version,
 };
 pub use settings::{
     AudioSettings, InputSettings, PhysicsSettings, PlayerSettings, ProjectSettings, SETTINGS_FILE,

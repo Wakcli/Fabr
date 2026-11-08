@@ -124,6 +124,7 @@ fn main() {
         .insert_resource(extensions.clone())
         .insert_resource(fabr::ScriptRoot(assets))
         .insert_resource(actions)
+        .init_resource::<eme_game_runtime::ControllerSettings>()
         .insert_resource(scene::PlayerMsaa(settings.graphics.msaa))
         .insert_resource(scene::PlayerShadows(settings.quality.shadows))
         .insert_resource(fabr::AudioMix {
@@ -160,8 +161,10 @@ fn main() {
                 eme_game_overrides::sync_model_nodes,
                 log_script_lines,
                 eme_game_runtime::step_physics.after(fabr::update_scripts),
+                eme_game_runtime::step_controllers.after(fabr::update_scripts),
                 scene::materialize_replicated,
                 log_net_trace,
+                trace_controllers,
                 log_network,
             ),
         )
@@ -189,6 +192,25 @@ fn main() {
 
 fn is_not_client(config: Res<eme_net::NetworkConfig>) -> bool {
     !matches!(config.role, eme_net::NetworkRole::Client { .. })
+}
+
+fn trace_controllers(
+    controllers: Query<(&eme_game_runtime::KinematicController, &Transform)>,
+    mut frame: Local<u32>,
+) {
+    if std::env::var_os("EME_CTRL_TRACE").is_none() {
+        return;
+    }
+    *frame += 1;
+    if !(*frame).is_multiple_of(30) {
+        return;
+    }
+    for (controller, transform) in &controllers {
+        info!(
+            "ctrl desired {:?} pos {:?} grounded {}",
+            controller.desired, transform.translation, controller.grounded
+        );
+    }
 }
 
 fn log_net_trace(

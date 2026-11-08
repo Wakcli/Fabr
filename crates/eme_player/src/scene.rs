@@ -6,7 +6,7 @@ use eme::render::view::Msaa;
 use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
 use eme_anim::AnimationSource;
-use eme_game_runtime::PhysicsBody;
+use eme_game_runtime::{KinematicController, PhysicsBody};
 use eme_net::{NetKind, ReplicatedObject, ReplicatedSpawn};
 use fabr::ScriptedObject;
 use eme_game_scene::{
@@ -272,7 +272,16 @@ pub fn spawn_scene(
             object_id: obj.id,
             script,
         });
-        let physics = obj.physics.as_ref().map(PhysicsBody::from_spec);
+        let physics = obj
+            .physics
+            .as_ref()
+            .filter(|spec| !spec.controller)
+            .map(PhysicsBody::from_spec);
+        let controller = obj
+            .physics
+            .as_ref()
+            .filter(|spec| spec.controller)
+            .map(|spec| KinematicController::new(Vec3::from_array(spec.half_extents)));
         let light = obj.light.unwrap_or_default();
         let light_strength = light.intensity.clamp(0.0, 8.0);
         let light_color =
@@ -291,6 +300,9 @@ pub fn spawn_scene(
                 }
                 if let Some(physics) = physics {
                     spawned.insert(physics);
+                }
+                if let Some(controller) = controller {
+                    spawned.insert(controller);
                 }
             }
             Body::Camera => {
@@ -364,6 +376,9 @@ pub fn spawn_scene(
                 if let Some(physics) = physics {
                     spawned.insert(physics);
                 }
+                if let Some(controller) = controller {
+                    spawned.insert(controller);
+                }
             }
             Body::Sun => {
                 let mut spawned = commands.spawn((
@@ -384,6 +399,9 @@ pub fn spawn_scene(
                 }
                 if let Some(physics) = physics {
                     spawned.insert(physics);
+                }
+                if let Some(controller) = controller {
+                    spawned.insert(controller);
                 }
                 has_sun = true;
             }
@@ -427,6 +445,9 @@ pub fn spawn_scene(
                 }
                 if let Some(physics) = physics {
                     spawned.insert(physics);
+                }
+                if let Some(controller) = controller {
+                    spawned.insert(controller);
                 }
             }
         }

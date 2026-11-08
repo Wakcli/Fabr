@@ -10,6 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use eme_app::{App, Plugin, Startup, Update};
 use eme_ecs::prelude::*;
 use eme_math::prelude::*;
+use eme_time::Time;
 use eme_transform::prelude::Transform;
 use serde::{Deserialize, Serialize};
 
@@ -36,10 +37,21 @@ pub enum NetworkRole {
 }
 
 /// Role requested by the app before startup.
-#[derive(Resource, Clone, Debug, Default)]
+#[derive(Resource, Clone, Debug)]
 pub struct NetworkConfig {
     /// Which side to run.
     pub role: NetworkRole,
+    /// Seconds of buffering before a snapshot is rendered, smoothing motion.
+    pub interpolation_delay: f32,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            role: NetworkRole::Offline,
+            interpolation_delay: 0.1,
+        }
+    }
 }
 
 /// Shape of a replicated object.
@@ -132,6 +144,78 @@ pub struct NetworkServer {
     listener: Option<TcpListener>,
     clients: Vec<TcpStream>,
     last_ids: std::collections::HashSet<u64>,
+}
+
+/// Snapshot history used to interpolate client motion.
+#[derive(Resource, Default)]
+pub struct SnapshotBuffer {
+    /// Per-object samples ordered by receipt time.
+    pub samples: std::collections::HashMap<u64, Vec<(f64, TransformState)>>,
+}
+
+impl SnapshotBuffer {
+    /// Records one snapshot sample at `at` seconds.
+    pub fn push(&mut self, at: f64, state: TransformState) {
+        let list = self.samples.entry(state.id).or_default();
+        list.push((at, state));
+        if list.len() > 32 {
+            list.remove(0);
+        }
+    }
+
+    /// Drops samples older than `before`.
+    pub fn prune(&mut self, before: f64) {
+        for list in self.samples.values_mut() {
+            if let Some(index) = list.iter().position(|(at, _)| *at >= before) {
+                let keep_from = index.saturating_sub(1);
+                list.drain(..keep_from);
+            }
+        }
+        self.samples.retain(|_, list| !list.is_empty());
+    }
+}
+
+/// Interpolated state for `render` seconds on the receipt timeline.
+pub fn sample_at(samples: &[(f64, TransformState)], render: f64) -> Option<TransformState> {
+    let first = samples.first()?;
+    if render <= first.0 {
+        return Some(first.1.clone());
+    }
+    let last = samples.last()?;
+    if render >= last.0 {
+        return Some(last.1.clone());
+    }
+    for pair in samples.windows(2) {
+        let (t0, a) = &pair[0];
+        let (t1, b) = &pair[1];
+        if render >= *t0 && render <= *t1 {
+            let span = (t1 - t0).max(f64::EPSILON);
+            let f = ((render - t0) / span) as f32;
+            return Some(lerp_state(a, b, f));
+        }
+    }
+    Some(last.1.clone())
+}
+
+/// Linear position/scale and spherical rotation blend.
+pub fn lerp_state(a: &TransformState, b: &TransformState, f: f32) -> TransformState {
+    let f = f.clamp(0.0, 1.0);
+    let lerp = |x: [f32; 3], y: [f32; 3]| {
+        [
+            x[0] + (y[0] - x[0]) * f,
+            x[1] + (y[1] - x[1]) * f,
+            x[2] + (y[2] - x[2]) * f,
+        ]
+    };
+    let rotation = Quat::from_array(a.rotation)
+        .slerp(Quat::from_array(b.rotation), f)
+        .to_array();
+    TransformState {
+        id: a.id,
+        translation: lerp(a.translation, b.translation),
+        rotation,
+        scale: lerp(a.scale, b.scale),
+    }
 }
 
 /// Client transport state.
@@ -278,6 +362,31 @@ impl NetworkClient {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NetworkSet;
 
+/// Renders buffered snapshots at a fixed delay behind the server.
+pub fn interpolate_snapshots(
+    config: Res<NetworkConfig>,
+    time: Res<Time>,
+    mut buffer: ResMut<SnapshotBuffer>,
+    mut objects: Query<(&ReplicatedObject, &mut Transform)>,
+) {
+    if !matches!(config.role, NetworkRole::Client { .. }) {
+        return;
+    }
+    let delay = config.interpolation_delay.clamp(0.0, 1.0) as f64;
+    let render = time.elapsed_secs_f64() - delay;
+    buffer.prune(render - 2.0);
+    for (object, mut transform) in &mut objects {
+        let Some(samples) = buffer.samples.get(&object.0) else {
+            continue;
+        };
+        if let Some(state) = sample_at(samples, render) {
+            transform.translation = Vec3::from_array(state.translation);
+            transform.rotation = Quat::from_array(state.rotation);
+            transform.scale = Vec3::from_array(state.scale);
+        }
+    }
+}
+
 /// Registers networking resources and systems.
 pub struct NetworkPlugin;
 
@@ -287,8 +396,11 @@ impl Plugin for NetworkPlugin {
             .init_resource::<NetworkStatus>()
             .init_resource::<NetworkServer>()
             .init_resource::<NetworkClient>()
+            .init_resource::<SnapshotBuffer>()
             .add_systems(Startup, start_network)
-            .add_systems(Update, (send_snapshots, receive_messages, apply_inbox).chain().in_set(NetworkSet));
+            .add_systems(Update, (send_snapshots, receive_messages, (apply_inbox, interpolate_snapshots).chain())
+                .chain()
+                .in_set(NetworkSet));
     }
 }
 
@@ -390,8 +502,10 @@ pub fn receive_messages(
 /// Applies queued server messages to the client world.
 pub fn apply_inbox(
     config: Res<NetworkConfig>,
+    time: Res<Time>,
     mut client: ResMut<NetworkClient>,
     mut commands: Commands,
+    mut buffer: ResMut<SnapshotBuffer>,
     mut objects: Query<(Entity, &ReplicatedObject, &mut Transform)>,
 ) {
     if !matches!(config.role, NetworkRole::Client { .. }) {
@@ -425,15 +539,9 @@ pub fn apply_inbox(
                 }
             }
             Message::Snapshot(states) => {
+                let at = time.elapsed_secs_f64();
                 for state in states {
-                    for (_, object, mut transform) in &mut objects {
-                        if object.0 != state.id {
-                            continue;
-                        }
-                        transform.translation = Vec3::from_array(state.translation);
-                        transform.rotation = Quat::from_array(state.rotation);
-                        transform.scale = Vec3::from_array(state.scale);
-                    }
+                    buffer.push(at, state);
                 }
             }
         }
@@ -596,8 +704,11 @@ mod tests {
             role: NetworkRole::Client {
                 addr: "127.0.0.1:1".into(),
             },
+            interpolation_delay: 0.1,
         });
+        world.insert_resource(Time::<()>::default());
         world.insert_resource(NetworkClient::default());
+        world.init_resource::<SnapshotBuffer>();
         world
             .resource_mut::<NetworkClient>()
             .inbox
@@ -619,6 +730,55 @@ mod tests {
             .push(Message::Despawn(vec![7]));
         world.run_system_once(apply_inbox).unwrap();
         assert_eq!(world.query::<&ReplicatedObject>().iter(&world).count(), 0);
+    }
+
+    fn at(id: u64, x: f32) -> TransformState {
+        TransformState {
+            id,
+            translation: [x, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        }
+    }
+
+    #[test]
+    fn samples_interpolate_and_clamp() {
+        let samples = [(0.0, at(1, 0.0)), (1.0, at(1, 2.0))];
+        assert_eq!(sample_at(&samples, -1.0).unwrap().translation[0], 0.0);
+        assert_eq!(sample_at(&samples, 0.5).unwrap().translation[0], 1.0);
+        assert_eq!(sample_at(&samples, 9.0).unwrap().translation[0], 2.0);
+        assert_eq!(sample_at(&[], 0.0), None);
+    }
+
+    #[test]
+    fn rotation_slerps_between_samples() {
+        let a = TransformState {
+            rotation: Quat::IDENTITY.to_array(),
+            ..at(1, 0.0)
+        };
+        let b = TransformState {
+            rotation: Quat::from_rotation_y(core::f32::consts::PI).to_array(),
+            ..at(1, 0.0)
+        };
+        let mid = lerp_state(&a, &b, 0.5);
+        let got = Quat::from_array(mid.rotation);
+        let (yaw, _, _) = got.to_euler(EulerRot::YXZ);
+        assert!(
+            (yaw.abs() - core::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "expected a quarter turn, got {yaw}"
+        );
+    }
+
+    #[test]
+    fn the_buffer_prunes_old_samples() {
+        let mut buffer = SnapshotBuffer::default();
+        buffer.push(0.0, at(1, 0.0));
+        buffer.push(1.0, at(1, 1.0));
+        buffer.push(2.0, at(1, 2.0));
+        buffer.prune(1.5);
+        let samples = buffer.samples.get(&1).unwrap();
+        assert_eq!(samples.first().unwrap().0, 1.0);
+        assert_eq!(samples.len(), 2);
     }
 
     #[test]

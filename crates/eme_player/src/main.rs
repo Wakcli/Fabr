@@ -108,6 +108,7 @@ fn main() {
         .add_plugins(fabr::ScriptPlugin)
         .add_plugins(eme_anim::AnimationRuntimePlugin)
         .add_plugins(eme_net::NetworkPlugin)
+        .add_plugins(eme_game_runtime::NavPlugin)
         .insert_resource(network_config(&args))
         .insert_resource(fabr::ScriptsActive(!matches!(
             network_config(&args).role,
@@ -146,9 +147,12 @@ fn main() {
         )
             .configure_sets(
             Update,
-            eme_net::NetworkSet
-                .after(eme_game_runtime::step_physics)
-                .after(fabr::update_scripts),
+            (
+                eme_net::NetworkSet
+                    .after(eme_game_runtime::step_physics)
+                    .after(fabr::update_scripts),
+                eme_game_runtime::NavSet.after(fabr::update_scripts),
+            ),
         )
         .run();
 }

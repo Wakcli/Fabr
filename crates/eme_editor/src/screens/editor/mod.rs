@@ -216,6 +216,11 @@ impl Plugin for EditorPlugin {
         dock::plugins(app);
         app.add_plugins(eme_script::ScriptPlugin);
         app.add_plugins(eme_anim::AnimationRuntimePlugin);
+        app.add_plugins(eme_game_runtime::NavPlugin);
+        app.configure_sets(
+            Update,
+            eme_game_runtime::NavSet.after(eme_script::update_scripts),
+        );
         app.insert_resource(eme_script::ScriptRoot(crate::asset_root()));
         crate::settings::install(app);
         crate::mixer::install(app);

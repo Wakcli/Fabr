@@ -44,6 +44,34 @@ impl Target {
     }
 }
 
+/// Cargo profile the staged player was built with.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Profile {
+    /// Optimized release player.
+    #[default]
+    Release,
+    /// Faster to compile, slower to run.
+    Debug,
+}
+
+impl Profile {
+    pub const ALL: [Profile; 2] = [Profile::Debug, Profile::Release];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Profile::Release => "Release",
+            Profile::Debug => "Debug",
+        }
+    }
+
+    fn cargo_flags(self) -> &'static [&'static str] {
+        match self {
+            Profile::Release => &["--release"],
+            Profile::Debug => &[],
+        }
+    }
+}
+
 /// Folder the game is written to, relative to the project root.
 pub const OUT_DIR: &str = "build/linux";
 /// Name the player binary takes in the game folder.
@@ -83,6 +111,8 @@ enum Msg {
 pub struct BuildState {
     pub open: bool,
     pub running: bool,
+    /// Cargo profile the next build uses.
+    pub profile: Profile,
     pub log: Vec<Line>,
     /// Binary of the last successful build, ready to run.
     pub game: Option<PathBuf>,
@@ -108,6 +138,15 @@ impl BuildState {
         self.rev += 1;
     }
 
+    /// Selects the cargo profile used by the next build.
+    pub fn set_profile(&mut self, profile: Profile) {
+        if self.profile == profile {
+            return;
+        }
+        self.profile = profile;
+        self.rev += 1;
+    }
+
     /// Starts a background build of `doc`; ignored while one is running.
     pub fn start(&mut self, doc: SceneDoc) {
         if self.running {
@@ -125,7 +164,8 @@ impl BuildState {
         self.rev += 1;
         let (tx, rx) = mpsc::channel();
         self.rx = Some(Mutex::new(rx));
-        thread::spawn(move || run(doc, tx));
+        let profile = self.profile;
+        thread::spawn(move || run(doc, profile, tx));
     }
 
     /// Appends one log line, dropping the oldest past [`MAX_LINES`].
@@ -181,8 +221,8 @@ pub fn poll_build(mut state: ResMut<BuildState>) {
     }
 }
 
-fn run(doc: SceneDoc, tx: Sender<Msg>) {
-    match package(&doc, &tx) {
+fn run(doc: SceneDoc, profile: Profile, tx: Sender<Msg>) {
+    match package(&doc, profile, &tx) {
         Ok(dir) => {
             let abs = std::fs::canonicalize(&dir).unwrap_or(dir);
             say(&tx, Level::Done, format!("game folder {}", abs.display()));
@@ -195,14 +235,14 @@ fn run(doc: SceneDoc, tx: Sender<Msg>) {
     }
 }
 
-fn package(doc: &SceneDoc, tx: &Sender<Msg>) -> Result<PathBuf, String> {
+fn package(doc: &SceneDoc, profile: Profile, tx: &Sender<Msg>) -> Result<PathBuf, String> {
     let scene = persist::save_to(doc, persist::SCENE_PATH)
         .map_err(|err| format!("could not save scene: {err}"))?;
     say(tx, Level::Step, format!("saved scene {}", scene.display()));
 
     let target = target_dir();
     say(tx, Level::Step, format!("target dir {}", target.display()));
-    let player = resolve_player(&target, tx)?;
+    let player = resolve_player(&target, profile, tx)?;
 
     let out = PathBuf::from(OUT_DIR);
     let assets = Path::new(ASSET_DIR);
@@ -211,29 +251,37 @@ fn package(doc: &SceneDoc, tx: &Sender<Msg>) -> Result<PathBuf, String> {
 }
 
 /// Picks the player binary, building it first when cargo has not produced one.
-fn resolve_player(target: &Path, tx: &Sender<Msg>) -> Result<PathBuf, String> {
+fn resolve_player(target: &Path, profile: Profile, tx: &Sender<Msg>) -> Result<PathBuf, String> {
     let [release, debug] = candidates(target);
-    if release.is_file() {
-        say(tx, Level::Step, "player release build");
-        return Ok(release);
-    }
-    if debug.is_file() {
-        say(tx, Level::Step, "player debug build");
-        return Ok(debug);
+    let chosen = match profile {
+        Profile::Release => release,
+        Profile::Debug => debug,
+    };
+    if chosen.is_file() {
+        say(
+            tx,
+            Level::Step,
+            format!("player {} build", profile.label().to_ascii_lowercase()),
+        );
+        return Ok(chosen);
     }
     say(
         tx,
         Level::Step,
-        format!("no player binary, running cargo build -p {PLAYER_PKG} --release"),
+        format!(
+            "no player {} binary, running cargo build -p {PLAYER_PKG} {}",
+            profile.label().to_ascii_lowercase(),
+            profile.cargo_flags().join(" ")
+        ),
     );
-    build_player(tx)?;
-    if release.is_file() {
+    build_player(tx, profile)?;
+    if chosen.is_file() {
         say(tx, Level::Step, "player built");
-        return Ok(release);
+        return Ok(chosen);
     }
     Err(format!(
         "cargo finished but {} is missing",
-        release.display()
+        chosen.display()
     ))
 }
 
@@ -245,9 +293,10 @@ fn candidates(target: &Path) -> [PathBuf; 2] {
     ]
 }
 
-fn build_player(tx: &Sender<Msg>) -> Result<(), String> {
+fn build_player(tx: &Sender<Msg>, profile: Profile) -> Result<(), String> {
     let mut child = Command::new("cargo")
-        .args(["build", "-p", PLAYER_PKG, "--release"])
+        .args(["build", "-p", PLAYER_PKG])
+        .args(profile.cargo_flags())
         .current_dir(workspace())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -435,6 +484,22 @@ mod tests {
                 Msg::Done(_) => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn the_selected_profile_chooses_its_player_binary() {
+        let dir = scratch("profiles");
+        write(&dir.join("debug").join(player_name()), b"debug");
+        write(&dir.join("release").join(player_name()), b"release");
+        let (tx, _rx) = mpsc::channel();
+        assert_eq!(
+            resolve_player(&dir, Profile::Release, &tx).unwrap(),
+            dir.join("release").join(player_name())
+        );
+        assert_eq!(
+            resolve_player(&dir, Profile::Debug, &tx).unwrap(),
+            dir.join("debug").join(player_name())
+        );
     }
 
     #[test]

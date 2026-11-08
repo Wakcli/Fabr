@@ -12,13 +12,13 @@ use eme::ui_widgets::{Activate, Button};
 
 use super::chrome::*;
 use super::icons;
-use crate::build::{self, BuildState, Level, Target};
+use crate::build::{self, BuildState, Level, Profile, Target};
 use crate::persist::SCENE_PATH;
 use crate::scene::SceneState;
 use crate::tokens;
 
 const PANEL_W: f32 = 560.0;
-const PANEL_H: f32 = 440.0;
+const PANEL_H: f32 = 478.0;
 const LABEL_W: f32 = 104.0;
 const LOG_SIZE: f32 = 12.0;
 const LOG_LINES: usize = 10;
@@ -35,6 +35,10 @@ pub enum Verb {
     Start,
     Run,
 }
+
+/// A selectable cargo profile chip.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ProfileChip(pub Profile);
 
 /// The action a dialog button carries.
 #[derive(Component, Clone, Copy, Default)]
@@ -138,6 +142,17 @@ fn scrim() -> impl Scene {
     })
 }
 
+fn select_profile(
+    activate: On<Activate>,
+    chips: Query<&ProfileChip>,
+    mut state: ResMut<BuildState>,
+) {
+    let Ok(chip) = chips.get(activate.entity) else {
+        return;
+    };
+    state.set_profile(chip.0);
+}
+
 fn dismiss(_: On<Activate>, mut state: ResMut<BuildState>) {
     state.close();
 }
@@ -147,6 +162,7 @@ fn panel(state: &BuildState) -> impl Scene {
         header(),
         divider(),
         target_section(),
+        profile_section(state),
         value_row("Output folder", build::OUT_DIR),
         value_row("Main scene", SCENE_PATH),
         log_section(state),
@@ -262,6 +278,54 @@ fn note_line(value: &str) -> Part {
     Box::new(bsn! {
         Node { margin: UiRect { left: px(LABEL_W + 10.0) } }
         Children [ {text(value, LOG_SIZE, tokens::TEXT_DIM)} ]
+    })
+}
+
+fn profile_section(state: &BuildState) -> Part {
+    let mut chips: Vec<Part> = Vec::new();
+    for profile in Profile::ALL {
+        if !chips.is_empty() {
+            chips.push(hgap(6.0));
+        }
+        chips.push(profile_chip(profile, state.profile == profile));
+    }
+
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            row_gap: px(4),
+        }
+        Children [
+            {row("Profile", chips)}
+            --
+            {note_line("Release is optimized; Debug compiles faster.")}
+        ]
+    })
+}
+
+fn profile_chip(profile: Profile, active: bool) -> Part {
+    let (bg, fg) = if active {
+        (tokens::ACCENT, tokens::WINDOW)
+    } else {
+        (tokens::FIELD, tokens::TEXT)
+    };
+    let label = text_bold(profile.label(), FONT_SIZE_OUTPUT, fg);
+
+    Box::new(bsn! {
+        Node {
+            height: px(24),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::horizontal(px(12)),
+            border_radius: px(3),
+        }
+        ThemeBackgroundColor(bg)
+        Button
+        ProfileChip(profile)
+        Children [ {label} ]
+        on(select_profile)
     })
 }
 

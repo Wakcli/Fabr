@@ -13,7 +13,8 @@ pub use eme_game_scene::{
 };
 pub use eme_script::{
     key_binding, script_files, script_property_defaults, update_scripts, AudioBus, AudioMix,
-    InputActions, ScriptLog, ScriptPlugin, ScriptReload, ScriptRoot, ScriptedObject, ScriptsActive,
+    InputActions, SceneRequests, ScriptLog, ScriptPlugin, ScriptReload, ScriptRoot,
+    ScriptedObject, ScriptsActive,
 };
 
 use std::path::Path;

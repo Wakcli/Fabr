@@ -236,6 +236,22 @@ pub struct ScriptAudio {
     pub requests: Vec<AudioRequest>,
 }
 
+/// Runtime scene-load requests raised by scripts.
+#[derive(Resource, Default, Debug, Clone, PartialEq, Eq)]
+pub struct SceneRequests {
+    /// Scene file to load, replacing the current one.
+    pub load: Option<String>,
+    /// Reload the current scene file.
+    pub reload: bool,
+}
+
+impl SceneRequests {
+    /// Whether a request is waiting.
+    pub fn pending(&self) -> bool {
+        self.load.is_some() || self.reload
+    }
+}
+
 /// Paths (relative to [`ScriptRoot`]) the editor wants reloaded.
 #[derive(Resource, Default, Debug)]
 pub struct ScriptReload {
@@ -267,6 +283,12 @@ enum AnimationOp {
 }
 
 #[derive(Clone, Debug)]
+enum SceneOp {
+    Load(String),
+    Reload,
+}
+
+#[derive(Clone, Debug)]
 enum NavOp {
     Go { goal: Vec3, speed: f32 },
     Stop,
@@ -293,6 +315,7 @@ struct ApiState {
     animation_ops: Vec<(Entity, AnimationOp)>,
     nav: Option<Arc<NavGrid>>,
     nav_ops: Vec<(Entity, NavOp)>,
+    scene_ops: Vec<SceneOp>,
     delta: f32,
     elapsed: f32,
     properties: BTreeMap<String, ScriptValue>,
@@ -321,6 +344,7 @@ impl Default for ApiState {
             animation_ops: Vec::new(),
             nav: None,
             nav_ops: Vec::new(),
+            scene_ops: Vec::new(),
             delta: 0.0,
             elapsed: 0.0,
             properties: BTreeMap::new(),
@@ -331,6 +355,8 @@ impl Default for ApiState {
 /// Lua VM plus one instance per scripted entity.
 #[derive(Resource)]
 pub struct ScriptRuntime {
+    /// Scene requests raised by scripts, drained by [`publish_scene_requests`].
+    pub scene_requests: Vec<(String, bool)>,
     lua: Lua,
     instances: HashMap<Entity, Instance>,
 }
@@ -338,6 +364,7 @@ pub struct ScriptRuntime {
 impl Default for ScriptRuntime {
     fn default() -> Self {
         Self {
+            scene_requests: Vec::new(),
             lua: Lua::new(),
             instances: HashMap::new(),
         }
@@ -634,6 +661,28 @@ impl ScriptRuntime {
             )?,
         )?;
         fabr.set("nav", nav)?;
+        let api_scene = api.clone();
+        let scene = lua.create_table()?;
+        scene.set(
+            "load",
+            lua.create_function(move |_, path: String| {
+                api_scene
+                    .lock()
+                    .unwrap()
+                    .scene_ops
+                    .push(SceneOp::Load(path));
+                Ok(true)
+            })?,
+        )?;
+        let api_reload = api.clone();
+        scene.set(
+            "reload",
+            lua.create_function(move |_, ()| {
+                api_reload.lock().unwrap().scene_ops.push(SceneOp::Reload);
+                Ok(true)
+            })?,
+        )?;
+        fabr.set("scene", scene)?;
 
         let api_find = api.clone();
         let find_names = names.clone();
@@ -876,7 +925,11 @@ pub fn sync_scripts(
     transforms: Query<(Entity, &Transform)>,
     names: Query<(Entity, &Name)>,
 ) {
-    let ScriptRuntime { lua, instances } = &mut *runtime;
+    let ScriptRuntime {
+        lua,
+        instances,
+        scene_requests: _,
+    } = &mut *runtime;
     if !active.0 {
         for (_, mut instance) in instances.drain() {
             stop_instance(lua, &mut instance, &mut log);
@@ -985,7 +1038,11 @@ pub fn update_scripts(
     if !active.0 {
         return;
     }
-    let ScriptRuntime { lua, instances } = &mut *runtime;
+    let ScriptRuntime {
+        lua,
+        instances,
+        scene_requests,
+    } = &mut *runtime;
     if instances.is_empty() {
         return;
     }
@@ -1083,6 +1140,7 @@ pub fn update_scripts(
             api.animation_ops.clear();
             api.nav = Some(nav.clone());
             api.nav_ops.clear();
+            api.scene_ops.clear();
         }
 
         let mut result = Ok(());
@@ -1145,6 +1203,18 @@ pub fn update_scripts(
                 }
             }
         }
+        for op in api.scene_ops.drain(..) {
+            match op {
+                SceneOp::Load(path) => {
+                    log.push(format!("scene: load requested {path}"));
+                    scene_requests.push((path, false));
+                }
+                SceneOp::Reload => {
+                    log.push("scene: reload requested".to_string());
+                    scene_requests.push((String::new(), true));
+                }
+            }
+        }
         for request in api.audio.drain(..) {
             if root.0.join(&request.path).is_file() {
                 log.push(format!(
@@ -1195,6 +1265,22 @@ pub fn play_script_audio(
     }
 }
 
+/// Moves scene requests raised by scripts into [`SceneRequests`].
+pub fn publish_scene_requests(
+    mut runtime: ResMut<ScriptRuntime>,
+    mut requests: ResMut<SceneRequests>,
+) {
+    for (path, reload) in runtime.scene_requests.drain(..) {
+        if reload {
+            requests.reload = true;
+            requests.load = None;
+        } else {
+            requests.load = Some(path);
+            requests.reload = false;
+        }
+    }
+}
+
 /// Plugin wiring the script resources and systems into an app.
 pub struct ScriptPlugin;
 
@@ -1206,6 +1292,7 @@ impl Plugin for ScriptPlugin {
             .init_resource::<ScriptReload>()
             .init_resource::<InputActions>()
             .init_resource::<ScriptAudio>()
+            .init_resource::<SceneRequests>()
             .init_resource::<AudioMix>()
             .init_resource::<ScriptRuntime>()
             .add_systems(Update, sync_scripts)
@@ -1213,7 +1300,8 @@ impl Plugin for ScriptPlugin {
                 Update,
                 update_scripts.after(eme_game_runtime::run_behaviours),
             )
-            .add_systems(Update, play_script_audio.after(update_scripts));
+            .add_systems(Update, play_script_audio.after(update_scripts))
+            .add_systems(Update, publish_scene_requests.after(update_scripts));
     }
 }
 
@@ -1237,6 +1325,7 @@ mod tests {
         world.insert_resource(ScriptReload::default());
         world.insert_resource(InputActions::default());
         world.insert_resource(ScriptAudio::default());
+        world.insert_resource(SceneRequests::default());
         world.insert_resource(NavGrid::default());
         world.insert_resource(AudioMix::default());
         world.insert_resource(ScriptRuntime::default());
@@ -1703,6 +1792,33 @@ return {
         world.run_system_once(update_scripts).unwrap();
         let agent = world.get::<NavAgent>(entity).unwrap();
         assert_eq!(agent.goal, None, "stop_moving clears the goal");
+    }
+
+    #[test]
+    fn a_script_requests_scene_load_and_reload() {
+        let dir = scratch("scene-requests");
+        std::fs::write(
+            dir.join("go.lua"),
+            "return { on_start = function(self) self.loaded = fabr.scene.load('scenes/level2.ember') end, on_update = function(self) if self.t then fabr.scene.reload() end self.t = (self.t or 0) + 1 end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        scripted(&mut world, "go.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        world.run_system_once(publish_scene_requests).unwrap();
+        let requests = world.resource::<SceneRequests>();
+        assert_eq!(requests.load.as_deref(), Some("scenes/level2.ember"));
+        assert!(!requests.reload);
+
+        world.run_system_once(update_scripts).unwrap();
+        world.run_system_once(publish_scene_requests).unwrap();
+        let requests = world.resource::<SceneRequests>();
+        assert!(requests.reload);
+        assert_eq!(requests.load, None);
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("scene: load requested"), "{log}");
+        assert!(log.contains("scene: reload requested"), "{log}");
     }
 
     #[test]

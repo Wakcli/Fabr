@@ -63,6 +63,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {crate::mixer::panel()}
             --
+            {crate::packages::panel()}
+            --
             {palette::overlay()}
             --
             {inspector::script_picker()}
@@ -224,6 +226,7 @@ impl Plugin for EditorPlugin {
         app.insert_resource(eme_script::ScriptRoot(crate::asset_root()));
         crate::settings::install(app);
         crate::mixer::install(app);
+        crate::packages::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()

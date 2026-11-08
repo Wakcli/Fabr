@@ -17,6 +17,7 @@ mod clipboard;
 mod console;
 mod import;
 mod mixer;
+mod packages;
 mod orbit;
 mod persist;
 mod play;

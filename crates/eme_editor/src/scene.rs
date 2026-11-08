@@ -467,6 +467,30 @@ fn resting(kind: ObjectKind, x: f32, z: f32) -> ObjectTransform {
     transform
 }
 
+fn light_color(light: eme_game_scene::LightSpec) -> Color {
+    Color::linear_rgb(light.color[0], light.color[1], light.color[2])
+}
+
+fn apply_light(
+    suns: &mut Query<&mut DirectionalLight>,
+    points: &mut Query<&mut PointLight>,
+    entity: Entity,
+    light: Option<eme_game_scene::LightSpec>,
+) {
+    let Some(light) = light else {
+        return;
+    };
+    let intensity = light.intensity.clamp(0.0, 8.0);
+    if let Ok(mut sun) = suns.get_mut(entity) {
+        sun.color = light_color(light);
+        sun.illuminance = 8_000.0 * intensity;
+    }
+    if let Ok(mut point) = points.get_mut(entity) {
+        point.color = light_color(light);
+        point.intensity = 800_000.0 * intensity;
+    }
+}
+
 fn to_transform(transform: &ObjectTransform) -> Transform {
     Transform::from_xyz(
         transform.translation[0],
@@ -514,6 +538,8 @@ pub fn reconcile_scene(
     play: Res<PlayState>,
     view: Res<ViewMode>,
     links: Query<&SceneLink>,
+    mut suns: Query<&mut DirectionalLight>,
+    mut points: Query<&mut PointLight>,
 ) {
     let state = state.into_inner();
     let playing = play.running() && *view == ViewMode::Game;
@@ -538,12 +564,15 @@ pub fn reconcile_scene(
         let name = obj.name.clone();
         let transform = obj.transform();
         let color = obj.color;
+        let light = obj.light;
         let spec = obj.behaviour;
         let trs = to_transform(&transform);
         let behaviour = SceneBehaviour { spec, base: trs };
 
         match state.entities.get(&id).copied() {
             Some(entity) if links.get(entity).is_ok_and(|link| link.kind == kind) => {
+                let entity_id = entity;
+                apply_light(&mut suns, &mut points, entity_id, light);
                 let mut entity = commands.entity(entity);
                 entity.insert((Name::new(name), behaviour));
                 match obj.script.clone() {
@@ -593,6 +622,7 @@ pub fn reconcile_scene(
                     obj.script.as_ref(),
                     obj.physics.as_ref(),
                     obj.animation.as_ref(),
+                    light,
                 );
                 state.entities.insert(id, entity);
             }
@@ -616,6 +646,7 @@ pub fn reconcile_scene(
                     obj.script.as_ref(),
                     obj.physics.as_ref(),
                     obj.animation.as_ref(),
+                    light,
                 );
                 state.entities.insert(id, entity);
             }
@@ -865,7 +896,9 @@ fn spawn_entity(
     script: Option<&eme_game_scene::ScriptRef>,
     physics: Option<&eme_game_scene::PhysicsBodySpec>,
     animation: Option<&eme_game_scene::AnimationRef>,
+    light: Option<eme_game_scene::LightSpec>,
 ) -> Entity {
+    let light = light.unwrap_or_default();
     let trs = to_transform(transform);
     let behaviour = SceneBehaviour { spec, base: trs };
     let entity = match kind {
@@ -873,8 +906,9 @@ fn spawn_entity(
         ObjectKind::PointLight => commands
             .spawn((
                 PointLight {
-                    intensity: 800_000.0,
+                    intensity: 800_000.0 * light.intensity.clamp(0.0, 8.0),
                     range: 25.0,
+                    color: light_color(light),
                     ..default()
                 },
                 trs,
@@ -885,7 +919,8 @@ fn spawn_entity(
         ObjectKind::Sun => commands
             .spawn((
                 DirectionalLight {
-                    illuminance: 8_000.0,
+                    illuminance: 8_000.0 * light.intensity.clamp(0.0, 8.0),
+                    color: light_color(light),
                     shadow_maps_enabled: false,
                     ..default()
                 },

@@ -15,8 +15,8 @@ use eme::ui_widgets::{Activate, Button, ScrollArea, TextInput};
 use eme_anim::AnimationSet;
 use eme_game_overrides::{ModelNodeCatalog, ModelOverrideStatus, OrphanReason};
 use eme_game_scene::{
-    AnimationRef, Behaviour, BehaviourKind, NodeKey, ObjectTransform, OverrideOp, PhysicsBodySpec,
-    ScriptRef, ScriptValue, TransformDelta,
+    AnimationRef, Behaviour, BehaviourKind, NodeKey, ObjectKind, ObjectTransform, OverrideOp,
+    PhysicsBodySpec, ScriptRef, ScriptValue, TransformDelta,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -123,6 +123,7 @@ pub enum Section {
     Behaviour,
     Visibility,
     Material,
+    Light,
     Physics,
     Animation,
     Script,
@@ -137,6 +138,7 @@ impl Section {
             Section::Behaviour => "Behaviour",
             Section::Visibility => "Visibility",
             Section::Material => "Material",
+            Section::Light => "Light",
             Section::Physics => "Physics",
             Section::Animation => "Animation",
             Section::Script => "Script",
@@ -152,6 +154,7 @@ pub struct InspectorSections {
     pub behaviour: bool,
     pub visibility: bool,
     pub material: bool,
+    pub light: bool,
     pub physics: bool,
     pub animation: bool,
     pub script: bool,
@@ -165,6 +168,7 @@ impl Default for InspectorSections {
             behaviour: true,
             visibility: true,
             material: true,
+            light: true,
             physics: true,
             animation: true,
             script: true,
@@ -181,6 +185,7 @@ impl InspectorSections {
             Section::Behaviour => self.behaviour,
             Section::Visibility => self.visibility,
             Section::Material => self.material,
+            Section::Light => self.light,
             Section::Physics => self.physics,
             Section::Animation => self.animation,
             Section::Script => self.script,
@@ -195,6 +200,7 @@ impl InspectorSections {
             Section::Behaviour => self.behaviour = open,
             Section::Visibility => self.visibility = open,
             Section::Material => self.material = open,
+            Section::Light => self.light = open,
             Section::Physics => self.physics = open,
             Section::Animation => self.animation = open,
             Section::Script => self.script = open,
@@ -241,6 +247,8 @@ pub enum RowKind {
     Visible,
     /// Material color row.
     Color,
+    /// Light row.
+    Light,
     /// Physics body toggle row.
     Physics,
     /// Animation clip row.
@@ -263,6 +271,7 @@ impl RowKind {
             RowKind::Play => Section::Behaviour,
             RowKind::Visible => Section::Visibility,
             RowKind::Color => Section::Material,
+            RowKind::Light => Section::Light,
             RowKind::Physics => Section::Physics,
             RowKind::Animation => Section::Animation,
             RowKind::Script => Section::Script,
@@ -279,6 +288,7 @@ impl RowKind {
             RowKind::Play => "Play",
             RowKind::Visible => "Visible",
             RowKind::Color => "Color",
+            RowKind::Light => "Light",
             RowKind::Physics => "Body",
             RowKind::Animation => "Animation",
             RowKind::Script => "Script",
@@ -327,6 +337,20 @@ pub struct ColorEdit {
 /// Preview square that mirrors the authored material color.
 #[derive(Component, Clone, Copy, Default)]
 pub struct MaterialSwatch;
+
+/// One channel of the selected light: 0-2 colour, 3 intensity.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LightValue(pub u8);
+
+/// Remembers which object a focused light field was opened on.
+#[derive(Component, Clone, Copy)]
+pub struct LightEdit {
+    target: u64,
+}
+
+/// Wrapper hidden unless the selected object is a light.
+#[derive(Component, Clone, Copy, Default)]
+pub struct LightSectionRoot;
 
 /// Text showing whether the selected object has a physics body.
 #[derive(Component, Clone, Default)]
@@ -546,6 +570,8 @@ pub fn body() -> Part {
             {section(Section::Visibility, "Visibility", vec![visibility_row()])}
             --
             {section(Section::Material, "Material", vec![color_row()])}
+            --
+            {light_section()}
             --
             {section(Section::Physics, "Physics", vec![physics_row()])}
             --
@@ -1964,6 +1990,245 @@ fn stop_animation(
     }
 }
 
+fn light_section() -> Part {
+    Box::new(bsn! {
+        Node {
+            display: Display::None,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+        }
+        LightSectionRoot
+        Children [
+            {section(Section::Light, "Light", vec![light_row()])}
+        ]
+    })
+}
+
+fn light_row() -> Part {
+    let top = vec![
+        light_field("R", tokens::AXIS_X, tokens::AXIS_X_TEXT, "1", LightValue(0)),
+        light_field("G", tokens::AXIS_Y, tokens::AXIS_Y_TEXT, "1", LightValue(1)),
+    ];
+    let bottom = vec![
+        light_field("B", tokens::AXIS_Z, tokens::AXIS_Z_TEXT, "1", LightValue(2)),
+        light_field("I", tokens::BORDER, tokens::TEXT_DIM, "1", LightValue(3)),
+    ];
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            padding: UiRect::horizontal(px(10)),
+            row_gap: px(4),
+        }
+        FilterRow(RowKind::Light)
+        Children [
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(4),
+            }
+            Children [ {top} ]
+            --
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(4),
+            }
+            Children [ {bottom} ]
+        ]
+    })
+}
+
+fn light_field(
+    letter: &str,
+    line: ThemeToken,
+    letter_tint: ThemeToken,
+    value: &str,
+    seat: LightValue,
+) -> Part {
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            height: px(FIELD_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Stretch,
+            border: UiRect { bottom: px(2) },
+            border_radius: px(3),
+            overflow: Overflow::clip(),
+        }
+        ThemeBackgroundColor(tokens::FIELD)
+        ThemeBorderColor(line)
+        Children [
+            Node {
+                width: px(24),
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+            }
+            ThemeBackgroundColor(tokens::LABEL_STRIP)
+            Children [ {text(letter, FONT_SIZE, letter_tint)} ]
+            --
+            Node {
+                flex_grow: 1.0,
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                padding: UiRect { left: px(6) },
+            }
+            Children [ {light_text(value.into(), seat)} ]
+        ]
+    })
+}
+
+fn light_text(value: String, seat: LightValue) -> Part {
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
+        }
+        EditableText::new(value)
+        TextInput
+        TabIndex(0)
+        TextLayout { linebreak: LineBreak::NoWrap }
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        seat
+        on(focus_light_field)
+        on(blur_light_field)
+        on(light_field_key)
+    })
+}
+
+fn focus_light_field(
+    press: On<PointerPress>,
+    fields: Query<&LightValue>,
+    state: Res<SceneState>,
+    mut values: Query<&mut EditableText>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    if press.button != PointerButton::Primary || !fields.contains(press.entity) {
+        return;
+    }
+    let Some(target) = state.primary() else {
+        return;
+    };
+    commands.entity(press.entity).insert(LightEdit { target });
+    if let Ok(mut value) = values.get_mut(press.entity) {
+        value.queue_edit(TextEdit::SelectAll);
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
+
+fn light_field_key(
+    key: On<FocusedInput<KeyboardInput>>,
+    fields: Query<(&LightValue, &EditableText)>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    let input = &key.input;
+    if !input.state.is_pressed() || input.repeat {
+        return;
+    }
+    let entity = key.focused_entity;
+    let Ok((seat, value)) = fields.get(entity) else {
+        return;
+    };
+    if input.key_code == KeyCode::Escape {
+        commands.entity(entity).remove::<LightEdit>();
+        return;
+    }
+    if input.key_code != KeyCode::Enter {
+        return;
+    }
+    commit_light(
+        &mut state,
+        &mut undo,
+        *seat,
+        value.value().to_string().as_str(),
+    );
+    commands.entity(entity).remove::<LightEdit>();
+    focus.clear();
+}
+
+fn blur_light_field(
+    lost: On<FocusLost>,
+    edits: Query<&LightEdit>,
+    fields: Query<(&LightValue, &EditableText)>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut commands: Commands,
+) {
+    let entity = lost.event_target();
+    let Ok(edit) = edits.get(entity) else {
+        return;
+    };
+    commands.entity(entity).remove::<LightEdit>();
+    if state.primary() != Some(edit.target) {
+        return;
+    }
+    let Ok((seat, value)) = fields.get(entity) else {
+        return;
+    };
+    commit_light(
+        &mut state,
+        &mut undo,
+        *seat,
+        value.value().to_string().as_str(),
+    );
+}
+
+fn commit_light(state: &mut SceneState, undo: &mut Undo, seat: LightValue, raw: &str) -> bool {
+    let Some(value) = parse_num(raw) else {
+        return false;
+    };
+    let Some(id) = state.primary() else {
+        return false;
+    };
+    let Some(obj) = state.doc.get(id) else {
+        return false;
+    };
+    let mut light = obj.light.unwrap_or_default();
+    let changed = match seat.0 {
+        0..=2 => {
+            let next = value.clamp(0.0, 1.0);
+            let index = seat.0 as usize;
+            if light.color[index] == next {
+                return false;
+            }
+            light.color[index] = next;
+            true
+        }
+        3 => {
+            let next = value.clamp(0.0, 8.0);
+            if light.intensity == next {
+                return false;
+            }
+            light.intensity = next;
+            true
+        }
+        _ => return false,
+    };
+    if !changed {
+        return false;
+    }
+    undo.checkpoint(state, "Edit Light");
+    state.doc.set_light(id, Some(light));
+    state.touch();
+    true
+}
+
 fn physics_row() -> Part {
     Box::new(bsn! {
         Node {
@@ -2663,11 +2928,19 @@ pub fn sync_inspector(
     mut focus: ResMut<InputFocus>,
     mut values: Query<
         (Entity, &AxisValue, &mut EditableText, Option<&FieldEdit>),
-        Without<ColorValue>,
+        (Without<ColorValue>, Without<LightValue>),
     >,
     mut colors: Query<
         (Entity, &ColorValue, &mut EditableText, Option<&ColorEdit>),
-        Without<AxisValue>,
+        (Without<AxisValue>, Without<LightValue>),
+    >,
+    mut lights: Query<
+        (Entity, &LightValue, &mut EditableText, Option<&LightEdit>),
+        (Without<AxisValue>, Without<ColorValue>),
+    >,
+    mut light_roots: Query<
+        &mut Node,
+        (With<LightSectionRoot>, Without<SectionBody>, Without<SectionCaret>),
     >,
     mut titles: Query<
         &mut Text,
@@ -2683,7 +2956,7 @@ pub fn sync_inspector(
     >,
     mut slots: Query<
         (&mut Node, Option<&SectionBody>, Option<&SectionCaret>),
-        Or<(With<SectionBody>, With<SectionCaret>)>,
+        (Or<(With<SectionBody>, With<SectionCaret>)>, Without<LightSectionRoot>),
     >,
     mut last_history: Local<Option<Vec<&'static str>>>,
 ) {
@@ -2760,6 +3033,43 @@ pub fn sync_inspector(
             || "1".into(),
             |obj| fmt_num(obj.color.unwrap_or([1.0; 4])[seat.0 as usize]),
         );
+        if value.value().to_string() != text {
+            value.editor.set_text(&text);
+        }
+    }
+
+    let is_light = selected.is_some_and(|obj| {
+        matches!(obj.kind, ObjectKind::Sun | ObjectKind::PointLight)
+    });
+    for mut root in &mut light_roots {
+        let want = if is_light {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if root.display != want {
+            root.display = want;
+        }
+    }
+
+    for (entity, seat, mut value, edit) in &mut lights {
+        if let Some(edit) = edit
+            && primary != Some(edit.target)
+        {
+            commands.entity(entity).remove::<LightEdit>();
+            if focus.get() == Some(entity) {
+                focus.clear();
+            }
+            continue;
+        }
+        if edit.is_some() || focus.get() == Some(entity) {
+            continue;
+        }
+        let light = selected.and_then(|obj| obj.light).unwrap_or_default();
+        let text = match seat.0 {
+            0..=2 => fmt_num(light.color[seat.0 as usize]),
+            _ => fmt_num(light.intensity),
+        };
         if value.value().to_string() != text {
             value.editor.set_text(&text);
         }
@@ -3112,6 +3422,26 @@ pub fn typing_guard(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn light_commits_clamp_and_undo() {
+        let mut state = SceneState::default();
+        let id = state.spawn(ObjectKind::Sun);
+        state.select_only(id);
+        let mut undo = Undo::default();
+
+        assert!(commit_light(&mut state, &mut undo, LightValue(0), "0.4"));
+        assert_eq!(
+            state.doc.light(id).unwrap().color,
+            [0.4, 1.0, 1.0]
+        );
+        assert!(undo.can_undo());
+
+        assert!(commit_light(&mut state, &mut undo, LightValue(3), "9"));
+        assert_eq!(state.doc.light(id).unwrap().intensity, 8.0);
+        assert!(!commit_light(&mut state, &mut undo, LightValue(3), "nope"));
+        assert!(!commit_light(&mut state, &mut undo, LightValue(7), "1"));
+    }
+
     #[test]
     fn inspector_filter_matching_is_case_insensitive() {
         let filter = InspectorFilter {

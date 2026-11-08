@@ -156,6 +156,35 @@ pub fn key_binding(name: &str) -> Option<KeyCode> {
     }
 }
 
+/// Bus a script sound is routed through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AudioBus {
+    /// Sound effects, the default.
+    #[default]
+    Sfx,
+    /// Music.
+    Music,
+}
+
+impl AudioBus {
+    /// Stable label used by logs and the mixer.
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioBus::Sfx => "sfx",
+            AudioBus::Music => "music",
+        }
+    }
+
+    /// Parses the optional Lua bus name.
+    pub fn parse(name: &str) -> Self {
+        if name.trim().eq_ignore_ascii_case("music") {
+            AudioBus::Music
+        } else {
+            AudioBus::Sfx
+        }
+    }
+}
+
 /// One clip a script asked to play, relative to [`ScriptRoot`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioRequest {
@@ -163,6 +192,40 @@ pub struct AudioRequest {
     pub path: String,
     /// Linear volume from 0 to 4.
     pub volume: f32,
+    /// Bus this request is routed through.
+    pub bus: AudioBus,
+}
+
+/// Per-bus gains supplied by project settings.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct AudioMix {
+    /// Sound-effect bus gain.
+    pub sfx: f32,
+    /// Music bus gain.
+    pub music: f32,
+}
+
+impl Default for AudioMix {
+    fn default() -> Self {
+        Self {
+            sfx: 1.0,
+            music: 1.0,
+        }
+    }
+}
+
+impl AudioMix {
+    /// Gain for one bus.
+    pub fn gain(self, bus: AudioBus) -> f32 {
+        match bus {
+            AudioBus::Sfx => self.sfx,
+            AudioBus::Music => self.music,
+        }
+    }
+}
+
+fn effective_volume(request: &AudioRequest, mix: &AudioMix) -> f32 {
+    (request.volume * mix.gain(request.bus)).clamp(0.0, 4.0)
 }
 
 /// Script audio requests waiting for an [`AssetServer`] to turn into players.
@@ -396,20 +459,23 @@ impl ScriptRuntime {
         let audio = lua.create_table()?;
         audio.set(
             "play",
-            lua.create_function(move |_, (path, volume): (String, Option<f32>)| {
-                let volume = volume.unwrap_or(1.0);
-                let volume = if volume.is_finite() {
-                    volume.clamp(0.0, 4.0)
-                } else {
-                    1.0
-                };
-                api_play
-                    .lock()
-                    .unwrap()
-                    .audio
-                    .push(AudioRequest { path, volume });
-                Ok(())
-            })?,
+            lua.create_function(
+                move |_, (path, volume, bus): (String, Option<f32>, Option<String>)| {
+                    let volume = volume.unwrap_or(1.0);
+                    let volume = if volume.is_finite() {
+                        volume.clamp(0.0, 4.0)
+                    } else {
+                        1.0
+                    };
+                    let bus = bus.as_deref().map(AudioBus::parse).unwrap_or_default();
+                    api_play
+                        .lock()
+                        .unwrap()
+                        .audio
+                        .push(AudioRequest { path, volume, bus });
+                    Ok(())
+                },
+            )?,
         )?;
         input.set("key", lua.create_function(move |_, name: String| {
             Ok(api_key.lock().unwrap().keys.contains(&normalize_key(&name)))
@@ -899,8 +965,10 @@ pub fn update_scripts(
         for request in api.audio.drain(..) {
             if root.0.join(&request.path).is_file() {
                 log.push(format!(
-                    "script audio: play {} @ {:.2}",
-                    request.path, request.volume
+                    "script audio: play {} @ {:.2} ({})",
+                    request.path,
+                    request.volume,
+                    request.bus.label()
                 ));
                 audio.requests.push(request);
             } else {
@@ -928,10 +996,19 @@ fn spawn_audio(commands: &mut Commands, source: Handle<AudioSource>, volume: f32
 pub fn play_script_audio(
     mut commands: Commands,
     mut audio: ResMut<ScriptAudio>,
+    mix: Res<AudioMix>,
+    mut log: ResMut<ScriptLog>,
     assets: Res<AssetServer>,
 ) {
     for request in audio.requests.drain(..) {
-        spawn_audio(&mut commands, assets.load(request.path), request.volume);
+        let volume = effective_volume(&request, &mix);
+        log.push(format!(
+            "script audio: mixed {} at {:.2} ({})",
+            request.path,
+            volume,
+            request.bus.label()
+        ));
+        spawn_audio(&mut commands, assets.load(request.path), volume);
     }
 }
 
@@ -946,6 +1023,7 @@ impl Plugin for ScriptPlugin {
             .init_resource::<ScriptReload>()
             .init_resource::<InputActions>()
             .init_resource::<ScriptAudio>()
+            .init_resource::<AudioMix>()
             .init_resource::<ScriptRuntime>()
             .add_systems(Update, sync_scripts)
             .add_systems(
@@ -976,6 +1054,7 @@ mod tests {
         world.insert_resource(ScriptReload::default());
         world.insert_resource(InputActions::default());
         world.insert_resource(ScriptAudio::default());
+        world.insert_resource(AudioMix::default());
         world.insert_resource(ScriptRuntime::default());
         world.insert_resource(Time::<()>::default());
         world.insert_resource(ButtonInput::<KeyCode>::default());
@@ -1182,8 +1261,46 @@ return {
         assert_eq!(audio.requests[0].path, "audio/beep.wav");
         assert!((audio.requests[0].volume - 0.5).abs() < 1e-6);
         let log = world.resource::<ScriptLog>().lines().join("\n");
-        assert!(log.contains("play audio/beep.wav @ 0.50"), "{log}");
+        assert!(log.contains("play audio/beep.wav @ 0.50 (sfx)"), "{log}");
         assert!(log.contains("missing asset audio/missing.wav"), "{log}");
+    }
+
+    #[test]
+    fn audio_bus_gains_scale_requests() {
+        let mix = AudioMix {
+            sfx: 0.5,
+            music: 0.25,
+        };
+        let music = AudioRequest {
+            path: "audio/song.ogg".into(),
+            volume: 0.8,
+            bus: AudioBus::Music,
+        };
+        assert!((effective_volume(&music, &mix) - 0.2).abs() < 1e-6);
+        let sfx = AudioRequest {
+            bus: AudioBus::Sfx,
+            ..music.clone()
+        };
+        assert!((effective_volume(&sfx, &mix) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_music_bus_reaches_the_queue() {
+        let dir = scratch("audio-bus");
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        std::fs::write(dir.join("audio/beep.wav"), b"RIFF").unwrap();
+        std::fs::write(
+            dir.join("music.lua"),
+            "return { on_start = function() fabr.audio.play('audio/beep.wav', 1.0, 'music') end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        scripted(&mut world, "music.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let audio = world.resource::<ScriptAudio>();
+        assert_eq!(audio.requests.len(), 1);
+        assert_eq!(audio.requests[0].bus, AudioBus::Music);
     }
 
     #[test]

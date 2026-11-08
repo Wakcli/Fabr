@@ -65,6 +65,22 @@ impl core::fmt::Display for HostError {
     }
 }
 
+/// Table of host callbacks the managed side may call.
+///
+/// `context` is an opaque pointer owned by the caller and passed back to every
+/// callback, so the engine can attach a world or a borrow without statics.
+#[repr(C)]
+pub struct FabrApi {
+    /// Opaque context passed back to every callback.
+    pub context: *mut c_void,
+    /// Writes one UTF-8 log line.
+    pub log: unsafe extern "C" fn(*mut c_void, *const c_char),
+    /// Sets an object's world translation; returns 1 on success.
+    pub set_translation: unsafe extern "C" fn(*mut c_void, u64, f32, f32, f32) -> i32,
+    /// Reads an object's world translation into three floats; returns 1 on success.
+    pub get_translation: unsafe extern "C" fn(*mut c_void, u64, *mut f32) -> i32,
+}
+
 /// Where the .NET installation lives.
 pub fn dotnet_root() -> Option<PathBuf> {
     if let Some(root) = std::env::var_os("DOTNET_ROOT") {
@@ -223,10 +239,30 @@ mod tests {
 
 namespace FabrTest;
 
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct FabrApi
+{
+    public void* Context;
+    public delegate* unmanaged[Cdecl]<void*, byte*, void> Log;
+    public delegate* unmanaged[Cdecl]<void*, ulong, float, float, float, int> SetTranslation;
+    public delegate* unmanaged[Cdecl]<void*, ulong, float*, int> GetTranslation;
+}
+
 public static class Script
 {
     [UnmanagedCallersOnly]
     public static int Answer() => 42;
+
+    [UnmanagedCallersOnly]
+    public static unsafe void Run(FabrApi* api)
+    {
+        byte[] message = System.Text.Encoding.UTF8.GetBytes("hello from C#\0");
+        fixed (byte* text = message)
+        {
+            api->Log(api->Context, text);
+        }
+        api->SetTranslation(api->Context, 7, 1.5f, 2.0f, -3.0f);
+    }
 }
 "#,
         )
@@ -237,6 +273,59 @@ public static class Script
             .status()
             .ok()?;
         status.success().then(|| dir.join("out"))
+    }
+
+    struct TestContext {
+        logs: Vec<String>,
+        transforms: std::collections::HashMap<u64, [f32; 3]>,
+    }
+
+    /// # Safety
+    /// `context` must point to a live `TestContext` and `message` must be NUL-terminated.
+    unsafe extern "C" fn log(context: *mut c_void, message: *const c_char) {
+        // SAFETY: the test passes its own context.
+        let context = unsafe { &mut *context.cast::<TestContext>() };
+        // SAFETY: the managed side writes a NUL-terminated UTF-8 string.
+        let text = unsafe { std::ffi::CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned();
+        context.logs.push(text);
+    }
+
+    /// # Safety
+    /// `context` must point to a live `TestContext`.
+    unsafe extern "C" fn set_translation(
+        context: *mut c_void,
+        id: u64,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> i32 {
+        // SAFETY: the test passes its own context.
+        let context = unsafe { &mut *context.cast::<TestContext>() };
+        context.transforms.insert(id, [x, y, z]);
+        1
+    }
+
+    /// # Safety
+    /// `context` must point to a live `TestContext` and `out` to three writable floats.
+    unsafe extern "C" fn get_translation(
+        context: *mut c_void,
+        id: u64,
+        out: *mut f32,
+    ) -> i32 {
+        // SAFETY: the test passes its own context.
+        let context = unsafe { &*context.cast::<TestContext>() };
+        let Some(position) = context.transforms.get(&id) else {
+            return 0;
+        };
+        // SAFETY: the caller provides a buffer of three floats.
+        unsafe {
+            *out = position[0];
+            *out.add(1) = position[1];
+            *out.add(2) = position[2];
+        }
+        1
     }
 
     #[test]
@@ -264,6 +353,26 @@ public static class Script
         // method returning int, matching this signature.
         let answer: extern "C" fn() -> i32 = unsafe { std::mem::transmute(entry) };
         assert_eq!(answer(), 42);
+
+        let mut context = TestContext {
+            logs: Vec::new(),
+            transforms: std::collections::HashMap::new(),
+        };
+        let api = FabrApi {
+            context: std::ptr::from_mut(&mut context).cast::<c_void>(),
+            log,
+            set_translation,
+            get_translation,
+        };
+        let run_entry = host
+            .entry_point(&out.join("Host.dll"), "FabrTest.Script, Host", "Run")
+            .expect("run entry point resolves");
+        // SAFETY: the sample exports `Run(FabrApi*)` as an unmanaged entry point.
+        let run: unsafe extern "C" fn(*mut FabrApi) = unsafe { std::mem::transmute(run_entry) };
+        // SAFETY: `api` holds valid callbacks and the context lives for the call.
+        unsafe { run(std::ptr::from_ref(&api).cast_mut()) };
+        assert_eq!(context.logs, ["hello from C#"]);
+        assert_eq!(context.transforms.get(&7), Some(&[1.5, 2.0, -3.0]));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -236,6 +236,76 @@ pub struct ScriptAudio {
     pub requests: Vec<AudioRequest>,
 }
 
+/// One HUD element drawn by a script.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiElement {
+    /// Filled rectangle, normalised coordinates.
+    Panel {
+        /// Left edge.
+        x: f32,
+        /// Top edge.
+        y: f32,
+        /// Width.
+        w: f32,
+        /// Height.
+        h: f32,
+        /// Linear RGBA.
+        color: [f32; 4],
+    },
+    /// Text label.
+    Text {
+        /// Left edge.
+        x: f32,
+        /// Top edge.
+        y: f32,
+        /// Font size in pixels.
+        size: f32,
+        /// Text to draw.
+        text: String,
+        /// Linear RGB.
+        color: [f32; 3],
+    },
+    /// Clickable labelled rectangle.
+    Button {
+        /// Identifier reported by `fabr.ui.clicked`.
+        id: u32,
+        /// Left edge.
+        x: f32,
+        /// Top edge.
+        y: f32,
+        /// Width.
+        w: f32,
+        /// Height.
+        h: f32,
+        /// Button label.
+        label: String,
+    },
+}
+
+/// HUD drawn by scripts.
+#[derive(Resource, Clone, Default, Debug)]
+pub struct ScriptUi {
+    /// Elements in draw order.
+    pub elements: Vec<UiElement>,
+    /// Button ids pressed since the last script update.
+    pub clicks: Vec<u32>,
+}
+
+impl ScriptUi {
+    /// Removes every element.
+    pub fn clear(&mut self) { self.elements.clear(); }
+    /// Topmost button under a normalised point.
+    pub fn button_at(&self, x: f32, y: f32) -> Option<u32> {
+        self.elements.iter().rev().find_map(|e| match e {
+            UiElement::Button { id, x: bx, y: by, w, h, .. }
+                if x >= *bx && x <= bx + w && y >= *by && y <= by + h => Some(*id),
+            _ => None,
+        })
+    }
+    /// Whether a button was pressed since the last update.
+    pub fn clicked(&self, id: u32) -> bool { self.clicks.contains(&id) }
+}
+
 /// Runtime scene-load requests raised by scripts.
 #[derive(Resource, Default, Debug, Clone, PartialEq, Eq)]
 pub struct SceneRequests {
@@ -316,6 +386,8 @@ struct ApiState {
     nav: Option<Arc<NavGrid>>,
     nav_ops: Vec<(Entity, NavOp)>,
     scene_ops: Vec<SceneOp>,
+    ui: Vec<UiElement>,
+    ui_clicks: Vec<u32>,
     delta: f32,
     elapsed: f32,
     properties: BTreeMap<String, ScriptValue>,
@@ -345,6 +417,8 @@ impl Default for ApiState {
             nav: None,
             nav_ops: Vec::new(),
             scene_ops: Vec::new(),
+            ui: Vec::new(),
+            ui_clicks: Vec::new(),
             delta: 0.0,
             elapsed: 0.0,
             properties: BTreeMap::new(),
@@ -357,6 +431,10 @@ impl Default for ApiState {
 pub struct ScriptRuntime {
     /// Scene requests raised by scripts, drained by [`publish_scene_requests`].
     pub scene_requests: Vec<(String, bool)>,
+    /// HUD elements collected this update.
+    pub ui: Vec<UiElement>,
+    /// Button ids pressed since the last script update.
+    pub ui_clicks: Vec<u32>,
     lua: Lua,
     instances: HashMap<Entity, Instance>,
 }
@@ -365,6 +443,8 @@ impl Default for ScriptRuntime {
     fn default() -> Self {
         Self {
             scene_requests: Vec::new(),
+            ui: Vec::new(),
+            ui_clicks: Vec::new(),
             lua: Lua::new(),
             instances: HashMap::new(),
         }
@@ -661,6 +741,27 @@ impl ScriptRuntime {
             )?,
         )?;
         fabr.set("nav", nav)?;
+        let api_ui = api.clone();
+        let ui = lua.create_table()?;
+        ui.set("clear", lua.create_function(move |_, ()| { api_ui.lock().unwrap().ui.clear(); Ok(()) })?)?;
+        let api_text = api.clone();
+        ui.set("text", lua.create_function(move |_, (x, y, size, text, r, g, b): (f32, f32, f32, String, Option<f32>, Option<f32>, Option<f32>)| {
+            api_text.lock().unwrap().ui.push(UiElement::Text { x: x.clamp(0.0,1.0), y: y.clamp(0.0,1.0), size: size.clamp(4.0,96.0), text, color: [r.unwrap_or(1.0), g.unwrap_or(1.0), b.unwrap_or(1.0)] });
+            Ok(())
+        })?)?;
+        let api_panel = api.clone();
+        ui.set("panel", lua.create_function(move |_, (x, y, w, h, r, g, b, a): (f32, f32, f32, f32, f32, f32, f32, f32)| {
+            api_panel.lock().unwrap().ui.push(UiElement::Panel { x: x.clamp(0.0,1.0), y: y.clamp(0.0,1.0), w: w.clamp(0.0,1.0), h: h.clamp(0.0,1.0), color: [r,g,b,a] });
+            Ok(())
+        })?)?;
+        let api_button = api.clone();
+        ui.set("button", lua.create_function(move |_, (id, x, y, w, h, label): (u32, f32, f32, f32, f32, String)| {
+            api_button.lock().unwrap().ui.push(UiElement::Button { id, x: x.clamp(0.0,1.0), y: y.clamp(0.0,1.0), w: w.clamp(0.0,1.0), h: h.clamp(0.0,1.0), label });
+            Ok(())
+        })?)?;
+        let api_clicked = api.clone();
+        ui.set("clicked", lua.create_function(move |_, id: u32| Ok(api_clicked.lock().unwrap().ui_clicks.contains(&id)))?)?;
+        fabr.set("ui", ui)?;
         let api_scene = api.clone();
         let scene = lua.create_table()?;
         scene.set(
@@ -929,6 +1030,8 @@ pub fn sync_scripts(
         lua,
         instances,
         scene_requests: _,
+        ui: _,
+        ui_clicks: _,
     } = &mut *runtime;
     if !active.0 {
         for (_, mut instance) in instances.drain() {
@@ -1042,6 +1145,8 @@ pub fn update_scripts(
         lua,
         instances,
         scene_requests,
+        ui,
+        ui_clicks,
     } = &mut *runtime;
     if instances.is_empty() {
         return;
@@ -1140,6 +1245,8 @@ pub fn update_scripts(
             api.animation_ops.clear();
             api.nav = Some(nav.clone());
             api.nav_ops.clear();
+            api.ui.clear();
+            api.ui_clicks = std::mem::take(ui_clicks);
             api.scene_ops.clear();
         }
 
@@ -1202,6 +1309,9 @@ pub fn update_scripts(
                     }
                 }
             }
+        }
+        for element in api.ui.drain(..) {
+            ui.push(element);
         }
         for op in api.scene_ops.drain(..) {
             match op {
@@ -1281,6 +1391,17 @@ pub fn publish_scene_requests(
     }
 }
 
+/// Publishes HUD elements and stores app-side button clicks.
+pub fn publish_script_ui(mut runtime: ResMut<ScriptRuntime>, mut ui: ResMut<ScriptUi>) {
+    let next = std::mem::take(&mut runtime.ui);
+    if ui.elements != next {
+        ui.elements = next;
+    }
+    if !ui.clicks.is_empty() {
+        runtime.ui_clicks = std::mem::take(&mut ui.clicks);
+    }
+}
+
 /// Plugin wiring the script resources and systems into an app.
 pub struct ScriptPlugin;
 
@@ -1293,6 +1414,7 @@ impl Plugin for ScriptPlugin {
             .init_resource::<InputActions>()
             .init_resource::<ScriptAudio>()
             .init_resource::<SceneRequests>()
+            .init_resource::<ScriptUi>()
             .init_resource::<AudioMix>()
             .init_resource::<ScriptRuntime>()
             .add_systems(Update, sync_scripts)
@@ -1301,7 +1423,8 @@ impl Plugin for ScriptPlugin {
                 update_scripts.after(eme_game_runtime::run_behaviours),
             )
             .add_systems(Update, play_script_audio.after(update_scripts))
-            .add_systems(Update, publish_scene_requests.after(update_scripts));
+            .add_systems(Update, publish_scene_requests.after(update_scripts))
+            .add_systems(Update, publish_script_ui.after(update_scripts));
     }
 }
 
@@ -1326,6 +1449,7 @@ mod tests {
         world.insert_resource(InputActions::default());
         world.insert_resource(ScriptAudio::default());
         world.insert_resource(SceneRequests::default());
+        world.insert_resource(ScriptUi::default());
         world.insert_resource(NavGrid::default());
         world.insert_resource(AudioMix::default());
         world.insert_resource(ScriptRuntime::default());
@@ -1819,6 +1943,37 @@ return {
         let log = world.resource::<ScriptLog>().lines().join("\n");
         assert!(log.contains("scene: load requested"), "{log}");
         assert!(log.contains("scene: reload requested"), "{log}");
+    }
+
+    #[test]
+    fn a_script_draws_and_clears_hud_elements() {
+        let dir = scratch("ui");
+        std::fs::write(dir.join("hud.lua"), "return { on_start = function() fabr.ui.panel(0.1,0.1,0.3,0.2,1,0,0,1) fabr.ui.text(0.1,0.4,20,'score') fabr.ui.button(7,0.1,0.6,0.2,0.1,'Restart') end }").unwrap();
+        let mut world = world(&dir);
+        scripted(&mut world, "hud.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        world.run_system_once(publish_script_ui).unwrap();
+        let ui = world.resource::<ScriptUi>();
+        assert_eq!(ui.elements.len(), 3);
+        assert_eq!(ui.button_at(0.2, 0.65), Some(7));
+        assert_eq!(ui.button_at(0.9, 0.9), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clicks_reach_the_script_once() {
+        let dir = scratch("ui-click");
+        std::fs::write(dir.join("hud.lua"), "return { on_start = function() fabr.ui.button(3,0,0,0.5,0.5,'go') end, on_update = function(self) if fabr.ui.clicked(3) then fabr.log('clicked 3') end end }").unwrap();
+        let mut world = world(&dir);
+        scripted(&mut world, "hud.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.resource_mut::<ScriptUi>().clicks.push(3);
+        world.run_system_once(publish_script_ui).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        assert!(world.resource::<ScriptLog>().lines().join("\n").contains("clicked 3"));
+        assert!(world.resource::<ScriptUi>().clicks.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -5,6 +5,7 @@ use eme::prelude::*;
 use eme::render::view::Msaa;
 use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
+use eme_anim::AnimationSource;
 use eme_game_runtime::PhysicsBody;
 use fabr::ScriptedObject;
 use eme_game_scene::{
@@ -233,7 +234,7 @@ pub fn spawn_scene(
                 match resolved {
                     Some((rel, import)) => {
                         let handle =
-                            asset_server.load(GltfAssetLabel::Scene(0).from_asset(rel));
+                            asset_server.load(GltfAssetLabel::Scene(0).from_asset(rel.clone()));
                         let pivot = eme_game_runtime::pivot_transform(import);
                         let mut spawned = commands.spawn((trs, behaviour, name, Visibility::Inherited));
                         if let Some(script) = script {
@@ -242,6 +243,11 @@ pub fn spawn_scene(
                         if let Some(physics) = physics {
                             spawned.insert(physics);
                         }
+                        spawned.insert(AnimationSource {
+                            gltf: asset_server.load(rel.clone()),
+                            selected: obj.animation.as_ref().and_then(|animation| animation.clip.clone()),
+                            autoplay: obj.animation.as_ref().is_some_and(|animation| animation.autoplay),
+                        });
                         spawned
                             .with_children(|parent| {
                                 parent

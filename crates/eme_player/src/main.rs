@@ -97,6 +97,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(fabr::ScriptPlugin)
+        .add_plugins(eme_anim::AnimationRuntimePlugin)
         .insert_resource(fabr::ScriptsActive(true))
         .insert_resource(fabr::ScriptRoot(assets))
         .insert_resource(actions)

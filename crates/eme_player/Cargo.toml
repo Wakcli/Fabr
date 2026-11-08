@@ -17,6 +17,7 @@ eme = { path = "../..", version = "0.20.0-dev", default-features = false, featur
 ] }
 fabr = { path = "../fabr", version = "0.20.0-dev" }
 eme_game_overrides = { path = "../eme_game_overrides", version = "0.20.0-dev" }
+eme_anim = { path = "../eme_anim", version = "0.20.0-dev" }
 eme_game_runtime = { path = "../eme_game_runtime", version = "0.20.0-dev" }
 eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }
 

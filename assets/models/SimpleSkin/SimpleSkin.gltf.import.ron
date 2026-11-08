@@ -1,0 +1,37 @@
+(
+    version: 1,
+    guid: "098f36aab2c23d186d5565847a30131e",
+    settings: (
+        transform: (
+            scale: 1.0,
+            up_axis: Y,
+        ),
+        geometry: (
+            normals: true,
+            tangents: true,
+            merge_meshes: false,
+            colliders: false,
+        ),
+        materials: (
+            import: true,
+            extract: false,
+            keep_on_reimport: true,
+            max_texture_size: 4096,
+            mipmaps: true,
+        ),
+        animations: (
+            import: true,
+            split_clips: false,
+            looping: true,
+        ),
+        scene: (
+            cameras: true,
+            lights: true,
+            extras: false,
+        ),
+        output: (
+            folder: "assets",
+            instance_after_import: true,
+        ),
+    ),
+)

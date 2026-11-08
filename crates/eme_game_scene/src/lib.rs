@@ -309,6 +309,29 @@ pub struct ScriptRef {
     pub properties: BTreeMap<String, ScriptValue>,
 }
 
+/// Authoring data for a simple physics body.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhysicsBodySpec {
+    /// Whether gravity and collisions move this body.
+    pub dynamic: bool,
+    /// Half extents of the axis-aligned collider.
+    #[serde(default = "default_half_extents")]
+    pub half_extents: [f32; 3],
+}
+
+fn default_half_extents() -> [f32; 3] {
+    [0.5; 3]
+}
+
+impl Default for PhysicsBodySpec {
+    fn default() -> Self {
+        Self {
+            dynamic: true,
+            half_extents: default_half_extents(),
+        }
+    }
+}
+
 /// Pointer from a scene object to an imported model asset.
 ///
 /// The GUID is the durable identity: moving or renaming the file keeps it, and a
@@ -354,6 +377,9 @@ pub struct SceneObject {
     /// Optional gameplay script attached to this object.
     #[serde(default)]
     pub script: Option<ScriptRef>,
+    /// Optional simple rigid body.
+    #[serde(default)]
+    pub physics: Option<PhysicsBodySpec>,
 }
 
 /// Offset applied on top of an imported node's transform.
@@ -533,6 +559,7 @@ impl SceneDoc {
             asset: None,
             overrides: Vec::new(),
             script: None,
+            physics: None,
         });
         id
     }
@@ -638,6 +665,23 @@ impl SceneDoc {
             }
             None => false,
         }
+    }
+
+    /// The physics body authored on `id`, if any.
+    pub fn physics(&self, id: u64) -> Option<&PhysicsBodySpec> {
+        self.get(id).and_then(|obj| obj.physics.as_ref())
+    }
+
+    /// Attaches or clears the physics body on `id`.
+    pub fn set_physics(&mut self, id: u64, physics: Option<PhysicsBodySpec>) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        if obj.physics == physics {
+            return false;
+        }
+        obj.physics = physics;
+        true
     }
 
     /// The script attached to `id`, if any.
@@ -1235,6 +1279,27 @@ mod tests {
         assert!(doc.set_color(id, Some([0.8, 0.1, 0.2, 1.0])));
         let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
         assert_eq!(back.get(id).unwrap().color, Some([0.8, 0.1, 0.2, 1.0]));
+    }
+
+    #[test]
+    fn a_physics_body_round_trips_and_old_scenes_load() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Cube,
+            "Falling",
+            ObjectTransform::from_translation([0.0, 3.0, 0.0]),
+        );
+        assert!(doc.set_physics(id, Some(PhysicsBodySpec::default())));
+        let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
+        assert_eq!(back.physics(id), Some(&PhysicsBodySpec::default()));
+
+        let old = r#"(
+            format_version: 1,
+            objects: [(id: 1, name: "old", kind: Cube, parent: None,
+                translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0), color: None)],
+        )"#;
+        assert!(SceneDoc::from_ron(old).unwrap().physics(1).is_none());
     }
 
     #[test]

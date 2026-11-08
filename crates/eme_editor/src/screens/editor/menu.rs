@@ -801,6 +801,8 @@ pub enum TopAction {
     ReloadScripts,
     /// Open project settings.
     ProjectSettings,
+    /// Open the build dialog.
+    Build,
     /// Today's build, in the console.
     About,
 }
@@ -902,6 +904,7 @@ pub fn run_top_action(
     mut undo: ResMut<Undo>,
     mut log: ResMut<ConsoleLog>,
     mut settings: ResMut<crate::settings::ProjectSettingsState>,
+    mut build: ResMut<crate::build::BuildState>,
     mut reload: ResMut<eme_script::ScriptReload>,
     index: Res<scene::ModelIndex>,
 ) {
@@ -940,6 +943,7 @@ pub fn run_top_action(
             log.push("reload requested for all scripts".to_string());
         }
         TopAction::ProjectSettings => crate::settings::open(&mut settings),
+        TopAction::Build => build.open(),
         TopAction::About => log.push(format!(
             "Fabr {} — built on the Eme engine",
             env!("CARGO_PKG_VERSION")

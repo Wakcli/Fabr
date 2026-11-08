@@ -18,6 +18,7 @@ mod gizmo;
 pub(crate) mod icons;
 mod inspector;
 mod menu;
+mod palette;
 pub(crate) mod tabs;
 mod viewport;
 
@@ -59,6 +60,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             {menu::top_menu()}
             --
             {crate::settings::panel()}
+            --
+            {palette::overlay()}
             --
             {inspector::script_picker()}
             --
@@ -240,6 +243,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<inspector::ReattachState>()
             .init_resource::<inspector::ScriptPicker>()
             .init_resource::<inspector::InspectorFilter>()
+            .init_resource::<palette::Palette>()
             .init_resource::<docks::EditorStats>()
             .init_resource::<docks::SceneFilter>()
             .init_resource::<files::ImportMenu>()
@@ -337,6 +341,7 @@ impl Plugin for EditorPlugin {
                 (
                     menu::sync_top_menu,
                     menu::close_top_menu,
+                    (palette::keys, palette::sync).chain(),
                     menu::seed_rename,
                     menu::rename_keys,
                     menu::sync_menu,

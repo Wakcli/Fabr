@@ -7,7 +7,7 @@ use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
 use eme_anim::AnimationSource;
 use eme_game_runtime::PhysicsBody;
-use eme_net::ReplicatedObject;
+use eme_net::{NetKind, ReplicatedObject, ReplicatedSpawn};
 use fabr::ScriptedObject;
 use eme_game_scene::{
     Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
@@ -402,6 +402,13 @@ pub fn spawn_scene(
                 } else {
                     AlphaMode::Opaque
                 };
+                let kind = match shape {
+                    Shape::Cube => NetKind::Cube,
+                    Shape::Sphere => NetKind::Sphere,
+                    Shape::Cylinder => NetKind::Cylinder,
+                    Shape::Plane => NetKind::Plane,
+                };
+                let net_color = obj.color.unwrap_or([0.62, 0.62, 0.66, 1.0]);
                 let mut spawned = commands.spawn((
                     Mesh3d(mesh),
                     MeshMaterial3d(materials.add(material)),
@@ -409,6 +416,10 @@ pub fn spawn_scene(
                     behaviour,
                     name,
                     ReplicatedObject(obj.id),
+                    ReplicatedSpawn {
+                        kind,
+                        color: net_color,
+                    },
                     SceneRoot,
                 ));
                 if let Some(script) = script {
@@ -492,6 +503,36 @@ fn look_at(eye: Vec3) -> Quat {
     Transform::from_translation(eye)
         .looking_at(Vec3::ZERO, Vec3::Y)
         .rotation
+}
+
+/// Builds visuals for entities spawned by replication.
+pub fn materialize_replicated(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    spawned: Query<(Entity, &ReplicatedSpawn), Without<Mesh3d>>,
+) {
+    for (entity, spawn) in &spawned {
+        let mesh = match spawn.kind {
+            NetKind::Cube => Cuboid::new(CUBE, CUBE, CUBE).into(),
+            NetKind::Sphere => Sphere::new(SPHERE_R).mesh().ico(4).unwrap(),
+            NetKind::Cylinder => Cylinder::new(CYL_R, CYL_H).into(),
+            NetKind::Plane => Plane3d::default().mesh().size(PLANE, PLANE).into(),
+        };
+        let color = Color::linear_rgba(
+            spawn.color[0],
+            spawn.color[1],
+            spawn.color[2],
+            spawn.color[3],
+        );
+        let mut material = StandardMaterial::from(color);
+        material.perceptual_roughness = ROUGHNESS;
+        material.metallic = 0.0;
+        commands.entity(entity).insert((
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(materials.add(material)),
+        ));
+    }
 }
 
 #[cfg(test)]

@@ -111,6 +111,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(fabr::ScriptPlugin)
+        .insert_resource(network_config(&args))
         .insert_resource(fabr::ScriptsActive(
             scripting
                 && !matches!(network_config(&args).role, eme_net::NetworkRole::Client { .. }),
@@ -154,6 +155,7 @@ fn main() {
                 eme_game_overrides::sync_model_nodes,
                 log_script_lines,
                 eme_game_runtime::step_physics.after(fabr::update_scripts),
+                scene::materialize_replicated,
                 log_network,
             ),
         )

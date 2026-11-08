@@ -42,6 +42,45 @@ pub struct NetworkConfig {
     pub role: NetworkRole,
 }
 
+/// Shape of a replicated object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NetKind {
+    /// Cube.
+    Cube,
+    /// Sphere.
+    Sphere,
+    /// Cylinder.
+    Cylinder,
+    /// Flat plane.
+    Plane,
+}
+
+/// One replicated object announced to clients.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpawnState {
+    /// Object id.
+    pub id: u64,
+    /// Shape.
+    pub kind: NetKind,
+    /// World translation.
+    pub translation: [f32; 3],
+    /// Rotation quaternion.
+    pub rotation: [f32; 4],
+    /// Scale.
+    pub scale: [f32; 3],
+    /// Base colour.
+    pub color: [f32; 4],
+}
+
+/// Data the app needs to build visuals for a replicated object.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct ReplicatedSpawn {
+    /// Shape to build.
+    pub kind: NetKind,
+    /// Base colour.
+    pub color: [f32; 4],
+}
+
 /// One replicated root transform.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TransformState {
@@ -58,6 +97,10 @@ pub struct TransformState {
 /// Wire message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
+    /// Replicated objects that started existing.
+    Spawn(Vec<SpawnState>),
+    /// Object ids that stopped existing.
+    Despawn(Vec<u64>),
     /// Current transform of every replicated root.
     Snapshot(Vec<TransformState>),
 }
@@ -88,6 +131,7 @@ impl NetworkStatus {
 pub struct NetworkServer {
     listener: Option<TcpListener>,
     clients: Vec<TcpStream>,
+    last_ids: std::collections::HashSet<u64>,
 }
 
 /// Client transport state.
@@ -95,6 +139,8 @@ pub struct NetworkServer {
 pub struct NetworkClient {
     stream: Option<TcpStream>,
     reader: FrameReader,
+    /// Messages ready to apply to the world.
+    pub inbox: Vec<Message>,
 }
 
 /// Length-prefixed message framing.
@@ -145,13 +191,21 @@ impl NetworkServer {
         Ok(())
     }
 
-    /// Accepts any pending clients and broadcasts `message`.
-    pub fn pump(&mut self, message: &Message, status: &mut NetworkStatus) {
+    /// Accepts pending clients, sends `spawns` to newcomers, then broadcasts `message`.
+    pub fn pump(
+        &mut self,
+        message: &Message,
+        spawns: &[SpawnState],
+        status: &mut NetworkStatus,
+    ) {
         if let Some(listener) = &self.listener {
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok((mut stream, _)) => {
                         let _ = stream.set_nodelay(true);
+                        // late joiners get the existing objects before snapshots
+                        let catch_up = encode_message(&Message::Spawn(spawns.to_vec()));
+                        let _ = stream.write_all(&catch_up);
                         self.clients.push(stream);
                     }
                     Err(err) if err.kind() == ErrorKind::WouldBlock => break,
@@ -234,7 +288,7 @@ impl Plugin for NetworkPlugin {
             .init_resource::<NetworkServer>()
             .init_resource::<NetworkClient>()
             .add_systems(Startup, start_network)
-            .add_systems(Update, (send_snapshots, receive_snapshots).in_set(NetworkSet));
+            .add_systems(Update, (send_snapshots, receive_messages, apply_inbox).chain().in_set(NetworkSet));
     }
 }
 
@@ -263,43 +317,124 @@ pub fn send_snapshots(
     config: Res<NetworkConfig>,
     mut server: ResMut<NetworkServer>,
     mut status: ResMut<NetworkStatus>,
-    objects: Query<(&ReplicatedObject, &Transform)>,
+    objects: Query<(&ReplicatedObject, &Transform, Option<&ReplicatedSpawn>)>,
 ) {
     if !matches!(config.role, NetworkRole::Server { .. }) {
         return;
     }
-    let snapshot = objects
-        .iter()
-        .map(|(object, transform)| TransformState {
+    let mut snapshot = Vec::new();
+    let mut spawns = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    for (object, transform, spawn) in &objects {
+        ids.insert(object.0);
+        snapshot.push(TransformState {
             id: object.0,
             translation: transform.translation.to_array(),
             rotation: transform.rotation.to_array(),
             scale: transform.scale.to_array(),
-        })
-        .collect();
-    server.pump(&Message::Snapshot(snapshot), &mut status);
+        });
+        if let Some(spawn) = spawn {
+            spawns.push(SpawnState {
+                id: object.0,
+                kind: spawn.kind,
+                translation: transform.translation.to_array(),
+                rotation: transform.rotation.to_array(),
+                scale: transform.scale.to_array(),
+                color: spawn.color,
+            });
+        }
+    }
+    let (added, removed) = diff(&server.last_ids, &spawns);
+    if !removed.is_empty() {
+        server.pump(&Message::Despawn(removed), &spawns, &mut status);
+    }
+    if !added.is_empty() {
+        let new_spawns: Vec<SpawnState> = spawns
+            .iter()
+            .filter(|state| added.contains(&state.id))
+            .cloned()
+            .collect();
+        server.pump(&Message::Spawn(new_spawns), &spawns, &mut status);
+    }
+    server.last_ids = ids;
+    server.pump(&Message::Snapshot(snapshot), &spawns, &mut status);
 }
 
-/// Applies snapshots received by a client.
-pub fn receive_snapshots(
+/// Ids added and removed between two sets, both sorted.
+pub fn diff(
+    previous: &std::collections::HashSet<u64>,
+    current: &[SpawnState],
+) -> (Vec<u64>, Vec<u64>) {
+    let now: std::collections::HashSet<u64> = current.iter().map(|state| state.id).collect();
+    let mut added: Vec<u64> = now.difference(previous).copied().collect();
+    let mut removed: Vec<u64> = previous.difference(&now).copied().collect();
+    added.sort_unstable();
+    removed.sort_unstable();
+    (added, removed)
+}
+
+/// Reads the socket and queues complete messages.
+pub fn receive_messages(
     config: Res<NetworkConfig>,
     mut client: ResMut<NetworkClient>,
     mut status: ResMut<NetworkStatus>,
-    mut objects: Query<(&ReplicatedObject, &mut Transform)>,
 ) {
     if !matches!(config.role, NetworkRole::Client { .. }) {
         return;
     }
     for message in client.pump(&mut status) {
-        let Message::Snapshot(states) = message;
-        for state in states {
-            for (object, mut transform) in &mut objects {
-                if object.0 != state.id {
-                    continue;
+        client.inbox.push(message);
+    }
+}
+
+/// Applies queued server messages to the client world.
+pub fn apply_inbox(
+    config: Res<NetworkConfig>,
+    mut client: ResMut<NetworkClient>,
+    mut commands: Commands,
+    mut objects: Query<(Entity, &ReplicatedObject, &mut Transform)>,
+) {
+    if !matches!(config.role, NetworkRole::Client { .. }) {
+        return;
+    }
+    let messages = core::mem::take(&mut client.inbox);
+    for message in messages {
+        match message {
+            Message::Spawn(states) => {
+                for state in states {
+                    if objects.iter().any(|(_, object, _)| object.0 == state.id) {
+                        continue;
+                    }
+                    commands.spawn((
+                        ReplicatedObject(state.id),
+                        Transform::from_translation(Vec3::from_array(state.translation))
+                            .with_rotation(Quat::from_array(state.rotation))
+                            .with_scale(Vec3::from_array(state.scale)),
+                        ReplicatedSpawn {
+                            kind: state.kind,
+                            color: state.color,
+                        },
+                    ));
                 }
-                transform.translation = Vec3::from_array(state.translation);
-                transform.rotation = Quat::from_array(state.rotation);
-                transform.scale = Vec3::from_array(state.scale);
+            }
+            Message::Despawn(ids) => {
+                for (entity, object, _) in &mut objects {
+                    if ids.contains(&object.0) {
+                        commands.entity(entity).despawn();
+                    }
+                }
+            }
+            Message::Snapshot(states) => {
+                for state in states {
+                    for (_, object, mut transform) in &mut objects {
+                        if object.0 != state.id {
+                            continue;
+                        }
+                        transform.translation = Vec3::from_array(state.translation);
+                        transform.rotation = Quat::from_array(state.rotation);
+                        transform.scale = Vec3::from_array(state.scale);
+                    }
+                }
             }
         }
     }
@@ -342,6 +477,97 @@ mod tests {
         server.listen(port).unwrap();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.set_nonblocking(true).unwrap();
+            let mut reader = FrameReader::default();
+            let mut buf = [0u8; 4096];
+            let mut messages = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while messages.len() < 2 && Instant::now() < deadline {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => reader.feed(&buf[..n]),
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+                while let Some(message) = reader.next_message() {
+                    messages.push(message);
+                }
+            }
+            tx.send(messages.into_iter().last()).ok();
+        });
+        let mut status = NetworkStatus::default();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while status.peers == 0 && Instant::now() < deadline {
+            server.pump(&Message::Snapshot(vec![state()]), &[], &mut status);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(status.peers, 1);
+        let received = rx.recv_timeout(Duration::from_secs(2)).ok().flatten();
+        assert_eq!(received, Some(Message::Snapshot(vec![state()])));
+
+        // A client that has gone away is dropped without stopping the server.
+        server.clients.clear();
+        server.pump(&Message::Snapshot(vec![]), &[], &mut status);
+        assert_eq!(status.peers, 0);
+    }
+
+    #[test]
+    fn connecting_to_a_missing_peer_reports_an_error() {
+        let mut client = NetworkClient::default();
+        assert!(client.connect("127.0.0.1:1").is_err());
+        let mut status = NetworkStatus::default();
+        assert!(client.pump(&mut status).is_empty());
+    }
+
+    fn spawn_state(id: u64) -> SpawnState {
+        SpawnState {
+            id,
+            kind: NetKind::Cube,
+            translation: [0.0, 0.5, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+            color: [0.2, 0.6, 0.3, 1.0],
+        }
+    }
+
+    #[test]
+    fn spawn_and_despawn_messages_round_trip() {
+        for message in [
+            Message::Spawn(vec![spawn_state(4)]),
+            Message::Despawn(vec![4, 9]),
+        ] {
+            let bytes = encode_message(&message);
+            let mut reader = FrameReader::default();
+            reader.feed(&bytes);
+            assert_eq!(reader.next_message(), Some(message));
+        }
+    }
+
+    #[test]
+    fn diff_reports_added_and_removed_ids() {
+        let mut previous = std::collections::HashSet::new();
+        previous.insert(1);
+        previous.insert(2);
+        let (added, removed) = diff(&previous, &[spawn_state(2), spawn_state(3)]);
+        assert_eq!(added, [3]);
+        assert_eq!(removed, [1]);
+    }
+
+    #[test]
+    fn a_late_joiner_receives_every_spawn_before_snapshots() {
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let mut server = NetworkServer::default();
+        server.listen(port).unwrap();
+        let spawns = vec![spawn_state(1), spawn_state(2)];
+        let mut status = NetworkStatus::default();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
             let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
             let mut reader = FrameReader::default();
             stream.set_nonblocking(false).unwrap();
@@ -352,28 +578,47 @@ mod tests {
                 tx.send(reader.next_message()).ok();
             }
         });
-        let mut status = NetworkStatus::default();
         let deadline = Instant::now() + Duration::from_secs(2);
         while status.peers == 0 && Instant::now() < deadline {
-            server.pump(&Message::Snapshot(vec![state()]), &mut status);
+            server.pump(&Message::Snapshot(vec![]), &spawns, &mut status);
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(status.peers, 1);
-        let received = rx.recv_timeout(Duration::from_secs(2)).ok().flatten();
-        assert_eq!(received, Some(Message::Snapshot(vec![state()])));
-
-        // A client that has gone away is dropped without stopping the server.
-        server.clients.clear();
-        server.pump(&Message::Snapshot(vec![]), &mut status);
-        assert_eq!(status.peers, 0);
+        let first = rx.recv_timeout(Duration::from_secs(2)).ok().flatten();
+        assert_eq!(first, Some(Message::Spawn(spawns)));
     }
 
     #[test]
-    fn connecting_to_a_missing_peer_reports_an_error() {
-        let mut client = NetworkClient::default();
-        assert!(client.connect("127.0.0.1:1").is_err());
-        let mut status = NetworkStatus::default();
-        assert!(client.pump(&mut status).is_empty());
+    fn spawn_and_despawn_apply_to_client_entities() {
+        use eme_ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(NetworkConfig {
+            role: NetworkRole::Client {
+                addr: "127.0.0.1:1".into(),
+            },
+        });
+        world.insert_resource(NetworkClient::default());
+        world
+            .resource_mut::<NetworkClient>()
+            .inbox
+            .push(Message::Spawn(vec![spawn_state(7)]));
+        world.run_system_once(apply_inbox).unwrap();
+
+        let mut query = world.query::<(Entity, &ReplicatedObject)>();
+        let ids: Vec<u64> = query.iter(&world).map(|(_, object)| object.0).collect();
+        assert_eq!(ids, [7]);
+        assert!(world
+            .query::<&ReplicatedSpawn>()
+            .iter(&world)
+            .next()
+            .is_some());
+
+        world
+            .resource_mut::<NetworkClient>()
+            .inbox
+            .push(Message::Despawn(vec![7]));
+        world.run_system_once(apply_inbox).unwrap();
+        assert_eq!(world.query::<&ReplicatedObject>().iter(&world).count(), 0);
     }
 
     #[test]

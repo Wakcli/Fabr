@@ -11,6 +11,8 @@ rust-version = "1.96.0"
 
 [dependencies]
 eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
+eme_audio = { path = "../eme_audio", version = "0.20.0-dev" }
 eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
 eme_game_runtime = { path = "../eme_game_runtime", version = "0.20.0-dev" }
 eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }

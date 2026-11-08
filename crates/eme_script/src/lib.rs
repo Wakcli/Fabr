@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use eme_app::{App, Plugin, Update};
+use eme_asset::{AssetServer, Handle};
+use eme_audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use eme_ecs::prelude::*;
 use eme_game_scene::{ScriptRef, ScriptValue};
 use eme_input::prelude::*;
@@ -153,6 +155,22 @@ pub fn key_binding(name: &str) -> Option<KeyCode> {
     }
 }
 
+/// One clip a script asked to play, relative to [`ScriptRoot`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioRequest {
+    /// Asset path relative to the asset root.
+    pub path: String,
+    /// Linear volume from 0 to 4.
+    pub volume: f32,
+}
+
+/// Script audio requests waiting for an [`AssetServer`] to turn into players.
+#[derive(Resource, Default, Debug)]
+pub struct ScriptAudio {
+    /// Requests queued by the last script update.
+    pub requests: Vec<AudioRequest>,
+}
+
 /// Paths (relative to [`ScriptRoot`]) the editor wants reloaded.
 #[derive(Resource, Default, Debug)]
 pub struct ScriptReload {
@@ -188,6 +206,7 @@ struct ApiState {
     actions: HashMap<String, bool>,
     actions_down: HashMap<String, bool>,
     mouse: HashSet<u8>,
+    audio: Vec<AudioRequest>,
     delta: f32,
     elapsed: f32,
     properties: BTreeMap<String, ScriptValue>,
@@ -206,6 +225,7 @@ impl Default for ApiState {
             actions: HashMap::new(),
             actions_down: HashMap::new(),
             mouse: HashSet::new(),
+            audio: Vec::new(),
             delta: 0.0,
             elapsed: 0.0,
             properties: BTreeMap::new(),
@@ -335,6 +355,25 @@ impl ScriptRuntime {
         let api_down = api.clone();
         let api_mouse = api.clone();
         let input = lua.create_table()?;
+        let api_play = api.clone();
+        let audio = lua.create_table()?;
+        audio.set(
+            "play",
+            lua.create_function(move |_, (path, volume): (String, Option<f32>)| {
+                let volume = volume.unwrap_or(1.0);
+                let volume = if volume.is_finite() {
+                    volume.clamp(0.0, 4.0)
+                } else {
+                    1.0
+                };
+                api_play
+                    .lock()
+                    .unwrap()
+                    .audio
+                    .push(AudioRequest { path, volume });
+                Ok(())
+            })?,
+        )?;
         input.set("key", lua.create_function(move |_, name: String| {
             Ok(api_key.lock().unwrap().keys.contains(&normalize_key(&name)))
         })?)?;
@@ -359,6 +398,7 @@ impl ScriptRuntime {
                 .unwrap_or(false))
         })?)?;
         fabr.set("input", input)?;
+        fabr.set("audio", audio)?;
 
         let api_find = api.clone();
         let find_names = names.clone();
@@ -695,6 +735,8 @@ pub fn update_scripts(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     actions: Res<InputActions>,
+    root: Res<ScriptRoot>,
+    mut audio: ResMut<ScriptAudio>,
     mut runtime: ResMut<ScriptRuntime>,
     mut log: ResMut<ScriptLog>,
     mut transforms: Query<(Entity, &mut Transform)>,
@@ -797,12 +839,42 @@ pub fn update_scripts(
         for line in api.log.drain(..) {
             log.push(line);
         }
+        for request in api.audio.drain(..) {
+            if root.0.join(&request.path).is_file() {
+                log.push(format!(
+                    "script audio: play {} @ {:.2}",
+                    request.path, request.volume
+                ));
+                audio.requests.push(request);
+            } else {
+                log.push(format!("script audio: missing asset {}", request.path));
+            }
+        }
         for (target, translation, rotation) in &api.ops {
             if let Ok((_, mut transform)) = transforms.get_mut(*target) {
                 transform.translation = *translation;
                 transform.rotation = *rotation;
             }
         }
+    }
+}
+
+/// Spawns an [`AudioPlayer`] that despawns when the clip ends.
+fn spawn_audio(commands: &mut Commands, source: Handle<AudioSource>, volume: f32) {
+    commands.spawn((
+        AudioPlayer::new(source),
+        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)),
+    ));
+}
+
+/// Turns queued script requests into [`AudioPlayer`] entities.
+pub fn play_script_audio(
+    mut commands: Commands,
+    mut audio: ResMut<ScriptAudio>,
+    assets: Res<AssetServer>,
+) {
+    for request in audio.requests.drain(..) {
+        spawn_audio(&mut commands, assets.load(request.path), request.volume);
     }
 }
 
@@ -816,12 +888,14 @@ impl Plugin for ScriptPlugin {
             .init_resource::<ScriptLog>()
             .init_resource::<ScriptReload>()
             .init_resource::<InputActions>()
+            .init_resource::<ScriptAudio>()
             .init_resource::<ScriptRuntime>()
             .add_systems(Update, sync_scripts)
             .add_systems(
                 Update,
                 update_scripts.after(eme_game_runtime::run_behaviours),
-            );
+            )
+            .add_systems(Update, play_script_audio.after(update_scripts));
     }
 }
 
@@ -844,6 +918,7 @@ mod tests {
         world.insert_resource(ScriptLog::default());
         world.insert_resource(ScriptReload::default());
         world.insert_resource(InputActions::default());
+        world.insert_resource(ScriptAudio::default());
         world.insert_resource(ScriptRuntime::default());
         world.insert_resource(Time::<()>::default());
         world.insert_resource(ButtonInput::<KeyCode>::default());
@@ -1020,6 +1095,92 @@ mod tests {
             .advance_by(core::time::Duration::from_secs_f32(0.5));
         world.run_system_once(update_scripts).unwrap();
         assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 2.0);
+    }
+
+    #[test]
+    fn a_script_queues_audio_and_reports_missing_assets() {
+        let dir = scratch("audio");
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        std::fs::write(dir.join("audio/beep.wav"), b"RIFF").unwrap();
+        std::fs::write(
+            dir.join("sound.lua"),
+            r#"
+return {
+    properties = { volume = 0.5 },
+    on_start = function(self)
+        fabr.audio.play("audio/beep.wav", self.properties.volume)
+        fabr.audio.play("audio/missing.wav")
+    end,
+}
+"#,
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        scripted(&mut world, "sound.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+
+        let audio = world.resource::<ScriptAudio>();
+        assert_eq!(audio.requests.len(), 1);
+        assert_eq!(audio.requests[0].path, "audio/beep.wav");
+        assert!((audio.requests[0].volume - 0.5).abs() < 1e-6);
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("play audio/beep.wav @ 0.50"), "{log}");
+        assert!(log.contains("missing asset audio/missing.wav"), "{log}");
+    }
+
+    #[test]
+    fn audio_defaults_to_full_volume_and_clamps() {
+        let dir = scratch("audio-volume");
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        std::fs::write(dir.join("audio/beep.wav"), b"RIFF").unwrap();
+        std::fs::write(
+            dir.join("loud.lua"),
+            "return { on_start = function() fabr.audio.play('audio/beep.wav'); fabr.audio.play('audio/beep.wav', 99) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        scripted(&mut world, "loud.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let audio = world.resource::<ScriptAudio>();
+        assert_eq!(audio.requests.len(), 2);
+        assert!((audio.requests[0].volume - 1.0).abs() < 1e-6);
+        assert!((audio.requests[1].volume - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn audio_requests_spawn_a_despawning_player_at_the_requested_volume() {
+        #[derive(Resource)]
+        struct Cue {
+            handle: Handle<AudioSource>,
+            volume: f32,
+        }
+
+        fn spawn(mut commands: Commands, cue: Res<Cue>) {
+            spawn_audio(&mut commands, cue.handle.clone(), cue.volume);
+        }
+
+        fn check(players: Query<(&AudioPlayer<AudioSource>, &PlaybackSettings)>) {
+            let (player, settings) = players.single().unwrap();
+            assert!(matches!(player.0, Handle::Uuid(..)));
+            assert!(matches!(
+                settings.mode,
+                eme_audio::PlaybackMode::Despawn
+            ));
+            match settings.volume {
+                Volume::Linear(volume) => assert!((volume - 0.25).abs() < 1e-6),
+                _ => panic!("expected linear volume"),
+            }
+        }
+
+        let mut app = App::new();
+        app.insert_resource(Cue {
+            handle: Handle::default(),
+            volume: 0.25,
+        })
+        .add_systems(Update, (spawn, check).chain());
+        app.update();
     }
 
     #[test]

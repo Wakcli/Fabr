@@ -18,7 +18,9 @@ use eme_asset::{AssetServer, Handle};
 use eme_audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use eme_ecs::prelude::*;
 use eme_anim::AnimationSet;
-use eme_game_runtime::{KinematicController, NavAgent, NavGrid, PhysicsBody};
+use eme_game_runtime::{
+    DistanceJoint, KinematicController, NavAgent, NavGrid, PhysicsBody,
+};
 use eme_game_scene::{ScriptRef, ScriptValue};
 use eme_input::prelude::*;
 use eme_math::prelude::*;
@@ -414,6 +416,7 @@ struct ApiState {
     velocity_ops: Vec<(Entity, Vec3)>,
     angular_ops: Vec<(Entity, Vec3)>,
     spin_ops: Vec<(Entity, Vec3)>,
+    joint_ops: Vec<(Entity, Entity, f32, f32, f32)>,
     anim_clips: HashMap<Entity, Vec<String>>,
     anim_selected: HashMap<Entity, Option<String>>,
     anim_playing: HashSet<Entity>,
@@ -449,6 +452,7 @@ impl Default for ApiState {
             velocity_ops: Vec::new(),
             angular_ops: Vec::new(),
             spin_ops: Vec::new(),
+            joint_ops: Vec::new(),
             anim_clips: HashMap::new(),
             anim_selected: HashMap::new(),
             anim_playing: HashSet::new(),
@@ -907,6 +911,25 @@ impl ScriptRuntime {
             })?,
         )?;
         fabr.set("scene", scene)?;
+        let api_joint = api.clone();
+        let joint = lua.create_table()?;
+        joint.set(
+            "create",
+            lua.create_function(
+                move |_, (a, b, rest, stiffness, damping): (String, String, f32, f32, f32)| {
+                    let mut state = api_joint.lock().unwrap();
+                    let (Some(first), Some(second)) = (
+                        state.names.get(&a).copied(),
+                        state.names.get(&b).copied(),
+                    ) else {
+                        return Ok(false);
+                    };
+                    state.joint_ops.push((first, second, rest, stiffness, damping));
+                    Ok(true)
+                },
+            )?,
+        )?;
+        fabr.set("joint", joint)?;
 
         let api_find = api.clone();
         let find_names = names.clone();
@@ -1370,6 +1393,7 @@ pub fn update_scripts(
             api.velocity_ops.clear();
             api.angular_ops.clear();
             api.spin_ops.clear();
+            api.joint_ops.clear();
             api.animation_ops.clear();
             api.nav = Some(nav.clone());
             api.nav_ops.clear();
@@ -1418,6 +1442,15 @@ pub fn update_scripts(
             if let Ok((_, mut body)) = bodies.get_mut(target) {
                 body.apply_angular_impulse(impulse, 1.0);
             }
+        }
+        for (a, b, rest, stiffness, damping) in api.joint_ops.drain(..) {
+            commands.entity(a).insert(DistanceJoint {
+                a,
+                b,
+                rest: rest.max(0.05),
+                stiffness: stiffness.clamp(0.0, 200.0),
+                damping: damping.clamp(0.0, 50.0),
+            });
         }
         for (entity, op) in api.animation_ops.drain(..) {
             if let Ok((_, mut set)) = animations.get_mut(entity) {
@@ -2197,6 +2230,35 @@ return {
         let body = world.get::<PhysicsBody>(entity).unwrap();
         // 2 rad/s from the setter plus 3 / (1/6) rad/s from the impulse
         assert!((body.angular_velocity.y - 20.0).abs() < 1e-3, "{:?}", body.angular_velocity);
+    }
+
+    #[test]
+    fn a_script_creates_a_distance_joint_between_names() {
+        let dir = scratch("joint-api");
+        std::fs::write(
+            dir.join("joint.lua"),
+            "return { on_update = function(self) fabr.log(tostring(fabr.joint.create('Left', 'Right', 2, 8, 1))) fabr.log(tostring(fabr.joint.create('Left', 'Missing', 2, 8, 1))) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let left = world.spawn((Name::new("Left"), Transform::default())).id();
+        let right = world.spawn((Name::new("Right"), Transform::default())).id();
+        world.entity_mut(left).insert(PhysicsBody {
+            dynamic: true,
+            half_extents: Vec3::splat(0.5),
+            velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
+            grounded: false,
+        });
+        scripted(&mut world, "joint.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let joint = world.get::<DistanceJoint>(left).expect("joint inserted");
+        assert_eq!((joint.a, joint.b), (left, right));
+        assert!((joint.rest - 2.0).abs() < 1e-6);
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("true"), "{log}");
+        assert!(log.contains("false"), "{log}");
     }
 
     #[test]

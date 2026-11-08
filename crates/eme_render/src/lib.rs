@@ -417,7 +417,6 @@ impl Plugin for RenderPlugin {
             OcclusionCullingPlugin,
             SparseBufferPlugin,
             MaterialBindGroupPlugin,
-            #[cfg(feature = "tracing-tracy")]
             diagnostic::RenderDiagnosticsPlugin,
         ));
 

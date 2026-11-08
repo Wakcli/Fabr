@@ -57,8 +57,8 @@ impl CommandHistory {
 }
 
 /// Command names offered by Tab completion.
-const COMMANDS: [&str; 8] = [
-    "help", "clear", "save", "reload", "delete", "spawn", "scene", "select",
+const COMMANDS: [&str; 9] = [
+    "help", "clear", "save", "reload", "delete", "spawn", "scene", "select", "pkg",
 ];
 
 /// Object kinds offered after `spawn`.
@@ -143,6 +143,15 @@ pub enum Command {
     Scene(String),
     /// Select an object by id.
     Select(u64),
+    /// Install a package from a registry folder.
+    PackageInstall {
+        /// Registry folder, absolute or relative to the project.
+        registry: String,
+        /// Package name in the registry index.
+        name: String,
+        /// Semver requirement, for example `^1.2.0`.
+        requirement: String,
+    },
 }
 
 /// Parses one console line.
@@ -172,6 +181,41 @@ pub fn parse(line: &str) -> Result<Command, String> {
             .parse()
             .map(Command::Select)
             .map_err(|_| "select needs a numeric object id".to_string()),
+        "pkg" | "package" => {
+            let mut parts = rest.split_whitespace();
+            match parts.next() {
+                Some("install") => {
+                    let Some(registry) = parts.next() else {
+                        return Err(
+                            "pkg install needs a registry folder, for example pkg install ../registry art"
+                                .into(),
+                        );
+                    };
+                    let Some(spec) = parts.next() else {
+                        return Err("pkg install needs a package name".into());
+                    };
+                    if parts.next().is_some() {
+                        return Err("pkg install takes a registry and one package".into());
+                    }
+                    let (name, requirement) = match spec.split_once('@') {
+                        Some((name, requirement)) if !requirement.is_empty() => {
+                            (name.to_owned(), requirement.to_owned())
+                        }
+                        Some(_) => return Err("pkg install: empty version requirement".into()),
+                        None => (spec.to_owned(), "*".to_owned()),
+                    };
+                    Ok(Command::PackageInstall {
+                        registry: registry.to_owned(),
+                        name,
+                        requirement,
+                    })
+                }
+                Some(other) => Err(format!(
+                    "unknown package command {other:?}; try pkg install <registry> <name>[@<version>]"
+                )),
+                None => Err("pkg needs a subcommand: install <registry> <name>[@<version>]".into()),
+            }
+        }
         "spawn" => {
             let kind = match rest.to_ascii_lowercase().as_str() {
                 "cube" => ObjectKind::Cube,
@@ -203,7 +247,7 @@ pub fn execute(
     match command {
         Command::Help => {
             for line in [
-                "commands: help clear save reload delete spawn <kind> scene <path> select <id>",
+                "commands: help clear save reload delete spawn <kind> scene <path> select <id> pkg install <registry> <name>[@<version>]",
                 "kinds: cube sphere cylinder plane empty sun pointlight camera",
             ] {
                 log.push(line);
@@ -254,7 +298,46 @@ pub fn execute(
                 log.push(format!("select: no object with id {id}"));
             }
         }
+        Command::PackageInstall {
+            registry,
+            name,
+            requirement,
+        } => match install_package(
+            &crate::build::workspace_dir(),
+            &registry,
+            &name,
+            &requirement,
+        ) {
+            Ok(line) => log.push(line),
+            Err(err) => log.push(format!("pkg: {err}")),
+        },
     }
+}
+
+/// Installs a package from a registry into `root` and updates its package list.
+fn install_package(
+    root: &std::path::Path,
+    registry: &str,
+    name: &str,
+    requirement: &str,
+) -> Result<String, String> {
+    let file = root.join(eme_editor_project::PACKAGES_FILE);
+    let mut set = eme_editor_project::PackageSet::load(&file)?;
+    let registry_path = std::path::PathBuf::from(registry);
+    let registry_path = if registry_path.is_absolute() {
+        registry_path
+    } else {
+        root.join(registry_path)
+    };
+    let manifest = set.install_from_registry(root, &registry_path, name, requirement)?;
+    set.save(&file)?;
+    Ok(format!(
+        "installed {} {} into packages/{} from {}",
+        manifest.name,
+        manifest.version,
+        manifest.name,
+        registry_path.display()
+    ))
 }
 
 /// Focuses the command field when its row is clicked.
@@ -358,12 +441,64 @@ mod tests {
         assert_eq!(parse("spawn pointlight").unwrap(), Command::Spawn(ObjectKind::PointLight));
         assert_eq!(parse("scene scenes/level2.ember").unwrap(), Command::Scene("scenes/level2.ember".into()));
         assert_eq!(parse("select 12").unwrap(), Command::Select(12));
+        assert_eq!(
+            parse("pkg install ../registry art@^1.2.0").unwrap(),
+            Command::PackageInstall {
+                registry: "../registry".into(),
+                name: "art".into(),
+                requirement: "^1.2.0".into(),
+            }
+        );
+        assert_eq!(
+            parse("pkg install ../registry art").unwrap(),
+            Command::PackageInstall {
+                registry: "../registry".into(),
+                name: "art".into(),
+                requirement: "*".into(),
+            }
+        );
+        assert!(parse("pkg").is_err());
+        assert!(parse("pkg install ../registry").is_err());
+        assert!(parse("pkg install ../registry art@").is_err());
+        assert!(parse("pkg remove art").is_err());
         assert!(parse("spawn").is_err());
         assert!(parse("spawn dragon").is_err());
         assert!(parse("scene").is_err());
         assert!(parse("select abc").is_err());
         assert!(parse("teleport").is_err());
         assert!(parse("").is_err());
+    }
+
+    #[test]
+    fn a_registry_install_updates_the_project() {
+        let root = std::env::temp_dir().join(format!("fabr-console-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let registry = root.join("registry/packages/art-1.0.0");
+        std::fs::create_dir_all(registry.join("assets")).unwrap();
+        std::fs::write(
+            registry.join("fabr.package.ron"),
+            r#"(name: "art", version: "1.0.0", assets: "assets")"#,
+        )
+        .unwrap();
+        std::fs::write(registry.join("assets/art.txt"), b"art").unwrap();
+        std::fs::write(
+            root.join("registry/fabr.registry.ron"),
+            r#"(packages: [(name: "art", versions: [(version: "1.0.0", path: "packages/art-1.0.0")])])"#,
+        )
+        .unwrap();
+
+        let line = install_package(&root, "registry", "art", "^1.0.0").unwrap();
+        assert!(line.contains("installed art 1.0.0"), "{line}");
+        assert_eq!(
+            std::fs::read(root.join("packages/art/assets/art.txt")).unwrap(),
+            b"art"
+        );
+        let set = eme_editor_project::PackageSet::load(
+            &root.join(eme_editor_project::PACKAGES_FILE),
+        )
+        .unwrap();
+        assert_eq!(set.packages.len(), 1);
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

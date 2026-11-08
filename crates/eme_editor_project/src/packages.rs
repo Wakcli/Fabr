@@ -12,6 +12,8 @@ pub const PACKAGES_FILE: &str = "fabr.packages.ron";
 pub const LOCK_FILE: &str = "fabr.lock";
 /// Manifest file inside a package folder.
 pub const PACKAGE_MANIFEST_FILE: &str = "fabr.package.ron";
+/// Index file of a package registry folder.
+pub const REGISTRY_FILE: &str = "fabr.registry.ron";
 
 /// One package reference, relative to the project root.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -83,6 +85,41 @@ impl Version {
         }
         Version::parse(requirement).is_some_and(|exact| self == &exact)
     }
+}
+
+/// A registry folder's package index, read from [`REGISTRY_FILE`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct RegistryIndex {
+    /// Packages the registry publishes.
+    pub packages: Vec<RegistryPackage>,
+}
+
+impl RegistryIndex {
+    /// Reads a registry index.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let text =
+            std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+        ron::from_str(&text).map_err(|err| format!("{}: {err}", path.display()))
+    }
+}
+
+/// One package published by a registry.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RegistryPackage {
+    /// Package name, matching its `fabr.package.ron`.
+    pub name: String,
+    /// Published versions, in any order.
+    pub versions: Vec<RegistryVersion>,
+}
+
+/// One published version and the folder holding it inside the registry.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RegistryVersion {
+    /// Semantic version, `major.minor.patch`.
+    pub version: String,
+    /// Folder inside the registry, for example `packages/art-1.1.0`.
+    pub path: String,
 }
 
 /// One entry of `fabr.lock`, resolved from the installed packages.
@@ -295,6 +332,109 @@ impl PackageSet {
         self.packages.remove(index);
         true
     }
+
+    /// Installs a package from a registry folder into `packages/<name>`.
+    ///
+    /// The highest published version matching `requirement` is vendored into
+    /// the project and added to `fabr.packages.ron`, so builds and exports do
+    /// not need the registry afterwards.
+    pub fn install_from_registry(
+        &mut self,
+        root: &Path,
+        registry: &Path,
+        name: &str,
+        requirement: &str,
+    ) -> Result<PackageManifest, String> {
+        let index = RegistryIndex::load(&registry.join(REGISTRY_FILE))?;
+        let package = index
+            .packages
+            .iter()
+            .find(|package| package.name == name)
+            .ok_or_else(|| format!("{} has no package {name}", registry.display()))?;
+        let (version, published) = package
+            .versions
+            .iter()
+            .filter_map(|published| {
+                Version::parse(&published.version).map(|version| (version, published))
+            })
+            .filter(|(version, _)| version.matches(requirement))
+            .max_by_key(|(version, _)| *version)
+            .ok_or_else(|| {
+                format!("{name} has no version matching {requirement:?} in {}", registry.display())
+            })?;
+        if published.path.split('/').any(|part| part == "..") || published.path.starts_with('/') {
+            return Err(format!("{name} {} has an unsafe folder", published.version));
+        }
+        let source = registry.join(&published.path);
+        let manifest_path = source.join(PACKAGE_MANIFEST_FILE);
+        let text = std::fs::read_to_string(&manifest_path)
+            .map_err(|err| format!("{}: {err}", manifest_path.display()))?;
+        let manifest: PackageManifest = ron::from_str(&text)
+            .map_err(|err| format!("{}: {err}", manifest_path.display()))?;
+        manifest.validate()?;
+        if manifest.name != name {
+            return Err(format!(
+                "{} publishes {name} but its manifest names {}",
+                source.display(),
+                manifest.name
+            ));
+        }
+        if Version::parse(&manifest.version) != Some(version) {
+            return Err(format!(
+                "{name} {} has manifest version {}",
+                published.version, manifest.version
+            ));
+        }
+
+        let dir = format!("packages/{name}");
+        let destination = root.join(&dir);
+        if destination.exists() {
+            let existing = Self::manifest(
+                root,
+                &PackageEntry {
+                    path: dir.clone(),
+                },
+            )
+            .ok();
+            if existing.as_ref().is_some_and(|installed| {
+                installed.name == manifest.name && installed.version == manifest.version
+            }) {
+                self.remember(dir);
+                return Ok(manifest);
+            }
+            std::fs::remove_dir_all(&destination)
+                .map_err(|err| format!("{}: {err}", destination.display()))?;
+        }
+        copy_registry_dir(&source, &destination)?;
+        self.remember(dir);
+        Ok(manifest)
+    }
+
+    fn remember(&mut self, dir: String) {
+        if !self.packages.iter().any(|entry| entry.path == dir) {
+            self.packages.push(PackageEntry { path: dir });
+        }
+    }
+}
+
+fn copy_registry_dir(source: &Path, destination: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(destination)
+        .map_err(|err| format!("{}: {err}", destination.display()))?;
+    let entries =
+        std::fs::read_dir(source).map_err(|err| format!("{}: {err}", source.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let target = destination.join(entry.file_name());
+        let metadata = entry
+            .metadata()
+            .map_err(|err| format!("{}: {err}", path.display()))?;
+        if metadata.is_dir() {
+            copy_registry_dir(&path, &target)?;
+        } else if metadata.is_file() {
+            std::fs::copy(&path, &target).map_err(|err| format!("{}: {err}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn visit(
@@ -406,6 +546,62 @@ mod tests {
         }
         .validate()
         .is_ok());
+    }
+
+    #[test]
+    fn a_registry_package_is_vendored_at_the_matching_version() {
+        let root = scratch("registry-project");
+        let registry = scratch("registry-index");
+        package(
+            &registry,
+            "packages/art-1.0.0",
+            r#"(name: "art", version: "1.0.0", assets: "assets")"#,
+        );
+        package(
+            &registry,
+            "packages/art-1.2.0",
+            r#"(name: "art", version: "1.2.0", assets: "assets")"#,
+        );
+        std::fs::write(
+            registry.join("packages/art-1.2.0/assets/tex.txt"),
+            b"art",
+        )
+        .unwrap();
+        std::fs::write(
+            registry.join(REGISTRY_FILE),
+            r#"(
+                packages: [
+                    (name: "art", versions: [
+                        (version: "1.0.0", path: "packages/art-1.0.0"),
+                        (version: "1.2.0", path: "packages/art-1.2.0"),
+                    ]),
+                ],
+            )"#,
+        )
+        .unwrap();
+
+        let mut set = PackageSet::default();
+        let manifest = set
+            .install_from_registry(&root, &registry, "art", "^1.0.0")
+            .unwrap();
+        assert_eq!(manifest.version, "1.2.0");
+        assert_eq!(set.packages[0].path, "packages/art");
+        assert_eq!(
+            std::fs::read(root.join("packages/art/assets/tex.txt")).unwrap(),
+            b"art"
+        );
+        let resolved = set.resolve(&root).unwrap();
+        assert_eq!(resolved.names(), ["art"]);
+
+        set.install_from_registry(&root, &registry, "art", "1.2.0")
+            .unwrap();
+        assert_eq!(set.packages.len(), 1);
+        assert!(
+            set.install_from_registry(&root, &registry, "art", "^2.0.0")
+                .is_err()
+        );
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&registry).ok();
     }
 
     #[test]

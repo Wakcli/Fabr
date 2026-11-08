@@ -213,6 +213,10 @@ pub fn spawn_scene(
             script,
         });
         let physics = obj.physics.as_ref().map(PhysicsBody::from_spec);
+        let light = obj.light.unwrap_or_default();
+        let light_strength = light.intensity.clamp(0.0, 8.0);
+        let light_color =
+            Color::linear_rgb(light.color[0], light.color[1], light.color[2]);
         match body(obj.kind) {
             Body::Empty => {
                 let mut spawned = commands.spawn((trs, behaviour, name, ReplicatedObject(obj.id)));
@@ -276,8 +280,9 @@ pub fn spawn_scene(
             Body::PointLight => {
                 let mut spawned = commands.spawn((
                     PointLight {
-                        intensity: POINT_INTENSITY,
+                        intensity: POINT_INTENSITY * light_strength,
                         range: POINT_RANGE,
+                        color: light_color,
                         ..default()
                     },
                     trs,
@@ -295,7 +300,8 @@ pub fn spawn_scene(
             Body::Sun => {
                 let mut spawned = commands.spawn((
                     DirectionalLight {
-                        illuminance: SUN_ILLUMINANCE,
+                        illuminance: SUN_ILLUMINANCE * light_strength,
+                        color: light_color,
                         shadow_maps_enabled: sun_shadows(shadow_quality.0, has_sun),
                         ..default()
                     },

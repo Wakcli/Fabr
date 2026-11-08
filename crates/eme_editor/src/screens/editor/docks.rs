@@ -1241,6 +1241,8 @@ pub struct EditorStats {
     pub phases: [f32; 4],
     /// Smoothed duration of each profiled phase, in milliseconds.
     pub phase_avg: [f32; 4],
+    /// Slowest GPU render passes with their elapsed milliseconds.
+    pub gpu: Vec<(String, f64)>,
     /// Bumped after each sample.
     pub rev: u64,
 }
@@ -1280,6 +1282,57 @@ impl EditorStats {
 #[derive(Component, Clone, Copy, Default)]
 pub struct StatsRows;
 
+/// Slowest GPU passes from render diagnostics, sorted by time.
+pub fn top_gpu<'a>(entries: impl Iterator<Item = (&'a str, f64)>, limit: usize) -> Vec<(String, f64)> {
+    let mut list: Vec<(String, f64)> = entries
+        .filter(|(path, _)| path.ends_with("elapsed_gpu"))
+        .map(|(path, value)| {
+            (
+                path.trim_end_matches("elapsed_gpu")
+                    .trim_end_matches('/')
+                    .trim_start_matches("render/")
+                    .to_owned(),
+                value,
+            )
+        })
+        .collect();
+    list.sort_by(|a, b| b.1.total_cmp(&a.1));
+    list.dedup_by(|a, b| a.0 == b.0);
+    list.truncate(limit);
+    list
+}
+
+/// Samples GPU pass timings recorded by the render diagnostics.
+pub fn sample_gpu(
+    store: Option<Res<eme::diagnostic::DiagnosticsStore>>,
+    time: Res<Time>,
+    mut stats: ResMut<EditorStats>,
+    mut elapsed: Local<f32>,
+) {
+    let Some(store) = store else {
+        return;
+    };
+    *elapsed += time.delta_secs();
+    if *elapsed < 0.5 {
+        return;
+    }
+    *elapsed = 0.0;
+    let gpu = top_gpu(
+        store
+            .iter()
+            .filter_map(|diagnostic| {
+                diagnostic
+                    .value()
+                    .map(|value| (diagnostic.path().as_str(), value))
+            }),
+        6,
+    );
+    if gpu != stats.gpu {
+        stats.gpu = gpu;
+        stats.rev = stats.rev.wrapping_add(1);
+    }
+}
+
 /// Samples frame time and entity count without rebuilding every frame.
 pub fn update_stats(
     time: Res<Time>,
@@ -1310,7 +1363,9 @@ pub fn stats() -> Part {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Stretch,
             row_gap: px(2),
+            overflow: Overflow::scroll_y(),
         }
+        ScrollArea
         ThemeBackgroundColor(tokens::PANEL)
         Children [
             Node {
@@ -1350,6 +1405,9 @@ pub fn sync_stats(
             phase.label().to_string(),
             format!("{:.2} ms", stats.phase_avg[phase.index()]),
         ));
+    }
+    for (pass, ms) in &stats.gpu {
+        rows.push((format!("GPU {pass}"), format!("{ms:.2} ms")));
     }
     for (label, value) in rows {
         let label = text(label, FONT_SIZE, tokens::TEXT_DIM);
@@ -1572,6 +1630,21 @@ fn select_outline_row(
 mod tests {
     use super::*;
     use eme_game_scene::ObjectTransform;
+
+    #[test]
+    fn gpu_passes_are_named_sorted_and_limited() {
+        let entries = [
+            ("render/shadows/elapsed_gpu", 2.0),
+            ("render/main_opaque/elapsed_gpu", 5.0),
+            ("render/main_opaque/elapsed_cpu", 1.0),
+            ("render/tonemapping/elapsed_gpu", 0.5),
+        ];
+        let top = top_gpu(entries.into_iter(), 2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].0, "main_opaque");
+        assert_eq!(top[0].1, 5.0);
+        assert_eq!(top[1].0, "shadows");
+    }
 
     #[test]
     fn phase_samples_track_a_smoothed_average() {

@@ -364,6 +364,7 @@ impl Plugin for EditorPlugin {
                 Update,
                 (
                     docks::update_stats,
+                    docks::sample_gpu,
                     docks::sync_stats,
                     docks::sync_outline,
                     docks::sync_scene_filter,

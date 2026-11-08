@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use eme::asset::AssetPlugin;
 use eme::feathers::{dark_theme::create_dark_theme, theme::UiTheme, FeathersPlugins};
 use eme::prelude::*;
+use eme::render::settings::{RenderCreation, WgpuFeatures, WgpuSettings};
+use eme::render::RenderPlugin;
 use eme::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
 use eme::window::WindowResolution;
 use eme_editor_core::{HubState, Layout, Project, ProjectId, Theme, EDITOR_VERSION};
@@ -88,6 +90,14 @@ fn main() {
     }
     app.add_plugins((
         DefaultPlugins
+            .set(RenderPlugin {
+                render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                    features: WgpuFeatures::TIMESTAMP_QUERY
+                        | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+                    ..default()
+                })),
+                ..default()
+            })
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: TITLE.into(),

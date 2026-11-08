@@ -1243,6 +1243,14 @@ pub struct EditorStats {
     pub phase_avg: [f32; 4],
     /// Slowest GPU render passes with their elapsed milliseconds.
     pub gpu: Vec<(String, f64)>,
+    /// Resident set size of the editor process, in megabytes.
+    pub rss_mb: f32,
+    /// Loaded meshes.
+    pub meshes: usize,
+    /// Loaded materials.
+    pub materials: usize,
+    /// Loaded images.
+    pub images: usize,
     /// Bumped after each sample.
     pub rev: u64,
 }
@@ -1409,6 +1417,10 @@ pub fn sync_stats(
     for (pass, ms) in &stats.gpu {
         rows.push((format!("GPU {pass}"), format!("{ms:.2} ms")));
     }
+    rows.push(("Process RAM".to_string(), format!("{:.0} MB", stats.rss_mb)));
+    rows.push(("Meshes".to_string(), format!("{}", stats.meshes)));
+    rows.push(("Materials".to_string(), format!("{}", stats.materials)));
+    rows.push(("Images".to_string(), format!("{}", stats.images)));
     for (label, value) in rows {
         let label = text(label, FONT_SIZE, tokens::TEXT_DIM);
         let value = text(value, FONT_SIZE, tokens::TEXT);
@@ -1630,6 +1642,24 @@ fn select_outline_row(
 mod tests {
     use super::*;
     use eme_game_scene::ObjectTransform;
+
+    #[test]
+    fn memory_rows_report_asset_counts() {
+        let stats = EditorStats {
+            rss_mb: 512.0,
+            meshes: 12,
+            materials: 7,
+            images: 3,
+            ..Default::default()
+        };
+        let rows = [
+            format!("{:.0} MB", stats.rss_mb),
+            stats.meshes.to_string(),
+            stats.materials.to_string(),
+            stats.images.to_string(),
+        ];
+        assert_eq!(rows, ["512 MB", "12", "7", "3"]);
+    }
 
     #[test]
     fn gpu_passes_are_named_sorted_and_limited() {

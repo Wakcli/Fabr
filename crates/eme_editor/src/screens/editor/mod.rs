@@ -12,7 +12,7 @@ use crate::tokens;
 mod build_dialog;
 pub(crate) mod chrome;
 mod dock;
-mod docks;
+pub(crate) mod docks;
 pub(crate) mod files;
 mod gizmo;
 pub(crate) mod icons;
@@ -365,6 +365,7 @@ impl Plugin for EditorPlugin {
                 (
                     docks::update_stats,
                     docks::sample_gpu,
+                    crate::memory::sample_memory,
                     docks::sync_stats,
                     docks::sync_outline,
                     docks::sync_scene_filter,

@@ -24,6 +24,7 @@ mod shortcuts;
 mod extensions;
 mod profile;
 mod hud;
+mod memory;
 mod orbit;
 mod persist;
 mod play;

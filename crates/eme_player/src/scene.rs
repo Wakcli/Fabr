@@ -30,6 +30,10 @@ const POINT_RANGE: f32 = 25.0;
 const AMBIENT: f32 = 200.0;
 const ROUGHNESS: f32 = 0.55;
 
+/// Marks an entity spawned from the current scene document.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct SceneRoot;
+
 #[derive(Resource, Debug)]
 pub struct LoadedScene {
     pub doc: SceneDoc,
@@ -188,6 +192,58 @@ pub struct PlayerMsaa(pub u32);
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct PlayerShadows(pub bool);
 
+/// Loads a requested scene, replacing the current document.
+///
+/// Paths resolve against the working directory first, then against the current
+/// scene's folder. A failed load leaves the running scene untouched.
+pub fn handle_scene_request(
+    mut requests: ResMut<fabr::SceneRequests>,
+    mut scene: ResMut<LoadedScene>,
+) {
+    if !requests.pending() {
+        return;
+    }
+    let reload = requests.reload;
+    let requested = requests.load.take();
+    requests.reload = false;
+
+    let target = if reload {
+        scene.path.clone()
+    } else {
+        let Some(requested) = requested else {
+            return;
+        };
+        resolve_scene(&requested, &scene.path)
+    };
+    match read(&target) {
+        Ok(doc) => {
+            info!(
+                "scene: loaded {} objects from {}",
+                doc.len(),
+                target.display()
+            );
+            scene.doc = doc;
+            scene.path = target;
+        }
+        Err(err) => warn!("scene: could not load {}: {err}", target.display()),
+    }
+}
+
+fn resolve_scene(requested: &str, current: &Path) -> PathBuf {
+    let path = PathBuf::from(requested);
+    if path.is_file() {
+        return path;
+    }
+    let beside = current
+        .parent()
+        .map(|dir| dir.join(&path))
+        .unwrap_or_else(|| path.clone());
+    if beside.is_file() {
+        return beside;
+    }
+    path
+}
+
 pub fn spawn_scene(
     mut commands: Commands,
     msaa: Res<PlayerMsaa>,
@@ -196,7 +252,11 @@ pub fn spawn_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
     scene: Res<LoadedScene>,
+    roots: Query<Entity, With<SceneRoot>>,
 ) {
+    for root in &roots {
+        commands.entity(root).despawn();
+    }
     let index = GuidIndex::scan(crate::asset_root());
     let mut view: Option<Transform> = None;
     let mut cache: [Option<Handle<Mesh>>; 4] = [const { None }; 4];
@@ -219,7 +279,13 @@ pub fn spawn_scene(
             Color::linear_rgb(light.color[0], light.color[1], light.color[2]);
         match body(obj.kind) {
             Body::Empty => {
-                let mut spawned = commands.spawn((trs, behaviour, name, ReplicatedObject(obj.id)));
+                let mut spawned = commands.spawn((
+                    trs,
+                    behaviour,
+                    name,
+                    ReplicatedObject(obj.id),
+                    SceneRoot,
+                ));
                 if let Some(script) = script {
                     spawned.insert(script);
                 }
@@ -247,6 +313,7 @@ pub fn spawn_scene(
                             name,
                             Visibility::Inherited,
                             ReplicatedObject(obj.id),
+                            SceneRoot,
                         ));
                         if let Some(script) = script {
                             spawned.insert(script);
@@ -289,6 +356,7 @@ pub fn spawn_scene(
                     behaviour,
                     name,
                     ReplicatedObject(obj.id),
+                    SceneRoot,
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -309,6 +377,7 @@ pub fn spawn_scene(
                     behaviour,
                     name,
                     ReplicatedObject(obj.id),
+                    SceneRoot,
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -340,6 +409,7 @@ pub fn spawn_scene(
                     behaviour,
                     name,
                     ReplicatedObject(obj.id),
+                    SceneRoot,
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -365,7 +435,7 @@ pub fn spawn_scene(
     let view = view.unwrap_or_else(|| {
         Transform::from_translation(DEFAULT_CAM).looking_at(Vec3::ZERO, Vec3::Y)
     });
-    commands.spawn((Camera3d::default(), view, Msaa::from_samples(msaa.0)));
+    commands.spawn((Camera3d::default(), view, Msaa::from_samples(msaa.0), SceneRoot));
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.80, 0.85, 1.0),
         brightness: AMBIENT,
@@ -602,5 +672,82 @@ mod tests {
         let err = load(Some(&path)).unwrap_err();
         std::fs::remove_file(&path).unwrap();
         assert!(err.to_string().contains("could not decode scene"), "{err}");
+    }
+
+    fn scene_with(count: usize) -> SceneDoc {
+        let mut doc = SceneDoc::new();
+        for i in 0..count {
+            doc.add(
+                ObjectKind::Cube,
+                format!("Cube {i}"),
+                ObjectTransform::default(),
+            );
+        }
+        doc
+    }
+
+    fn request_world(load: Option<&Path>, reload: bool, current: &Path) -> World {
+        let mut world = World::new();
+        world.insert_resource(fabr::SceneRequests {
+            load: load.map(|path| path.to_string_lossy().into_owned()),
+            reload,
+        });
+        world.insert_resource(LoadedScene {
+            doc: scene_with(1),
+            path: current.to_path_buf(),
+        });
+        world
+    }
+
+    #[test]
+    fn a_scene_request_replaces_the_document() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let dir = std::env::temp_dir().join(format!("eme_player_req_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let next = dir.join("next.ember");
+        std::fs::write(&next, scene_with(3).to_ron().unwrap()).unwrap();
+        let current = dir.join("current.ember");
+        let mut world = request_world(Some(&next), false, &current);
+        world.run_system_once(handle_scene_request).unwrap();
+        let scene = world.resource::<LoadedScene>();
+        assert_eq!(scene.doc.len(), 3);
+        assert_eq!(scene.path, next);
+        assert!(!world.resource::<fabr::SceneRequests>().pending());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_scene_keeps_the_current_document() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let dir = std::env::temp_dir().join(format!("eme_player_miss_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let current = dir.join("current.ember");
+        let mut world = request_world(Some(Path::new("/does/not/exist.ember")), false, &current);
+        world.run_system_once(handle_scene_request).unwrap();
+        let scene = world.resource::<LoadedScene>();
+        assert_eq!(scene.doc.len(), 1);
+        assert_eq!(scene.path, current);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reload_rereads_the_current_path() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let dir = std::env::temp_dir().join(format!("eme_player_reload_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("level.ember");
+        std::fs::write(&path, scene_with(1).to_ron().unwrap()).unwrap();
+        let mut world = request_world(None, true, &path);
+        world.run_system_once(handle_scene_request).unwrap();
+        assert_eq!(world.resource::<LoadedScene>().doc.len(), 1);
+
+        std::fs::write(&path, scene_with(2).to_ron().unwrap()).unwrap();
+        world.resource_mut::<fabr::SceneRequests>().reload = true;
+        world.run_system_once(handle_scene_request).unwrap();
+        assert_eq!(world.resource::<LoadedScene>().doc.len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

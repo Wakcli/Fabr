@@ -4,6 +4,8 @@
 //! base beside the entity and [`advance`] derives the transform for an absolute
 //! time, so a behaviour never writes back into the document.
 
+extern crate alloc;
+
 use eme_ecs::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -14,7 +16,12 @@ use eme_transform::prelude::Transform;
 
 /// A small gravity and AABB physics step shared by the editor and player.
 pub mod physics;
+/// Grid navigation, A* paths and path-following agents.
+pub mod nav;
 
+pub use nav::{
+    NavAgent, NavGrid, NavGridSettings, NavPlugin, NavSet, refresh_nav_grid, step_nav_agents,
+};
 pub use physics::{step_physics, PhysicsBody, PhysicsSettings};
 
 /// The authored behaviour plus the transform it advances from.
@@ -47,7 +54,10 @@ pub fn advance(spec: &Behaviour, base: &Transform, time: f32) -> Transform {
 /// Writes every behaviour's transform for the current elapsed time.
 pub fn run_behaviours(
     time: Res<Time>,
-    mut objects: Query<(&SceneBehaviour, &mut Transform), Without<PhysicsBody>>,
+    mut objects: Query<
+        (&SceneBehaviour, &mut Transform),
+        (Without<PhysicsBody>, Without<NavAgent>),
+    >,
 ) {
     let now = time.elapsed_secs();
     for (behaviour, mut transform) in &mut objects {

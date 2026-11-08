@@ -5,6 +5,7 @@ use eme::prelude::*;
 use eme::render::view::Msaa;
 use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
+use eme_game_runtime::PhysicsBody;
 use fabr::ScriptedObject;
 use eme_game_scene::{
     Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
@@ -209,11 +210,15 @@ pub fn spawn_scene(
             object_id: obj.id,
             script,
         });
+        let physics = obj.physics.as_ref().map(PhysicsBody::from_spec);
         match body(obj.kind) {
             Body::Empty => {
                 let mut spawned = commands.spawn((trs, behaviour, name));
                 if let Some(script) = script {
                     spawned.insert(script);
+                }
+                if let Some(physics) = physics {
+                    spawned.insert(physics);
                 }
             }
             Body::Camera => {
@@ -233,6 +238,9 @@ pub fn spawn_scene(
                         let mut spawned = commands.spawn((trs, behaviour, name, Visibility::Inherited));
                         if let Some(script) = script {
                             spawned.insert(script);
+                        }
+                        if let Some(physics) = physics {
+                            spawned.insert(physics);
                         }
                         spawned
                             .with_children(|parent| {
@@ -266,6 +274,9 @@ pub fn spawn_scene(
                 if let Some(script) = script {
                     spawned.insert(script);
                 }
+                if let Some(physics) = physics {
+                    spawned.insert(physics);
+                }
             }
             Body::Sun => {
                 let mut spawned = commands.spawn((
@@ -280,6 +291,9 @@ pub fn spawn_scene(
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
+                }
+                if let Some(physics) = physics {
+                    spawned.insert(physics);
                 }
                 has_sun = true;
             }
@@ -307,6 +321,9 @@ pub fn spawn_scene(
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
+                }
+                if let Some(physics) = physics {
+                    spawned.insert(physics);
                 }
             }
         }

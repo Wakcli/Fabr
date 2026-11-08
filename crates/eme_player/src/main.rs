@@ -102,6 +102,11 @@ fn main() {
         .insert_resource(actions)
         .insert_resource(scene::PlayerMsaa(settings.graphics.msaa))
         .insert_resource(scene::PlayerShadows(settings.quality.shadows))
+        .insert_resource(eme_game_runtime::PhysicsSettings {
+            gravity: settings.physics.gravity,
+            bounce: settings.physics.bounce,
+            enabled: settings.physics.enabled,
+        })
         .insert_resource(GlobalVolume::new(eme::audio::Volume::Linear(
             settings.audio.master_volume,
         )))
@@ -115,6 +120,7 @@ fn main() {
                 eme_game_runtime::run_behaviours,
                 eme_game_overrides::sync_model_nodes,
                 log_script_lines,
+                eme_game_runtime::step_physics.after(fabr::update_scripts),
             ),
         )
         .run();

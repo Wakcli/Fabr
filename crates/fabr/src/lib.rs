@@ -12,8 +12,8 @@ pub use eme_game_scene::{
     FORMAT_VERSION,
 };
 pub use eme_script::{
-    key_binding, script_files, script_property_defaults, InputActions, ScriptLog, ScriptPlugin,
-    ScriptReload, ScriptRoot, ScriptedObject, ScriptsActive,
+    key_binding, script_files, script_property_defaults, update_scripts, InputActions, ScriptLog,
+    ScriptPlugin, ScriptReload, ScriptRoot, ScriptedObject, ScriptsActive,
 };
 
 use std::path::Path;
@@ -86,6 +86,8 @@ mod tests {
         assert_eq!(config.settings.graphics.msaa, 4);
         assert_eq!(config.settings.audio.master_volume, 1.0);
         assert!(config.settings.quality.shadows);
+        assert_eq!(config.settings.physics.gravity, 9.81);
+        assert!(config.settings.physics.enabled);
         assert!(config.input.map.contains_key("jump"));
     }
 

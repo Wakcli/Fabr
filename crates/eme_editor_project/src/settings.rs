@@ -22,6 +22,8 @@ pub struct ProjectSettings {
     pub audio: AudioSettings,
     /// Rendering quality options.
     pub quality: QualitySettings,
+    /// Gravity and collision tuning.
+    pub physics: PhysicsSettings,
     /// Named input actions and their key bindings.
     pub input: InputSettings,
 }
@@ -62,6 +64,28 @@ pub struct GraphicsSettings {
 impl Default for GraphicsSettings {
     fn default() -> Self {
         Self { msaa: 4 }
+    }
+}
+
+/// Physics tuning applied by the player.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PhysicsSettings {
+    /// Downward acceleration in units per second squared.
+    pub gravity: f32,
+    /// Fraction of vertical speed kept after landing, 0 to 1.
+    pub bounce: f32,
+    /// Whether bodies are simulated.
+    pub enabled: bool,
+}
+
+impl Default for PhysicsSettings {
+    fn default() -> Self {
+        Self {
+            gravity: 9.81,
+            bounce: 0.0,
+            enabled: true,
+        }
     }
 }
 
@@ -150,6 +174,12 @@ impl ProjectSettings {
         if !(0.0..=2.0).contains(&self.audio.master_volume) {
             return Err("master volume must be between 0 and 2".into());
         }
+        if !(0.0..=100.0).contains(&self.physics.gravity) {
+            return Err("gravity must be between 0 and 100".into());
+        }
+        if !(0.0..=1.0).contains(&self.physics.bounce) {
+            return Err("bounce must be between 0 and 1".into());
+        }
         Ok(())
     }
 }
@@ -180,6 +210,20 @@ mod tests {
         settings.graphics.msaa = 3;
         assert!(settings.validate().is_err());
         settings.graphics.msaa = 8;
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn physics_settings_are_validated() {
+        let mut settings = ProjectSettings::default();
+        assert_eq!(settings.physics.gravity, 9.81);
+        assert!(settings.physics.enabled);
+        settings.physics.gravity = 101.0;
+        assert!(settings.validate().is_err());
+        settings.physics.gravity = 9.81;
+        settings.physics.bounce = 1.5;
+        assert!(settings.validate().is_err());
+        settings.physics.bounce = 1.0;
         assert!(settings.validate().is_ok());
     }
 

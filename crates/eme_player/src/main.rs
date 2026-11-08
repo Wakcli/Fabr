@@ -83,6 +83,7 @@ fn main() {
         .insert_resource(fabr::ScriptRoot(PathBuf::from("assets")))
         .insert_resource(actions)
         .insert_resource(scene::PlayerMsaa(settings.graphics.msaa))
+        .insert_resource(scene::PlayerShadows(settings.quality.shadows))
         .insert_resource(GlobalVolume::new(eme::audio::Volume::Linear(
             settings.audio.master_volume,
         )))

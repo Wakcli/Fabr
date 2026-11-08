@@ -20,6 +20,8 @@ pub struct ProjectSettings {
     pub graphics: GraphicsSettings,
     /// Audio configuration.
     pub audio: AudioSettings,
+    /// Rendering quality options.
+    pub quality: QualitySettings,
     /// Named input actions and their key bindings.
     pub input: InputSettings,
 }
@@ -60,6 +62,20 @@ pub struct GraphicsSettings {
 impl Default for GraphicsSettings {
     fn default() -> Self {
         Self { msaa: 4 }
+    }
+}
+
+/// Quality options that trade detail for performance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QualitySettings {
+    /// Whether authored sun lights cast shadows.
+    pub shadows: bool,
+}
+
+impl Default for QualitySettings {
+    fn default() -> Self {
+        Self { shadows: true }
     }
 }
 

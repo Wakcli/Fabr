@@ -103,9 +103,19 @@ pub struct SettingsField(pub FieldKind);
 #[derive(Component, Clone, Copy, Default)]
 pub struct SettingsFieldEdit;
 
-/// The vsync toggle.
+/// Which boolean setting a toggle edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ToggleKind {
+    /// Vertical sync.
+    #[default]
+    Vsync,
+    /// Sun shadows.
+    Shadows,
+}
+
+/// A boolean settings toggle.
 #[derive(Component, Clone, Copy, Default)]
-pub struct VsyncToggle;
+pub struct SettingsToggle(pub ToggleKind);
 
 /// Save button.
 #[derive(Component, Clone, Copy, Default)]
@@ -225,7 +235,13 @@ pub fn sync(
         &state.settings.player.height.to_string(),
         FieldKind::Height,
     );
-    toggle_row(host, &mut commands, "VSync", state.settings.player.vsync);
+    toggle_row(
+        host,
+        &mut commands,
+        "VSync",
+        state.settings.player.vsync,
+        ToggleKind::Vsync,
+    );
 
     section(host, &mut commands, "Graphics");
     field_row(
@@ -234,6 +250,15 @@ pub fn sync(
         "MSAA",
         &state.settings.graphics.msaa.to_string(),
         FieldKind::Msaa,
+    );
+
+    section(host, &mut commands, "Quality");
+    toggle_row(
+        host,
+        &mut commands,
+        "Shadows",
+        state.settings.quality.shadows,
+        ToggleKind::Shadows,
     );
 
     section(host, &mut commands, "Audio");
@@ -365,7 +390,13 @@ fn field_row(host: Entity, commands: &mut Commands, label: &str, value: &str, ki
         .observe(field_key);
 }
 
-fn toggle_row(host: Entity, commands: &mut Commands, label: &str, value: bool) {
+fn toggle_row(
+    host: Entity,
+    commands: &mut Commands,
+    label: &str,
+    value: bool,
+    kind: ToggleKind,
+) {
     let label = text(label.to_string(), FONT_SIZE, tokens::TEXT);
     let value = text(
         if value { "on" } else { "off" },
@@ -382,11 +413,11 @@ fn toggle_row(host: Entity, commands: &mut Commands, label: &str, value: bool) {
                 height: px(24),
             }
             Button
-            VsyncToggle
+            SettingsToggle(kind)
             ChildOf(host)
             Children [ {label} -- {spacer()} -- {value} ]
         })
-        .observe(toggle_vsync);
+        .observe(toggle_setting);
 }
 
 fn text(value: impl Into<String>, size: f32, token: ThemeToken) -> Part {
@@ -490,8 +521,18 @@ fn commit(state: &mut ProjectSettingsState, kind: &FieldKind, raw: &str) {
     }
 }
 
-fn toggle_vsync(_: On<Activate>, mut state: ResMut<ProjectSettingsState>) {
-    state.settings.player.vsync = !state.settings.player.vsync;
+fn toggle_setting(
+    activate: On<Activate>,
+    toggles: Query<&SettingsToggle>,
+    mut state: ResMut<ProjectSettingsState>,
+) {
+    let Ok(toggle) = toggles.get(activate.entity) else {
+        return;
+    };
+    match toggle.0 {
+        ToggleKind::Vsync => state.settings.player.vsync = !state.settings.player.vsync,
+        ToggleKind::Shadows => state.settings.quality.shadows = !state.settings.quality.shadows,
+    }
     state.rev = state.rev.wrapping_add(1);
 }
 
@@ -553,9 +594,9 @@ mod tests {
         let mut app = App::new();
         app.add_message::<Ime>()
             .add_message::<PointerRelease>()
-            .init_resource::<eme::ui::UiScale>()
-            .init_resource::<eme::time::Time<eme::time::Real>>()
-            .init_resource::<eme::picking::events::PointerState>()
+            .init_resource::<UiScale>()
+            .init_resource::<Time<Real>>()
+            .init_resource::<PointerState>()
             .add_plugins((
                 InputPlugin,
                 InputFocusPlugin,
@@ -648,6 +689,33 @@ mod tests {
             "New Title"
         );
         assert!(app.world().resource::<InputFocus>().get().is_none());
+    }
+
+    #[test]
+    fn the_shadows_toggle_flips_the_quality_setting() {
+        let mut app = App::new();
+        app.insert_resource(state());
+        app.add_observer(toggle_setting);
+        let toggle = app
+            .world_mut()
+            .spawn(SettingsToggle(ToggleKind::Shadows))
+            .id();
+        app.world_mut().trigger(Activate { entity: toggle });
+        assert!(
+            !app.world()
+                .resource::<ProjectSettingsState>()
+                .settings
+                .quality
+                .shadows
+        );
+        app.world_mut().trigger(Activate { entity: toggle });
+        assert!(
+            app.world()
+                .resource::<ProjectSettingsState>()
+                .settings
+                .quality
+                .shadows
+        );
     }
 
     #[test]

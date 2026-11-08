@@ -173,13 +173,22 @@ pub fn announce(scene: Res<LoadedScene>) {
     );
 }
 
+fn sun_shadows(quality: bool, has_sun: bool) -> bool {
+    quality && !has_sun
+}
+
 /// MSAA sample count from project settings.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct PlayerMsaa(pub u32);
 
+/// Whether authored suns cast shadows, from project settings.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct PlayerShadows(pub bool);
+
 pub fn spawn_scene(
     mut commands: Commands,
     msaa: Res<PlayerMsaa>,
+    shadow_quality: Res<PlayerShadows>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
@@ -190,7 +199,6 @@ pub fn spawn_scene(
     let mut cache: [Option<Handle<Mesh>>; 4] = [const { None }; 4];
     // the editor viewport owns a shadow-casting sun; the player has none, so the
     // first authored sun takes that job
-    let mut shadows = true;
     let mut has_sun = false;
 
     for obj in &scene.doc.objects {
@@ -263,7 +271,7 @@ pub fn spawn_scene(
                 let mut spawned = commands.spawn((
                     DirectionalLight {
                         illuminance: SUN_ILLUMINANCE,
-                        shadow_maps_enabled: shadows,
+                        shadow_maps_enabled: sun_shadows(shadow_quality.0, has_sun),
                         ..default()
                     },
                     trs,
@@ -274,7 +282,6 @@ pub fn spawn_scene(
                     spawned.insert(script);
                 }
                 has_sun = true;
-                shadows = false;
             }
             Body::Shape(shape) => {
                 let mesh = cache[shape.index()]
@@ -412,6 +419,13 @@ mod tests {
         );
         let catalog = world.get::<ModelNodeCatalog>(root).unwrap();
         assert_eq!(catalog.nodes[0].key.name, "Seat");
+    }
+
+    #[test]
+    fn quality_shadows_only_apply_to_the_first_sun() {
+        assert!(sun_shadows(true, false));
+        assert!(!sun_shadows(true, true));
+        assert!(!sun_shadows(false, false));
     }
 
     #[test]

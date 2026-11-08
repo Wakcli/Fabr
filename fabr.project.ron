@@ -11,6 +11,9 @@
     audio: (
         master_volume: 1.0,
     ),
+    quality: (
+        shadows: true,
+    ),
     input: (
         actions: {
             "jump": [

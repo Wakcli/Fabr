@@ -34,10 +34,33 @@ const ROUGHNESS: f32 = 0.55;
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct SceneRoot;
 
+/// Document a spawned root came from; 0 is the main scene, others are layers.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneLayerId(pub u64);
+
+/// Layer ids whose entities are currently spawned.
+#[derive(Resource, Default, Debug)]
+pub struct SpawnedLayers(pub Vec<u64>);
+
+/// One additively loaded scene document.
+#[derive(Clone, Debug)]
+pub struct SceneLayer {
+    /// Id returned to the script that requested it.
+    pub id: u64,
+    /// Document contents.
+    pub doc: SceneDoc,
+    /// File the document came from.
+    pub path: PathBuf,
+}
+
 #[derive(Resource, Debug)]
 pub struct LoadedScene {
     pub doc: SceneDoc,
     pub path: PathBuf,
+    /// Additive documents drawn on top of the main scene.
+    pub layers: Vec<SceneLayer>,
+    /// Bumped when the main document changes, so only that triggers a full rebuild.
+    pub base_rev: u64,
 }
 
 #[derive(Debug)]
@@ -59,7 +82,14 @@ pub fn load(explicit: Option<&Path>) -> Result<LoadedScene, LoadError> {
     let mut tried = Vec::new();
     for path in candidates(explicit) {
         match read(&path) {
-            Ok(doc) => return Ok(LoadedScene { doc, path }),
+            Ok(doc) => {
+                return Ok(LoadedScene {
+                    doc,
+                    path,
+                    layers: Vec::new(),
+                    base_rev: 0,
+                });
+            }
             Err(err) => tried.push((path, err)),
         }
     }
@@ -204,28 +234,73 @@ pub fn handle_scene_request(
         return;
     }
     let reload = requests.reload;
-    let requested = requests.load.take();
     requests.reload = false;
 
-    let target = if reload {
-        scene.path.clone()
-    } else {
-        let Some(requested) = requested else {
-            return;
-        };
-        resolve_scene(&requested, &scene.path)
-    };
-    match read(&target) {
-        Ok(doc) => {
-            info!(
-                "scene: loaded {} objects from {}",
-                doc.len(),
-                target.display()
-            );
-            scene.doc = doc;
-            scene.path = target;
+    if let Some(requested) = requests.load.take() {
+        let target = resolve_scene(&requested, &scene.path);
+        match read(&target) {
+            Ok(doc) => {
+                info!(
+                    "scene: loaded {} objects from {}",
+                    doc.len(),
+                    target.display()
+                );
+                scene.doc = doc;
+                scene.path = target;
+                scene.layers.clear();
+                scene.base_rev = scene.base_rev.wrapping_add(1);
+            }
+            Err(err) => warn!("scene: could not load {}: {err}", target.display()),
         }
-        Err(err) => warn!("scene: could not load {}: {err}", target.display()),
+    } else if reload {
+        match read(&scene.path) {
+            Ok(doc) => {
+                info!(
+                    "scene: reloaded {} objects from {}",
+                    doc.len(),
+                    scene.path.display()
+                );
+                scene.doc = doc;
+                scene.base_rev = scene.base_rev.wrapping_add(1);
+            }
+            Err(err) => warn!("scene: could not reload {}: {err}", scene.path.display()),
+        }
+    }
+
+    for id in requests.unload.drain(..) {
+        let removed = scene
+            .layers
+            .iter()
+            .find(|layer| layer.id == id)
+            .map(|layer| layer.path.clone());
+        scene.layers.retain(|layer| layer.id != id);
+        match removed {
+            Some(path) => info!("scene: unloaded layer {id} ({})", path.display()),
+            None => warn!("scene: no layer {id} to unload"),
+        }
+    }
+
+    for (id, requested) in requests.additive.drain(..) {
+        let target = resolve_scene(&requested, &scene.path);
+        match read(&target) {
+            Ok(doc) => {
+                info!(
+                    "scene: added {} objects from {} as layer {id}",
+                    doc.len(),
+                    target.display()
+                );
+                scene.layers.retain(|layer| layer.id != id);
+                scene.layers.push(SceneLayer {
+                    id,
+                    doc,
+                    path: target,
+                });
+            }
+            Err(err) => warn!(
+                "scene: could not add {} as layer {id}: {err}",
+                target.display()
+            ),
+        }
     }
 }
 
@@ -253,10 +328,17 @@ pub fn spawn_scene(
     asset_server: Res<AssetServer>,
     scene: Res<LoadedScene>,
     roots: Query<Entity, With<SceneRoot>>,
+    mut last_rev: Local<Option<u64>>,
+    mut spawned: ResMut<SpawnedLayers>,
 ) {
+    if last_rev.as_ref() == Some(&scene.base_rev) {
+        return;
+    }
+    *last_rev = Some(scene.base_rev);
     for root in &roots {
         commands.entity(root).despawn();
     }
+    spawned.0.clear();
     let index = GuidIndex::scan(crate::asset_root());
     let mut view: Option<Transform> = None;
     let mut cache: [Option<Handle<Mesh>>; 4] = [const { None }; 4];
@@ -264,7 +346,71 @@ pub fn spawn_scene(
     // first authored sun takes that job
     let mut has_sun = false;
 
-    for obj in &scene.doc.objects {
+    spawn_doc(
+        &mut commands,
+        &scene.doc,
+        0,
+        &index,
+        &asset_server,
+        &mut meshes,
+        &mut materials,
+        &shadow_quality,
+        &mut view,
+        &mut cache,
+        &mut has_sun,
+    );
+
+
+    if !has_sun {
+        commands.spawn((
+            DirectionalLight {
+                illuminance: SUN_ILLUMINANCE,
+                shadow_maps_enabled: true,
+                ..default()
+            },
+            Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+            SceneRoot,
+            SceneLayerId(0),
+        ));
+    }
+
+    let view = view.unwrap_or_else(|| {
+        Transform::from_translation(DEFAULT_CAM).looking_at(Vec3::ZERO, Vec3::Y)
+    });
+    commands.spawn((
+        Camera3d::default(),
+        view,
+        Msaa::from_samples(msaa.0),
+        SceneRoot,
+        SceneLayerId(0),
+    ));
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::srgb(0.80, 0.85, 1.0),
+        brightness: AMBIENT,
+        ..default()
+    });
+}
+
+
+/// Spawns every object of `doc`, tagging roots with `layer`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one document spawn needs the asset stores plus shared fallback state"
+)]
+fn spawn_doc(
+    commands: &mut Commands,
+    doc: &SceneDoc,
+    layer: u64,
+    index: &GuidIndex,
+    asset_server: &AssetServer,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    shadow_quality: &PlayerShadows,
+    view: &mut Option<Transform>,
+    cache: &mut [Option<Handle<Mesh>>; 4],
+    has_sun: &mut bool,
+) {
+    for obj in &doc.objects {
         let trs = to_transform(obj.translation, obj.rotation, obj.scale);
         let behaviour = behaviour_for(obj);
         let name = Name::new(obj.name.clone());
@@ -294,6 +440,7 @@ pub fn spawn_scene(
                     name,
                     ReplicatedObject(obj.id),
                     SceneRoot,
+                    SceneLayerId(layer),
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -313,7 +460,7 @@ pub fn spawn_scene(
                     warn!("model object {} has no asset reference", obj.name);
                     continue;
                 };
-                let resolved = model_path(asset, &index);
+                let resolved = model_path(asset, index);
                 match resolved {
                     Some((rel, import)) => {
                         let handle =
@@ -326,6 +473,7 @@ pub fn spawn_scene(
                             Visibility::Inherited,
                             ReplicatedObject(obj.id),
                             SceneRoot,
+                            SceneLayerId(layer),
                         ));
                         if let Some(script) = script {
                             spawned.insert(script);
@@ -371,6 +519,7 @@ pub fn spawn_scene(
                     name,
                     ReplicatedObject(obj.id),
                     SceneRoot,
+                    SceneLayerId(layer),
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -387,7 +536,7 @@ pub fn spawn_scene(
                     DirectionalLight {
                         illuminance: SUN_ILLUMINANCE * light_strength,
                         color: light_color,
-                        shadow_maps_enabled: sun_shadows(shadow_quality.0, has_sun),
+                        shadow_maps_enabled: sun_shadows(shadow_quality.0, *has_sun),
                         ..default()
                     },
                     trs,
@@ -395,6 +544,7 @@ pub fn spawn_scene(
                     name,
                     ReplicatedObject(obj.id),
                     SceneRoot,
+                    SceneLayerId(layer),
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -405,7 +555,7 @@ pub fn spawn_scene(
                 if let Some(controller) = controller {
                     spawned.insert(controller);
                 }
-                has_sun = true;
+                *has_sun = true;
             }
             Body::Shape(shape) => {
                 let mesh = cache[shape.index()]
@@ -441,6 +591,7 @@ pub fn spawn_scene(
                         color: net_color,
                     },
                     SceneRoot,
+                    SceneLayerId(layer),
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -454,27 +605,51 @@ pub fn spawn_scene(
             }
         }
     }
+}
 
-    if !has_sun {
-        commands.spawn((
-            DirectionalLight {
-                illuminance: SUN_ILLUMINANCE,
-                shadow_maps_enabled: true,
-                ..default()
-            },
-            Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
-        ));
+/// Spawns and despawns additive layer documents without touching the main scene.
+pub fn sync_layers(
+    mut commands: Commands,
+    shadow_quality: Res<PlayerShadows>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+    scene: Res<LoadedScene>,
+    roots: Query<(Entity, &SceneLayerId)>,
+    mut spawned: ResMut<SpawnedLayers>,
+) {
+    let wanted: Vec<u64> = scene.layers.iter().map(|layer| layer.id).collect();
+    if spawned.0 == wanted {
+        return;
     }
-
-    let view = view.unwrap_or_else(|| {
-        Transform::from_translation(DEFAULT_CAM).looking_at(Vec3::ZERO, Vec3::Y)
-    });
-    commands.spawn((Camera3d::default(), view, Msaa::from_samples(msaa.0), SceneRoot));
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::srgb(0.80, 0.85, 1.0),
-        brightness: AMBIENT,
-        ..default()
-    });
+    for (entity, layer) in &roots {
+        if layer.0 != 0 && !wanted.contains(&layer.0) {
+            commands.entity(entity).despawn();
+        }
+    }
+    let index = GuidIndex::scan(crate::asset_root());
+    let mut view: Option<Transform> = None;
+    let mut cache: [Option<Handle<Mesh>>; 4] = [const { None }; 4];
+    let mut has_sun = true;
+    for layer in &scene.layers {
+        if spawned.0.contains(&layer.id) {
+            continue;
+        }
+        spawn_doc(
+            &mut commands,
+            &layer.doc,
+            layer.id,
+            &index,
+            &asset_server,
+            &mut meshes,
+            &mut materials,
+            &shadow_quality,
+            &mut view,
+            &mut cache,
+            &mut has_sun,
+        );
+    }
+    spawned.0 = wanted;
 }
 
 pub fn demo_doc() -> SceneDoc {
@@ -755,10 +930,14 @@ mod tests {
         world.insert_resource(fabr::SceneRequests {
             load: load.map(|path| path.to_string_lossy().into_owned()),
             reload,
+            additive: Vec::new(),
+            unload: Vec::new(),
         });
         world.insert_resource(LoadedScene {
             doc: scene_with(1),
             path: current.to_path_buf(),
+            layers: Vec::new(),
+            base_rev: 0,
         });
         world
     }
@@ -773,11 +952,68 @@ mod tests {
         std::fs::write(&next, scene_with(3).to_ron().unwrap()).unwrap();
         let current = dir.join("current.ember");
         let mut world = request_world(Some(&next), false, &current);
+        world.resource_mut::<LoadedScene>().layers.push(SceneLayer {
+            id: 5,
+            doc: scene_with(1),
+            path: current.clone(),
+        });
         world.run_system_once(handle_scene_request).unwrap();
         let scene = world.resource::<LoadedScene>();
         assert_eq!(scene.doc.len(), 3);
+        assert!(scene.layers.is_empty(), "replacing the scene drops layers");
         assert_eq!(scene.path, next);
         assert!(!world.resource::<fabr::SceneRequests>().pending());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn additive_layers_add_and_unload_without_touching_the_main_scene() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let dir = std::env::temp_dir().join(format!("eme_player_add_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let layer_path = dir.join("layer.ember");
+        std::fs::write(&layer_path, scene_with(2).to_ron().unwrap()).unwrap();
+        let current = dir.join("current.ember");
+        let mut world = request_world(None, false, &current);
+        world
+            .resource_mut::<fabr::SceneRequests>()
+            .additive
+            .push((7, layer_path.to_string_lossy().into_owned()));
+        world.run_system_once(handle_scene_request).unwrap();
+        {
+            let scene = world.resource::<LoadedScene>();
+            assert_eq!(scene.doc.len(), 1, "the main scene is untouched");
+            assert_eq!(scene.layers.len(), 1);
+            assert_eq!(scene.layers[0].id, 7);
+            assert_eq!(scene.layers[0].doc.len(), 2);
+            assert_eq!(scene.layers[0].path, layer_path);
+        }
+
+        world.resource_mut::<fabr::SceneRequests>().unload.push(7);
+        world.run_system_once(handle_scene_request).unwrap();
+        let scene = world.resource::<LoadedScene>();
+        assert!(scene.layers.is_empty());
+        assert_eq!(scene.doc.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_additive_scene_leaves_the_layers_alone() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let dir = std::env::temp_dir().join(format!("eme_player_add_bad_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let current = dir.join("current.ember");
+        let mut world = request_world(None, false, &current);
+        world
+            .resource_mut::<fabr::SceneRequests>()
+            .additive
+            .push((9, "/does/not/exist.ember".into()));
+        world.run_system_once(handle_scene_request).unwrap();
+        let scene = world.resource::<LoadedScene>();
+        assert!(scene.layers.is_empty());
+        assert_eq!(scene.doc.len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

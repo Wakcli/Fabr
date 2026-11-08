@@ -162,12 +162,17 @@ fn main() {
             settings.audio.master_volume,
         )))
         .insert_resource(loaded)
+        .init_resource::<scene::SpawnedLayers>()
         .add_systems(Startup, scene::announce)
         .add_systems(
             Update,
             (
                 scene::handle_scene_request,
-                scene::spawn_scene
+                (
+                    scene::spawn_scene,
+                    scene::sync_layers,
+                )
+                    .chain()
                     .run_if(resource_changed::<scene::LoadedScene>),
             )
                 .chain(), 

@@ -813,6 +813,8 @@ pub enum TopAction {
     ResetLayout,
     /// Edit the keyboard shortcuts.
     Shortcuts,
+    /// Manage optional engine extensions.
+    Extensions,
     /// Today's build, in the console.
     About,
 }
@@ -888,6 +890,7 @@ pub fn sync_top_menu(
             ("Save Layout", TopAction::SaveLayout),
             ("Reset Layout", TopAction::ResetLayout),
             ("Keyboard Shortcuts…", TopAction::Shortcuts),
+            ("Extensions…", TopAction::Extensions),
         ],
         TopKind::Help => &[("About Fabr", TopAction::About)],
     };
@@ -927,6 +930,7 @@ pub fn run_top_action(
     mut layout: ResMut<crate::LayoutRes>,
     mut shortcuts: ResMut<crate::shortcuts::ShortcutsState>,
     shortcut_config: Res<crate::shortcuts::ShortcutConfig>,
+    mut extensions: ResMut<crate::extensions::ExtensionsState>,
     mut reload: ResMut<eme_script::ScriptReload>,
     index: Res<scene::ModelIndex>,
 ) {
@@ -972,6 +976,7 @@ pub fn run_top_action(
         TopAction::Shortcuts => {
             crate::shortcuts::open(&mut shortcuts, &shortcut_config);
         }
+        TopAction::Extensions => crate::extensions::open(&mut extensions),
         TopAction::ResetLayout => {
             layout.0 = eme_editor_core::Layout::default_editor();
             crate::screens::editor::dock::save_layout(&layout);

@@ -67,6 +67,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {crate::shortcuts::panel()}
             --
+            {crate::extensions::panel()}
+            --
             {palette::overlay()}
             --
             {inspector::script_picker()}
@@ -218,9 +220,15 @@ impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
         viewport::plugins(app);
         dock::plugins(app);
+        let extensions = eme_game_runtime::load_for(&build::workspace_dir());
+        app.insert_resource(extensions.clone());
         app.add_plugins(eme_script::ScriptPlugin);
-        app.add_plugins(eme_anim::AnimationRuntimePlugin);
-        app.add_plugins(eme_game_runtime::NavPlugin);
+        if extensions.enabled(eme_game_runtime::Extension::Animation) {
+            app.add_plugins(eme_anim::AnimationRuntimePlugin);
+        }
+        if extensions.enabled(eme_game_runtime::Extension::Navigation) {
+            app.add_plugins(eme_game_runtime::NavPlugin);
+        }
         app.configure_sets(
             Update,
             eme_game_runtime::NavSet.after(eme_script::update_scripts),
@@ -230,6 +238,7 @@ impl Plugin for EditorPlugin {
         crate::mixer::install(app);
         crate::packages::install(app);
         crate::shortcuts::install(app);
+        crate::extensions::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()
@@ -305,7 +314,8 @@ impl Plugin for EditorPlugin {
                         eme_game_runtime::run_behaviours.run_if(crate::play::behaviours_active),
                         eme_game_runtime::step_physics
                             .after(eme_script::update_scripts)
-                            .run_if(crate::play::behaviours_active),
+                            .run_if(crate::play::behaviours_active)
+                            .run_if(extension_physics),
                         (crate::play::sync_flyout, crate::play::place_flyout),
                     ),
                     orbit::toggle_mode,
@@ -402,12 +412,19 @@ fn scene_transitions_in_player(
     }
 }
 
+fn extension_physics(ext: Res<eme_game_runtime::ExtensionSet>) -> bool {
+    ext.enabled(eme_game_runtime::Extension::Physics)
+}
+
 fn sync_script_activity(
     play: Res<crate::play::PlayState>,
     view: Res<orbit::ViewMode>,
+    ext: Res<eme_game_runtime::ExtensionSet>,
     mut active: ResMut<eme_script::ScriptsActive>,
 ) {
-    let next = play.running() && *view == orbit::ViewMode::Game;
+    let next = ext.enabled(eme_game_runtime::Extension::Scripting)
+        && play.running()
+        && *view == orbit::ViewMode::Game;
     if active.0 != next {
         active.0 = next;
     }

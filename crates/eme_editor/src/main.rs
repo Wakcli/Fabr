@@ -19,6 +19,7 @@ mod import;
 mod mixer;
 mod packages;
 mod shortcuts;
+mod extensions;
 mod orbit;
 mod persist;
 mod play;

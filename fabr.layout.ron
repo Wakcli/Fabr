@@ -1,0 +1,98 @@
+Split(
+    axis: Vertical,
+    ratio: 0.94,
+    first: Split(
+        axis: Horizontal,
+        ratio: 0.18,
+        first: Split(
+            axis: Vertical,
+            ratio: 0.82,
+            first: Panel(
+                id: PanelId(1),
+                tabs: [
+                    PanelTab(
+                        id: PanelId(9),
+                        kind: Hierarchy,
+                    ),
+                ],
+                active: 0,
+            ),
+            second: Panel(
+                id: PanelId(2),
+                tabs: [
+                    PanelTab(
+                        id: PanelId(10),
+                        kind: Custom("Outline"),
+                    ),
+                ],
+                active: 0,
+            ),
+        ),
+        second: Split(
+            axis: Horizontal,
+            ratio: 0.82,
+            first: Split(
+                axis: Vertical,
+                ratio: 0.7,
+                first: Panel(
+                    id: PanelId(3),
+                    tabs: [
+                        PanelTab(
+                            id: PanelId(11),
+                            kind: Scene,
+                        ),
+                    ],
+                    active: 0,
+                ),
+                second: Panel(
+                    id: PanelId(4),
+                    tabs: [
+                        PanelTab(
+                            id: PanelId(12),
+                            kind: Project,
+                        ),
+                        PanelTab(
+                            id: PanelId(13),
+                            kind: Console,
+                        ),
+                    ],
+                    active: 0,
+                ),
+            ),
+            second: Split(
+                axis: Vertical,
+                ratio: 0.62,
+                first: Panel(
+                    id: PanelId(6),
+                    tabs: [
+                        PanelTab(
+                            id: PanelId(14),
+                            kind: Inspector,
+                        ),
+                    ],
+                    active: 0,
+                ),
+                second: Panel(
+                    id: PanelId(7),
+                    tabs: [
+                        PanelTab(
+                            id: PanelId(15),
+                            kind: Custom("Stats"),
+                        ),
+                    ],
+                    active: 0,
+                ),
+            ),
+        ),
+    ),
+    second: Panel(
+        id: PanelId(8),
+        tabs: [
+            PanelTab(
+                id: PanelId(16),
+                kind: Custom("Status"),
+            ),
+        ],
+        active: 0,
+    ),
+)

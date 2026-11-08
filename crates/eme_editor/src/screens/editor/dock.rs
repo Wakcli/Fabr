@@ -641,7 +641,9 @@ fn select_tab(
         return;
     };
     click.propagate(false);
-    layout.set_active(hit.dock, hit.index);
+    if layout.set_active(hit.dock, hit.index) {
+        persist(&layout);
+    }
 }
 
 fn start_tab_drag(
@@ -1077,19 +1079,13 @@ fn drop_zone(rect: Rect, point: Vec2) -> Option<DropZone> {
 }
 
 fn persist(layout: &Layout) {
-    let path = crate::asset_path(crate::LAYOUT_PATH);
-    let text = match ron::ser::to_string_pretty(
-        layout,
-        ron::ser::PrettyConfig::default().struct_names(true),
-    ) {
-        Ok(text) => text,
-        Err(err) => {
-            error!("could not serialize {}: {err}", crate::LAYOUT_PATH);
-            return;
-        }
-    };
-    if let Err(err) = std::fs::write(&path, text) {
-        error!("could not write {}: {err}", path.display());
+    save_layout(layout);
+}
+
+/// Saves the dock layout to the project's `fabr.layout.ron`.
+pub fn save_layout(layout: &Layout) {
+    if let Err(err) = crate::write_layout(layout, &crate::project_layout_path()) {
+        error!("could not save the layout: {err}");
     }
 }
 

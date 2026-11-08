@@ -36,6 +36,8 @@ pub const PRODUCT: &str = "Fabr";
 const TITLE: &str = PRODUCT;
 const THEME_PATH: &str = "editor/theme.ron";
 pub(crate) const LAYOUT_PATH: &str = "editor/layout.ron";
+/// Project file the dock layout is saved to.
+pub(crate) const PROJECT_LAYOUT_PATH: &str = "fabr.layout.ron";
 /// The editor assets live in the workspace root, not in this crate, and cargo
 /// points the asset server at the crate directory.
 const ASSET_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets");
@@ -147,21 +149,55 @@ fn load_theme() -> UiTheme {
     }
 }
 
-fn load_layout() -> Layout {
-    let src = match std::fs::read_to_string(asset_path(LAYOUT_PATH)) {
-        Ok(src) => src,
-        Err(err) => {
-            warn!("{LAYOUT_PATH} unavailable ({err}); falling back to the default editor layout");
-            return Layout::default_editor();
+/// The project's saved dock layout file.
+pub(crate) fn project_layout_path() -> PathBuf {
+    build::workspace_dir().join(PROJECT_LAYOUT_PATH)
+}
+
+/// Reads a layout file, returning `None` for missing or invalid files.
+pub(crate) fn read_layout(path: &std::path::Path) -> Option<Layout> {
+    let src = std::fs::read_to_string(path).ok()?;
+    match ron::from_str::<Layout>(&src) {
+        Ok(layout) if layout.validate().is_ok() => Some(layout),
+        Ok(layout) => {
+            warn!(
+                "{} is invalid ({}); ignoring it",
+                path.display(),
+                layout.validate().err().unwrap_or_default()
+            );
+            None
         }
-    };
-    match ron::from_str(&src) {
-        Ok(layout) => layout,
         Err(err) => {
-            warn!("{LAYOUT_PATH} is malformed ({err}); falling back to the default editor layout");
-            Layout::default_editor()
+            warn!("{} is malformed ({err}); ignoring it", path.display());
+            None
         }
     }
+}
+
+/// Writes a layout file, creating the parent folder when needed.
+pub(crate) fn write_layout(layout: &Layout, path: &std::path::Path) -> Result<(), String> {
+    let text = ron::ser::to_string_pretty(
+        layout,
+        ron::ser::PrettyConfig::default().struct_names(true),
+    )
+    .map_err(|err| format!("could not serialize layout: {err}"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    }
+    std::fs::write(path, text).map_err(|err| format!("{}: {err}", path.display()))
+}
+
+fn load_layout() -> Layout {
+    let project = project_layout_path();
+    if let Some(layout) = read_layout(&project) {
+        return layout;
+    }
+    let fallback = asset_path(LAYOUT_PATH);
+    if let Some(layout) = read_layout(&fallback) {
+        return layout;
+    }
+    warn!("no saved layout; falling back to the default editor layout");
+    Layout::default_editor()
 }
 
 fn sample_hub() -> HubState {
@@ -177,4 +213,62 @@ fn sample_hub() -> HubState {
         });
     }
     hub
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("eme-layout-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn layout_files_round_trip() {
+        let dir = scratch("roundtrip");
+        let path = dir.join(PROJECT_LAYOUT_PATH);
+        let mut layout = Layout::default_editor();
+        layout.set_ratio_at(1, 0.5);
+        write_layout(&layout, &path).unwrap();
+        assert_eq!(read_layout(&path), Some(layout));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn malformed_layout_files_are_ignored() {
+        let dir = scratch("malformed");
+        let path = dir.join(PROJECT_LAYOUT_PATH);
+        std::fs::write(&path, "not a layout").unwrap();
+        assert_eq!(read_layout(&path), None);
+        assert_eq!(read_layout(&dir.join("missing.ron")), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn structurally_invalid_layouts_are_ignored() {
+        let dir = scratch("invalid");
+        let path = dir.join(PROJECT_LAYOUT_PATH);
+        let broken = Layout::Split {
+            axis: eme_editor_core::Axis::Horizontal,
+            ratio: 9.0,
+            first: Box::new(Layout::default_editor()),
+            second: Box::new(Layout::default_editor()),
+        };
+        write_layout(&broken, &path).unwrap();
+        assert_eq!(read_layout(&path), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_default_layout_survives_a_round_trip() {
+        let dir = scratch("default");
+        let path = dir.join(PROJECT_LAYOUT_PATH);
+        let layout = Layout::default_editor();
+        write_layout(&layout, &path).unwrap();
+        assert_eq!(read_layout(&path), Some(layout));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

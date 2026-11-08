@@ -355,7 +355,7 @@ impl Default for LightSpec {
 }
 
 /// Animation selection authored on a model object.
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AnimationRef {
     /// Clip selected for playback.
     #[serde(default)]
@@ -363,6 +363,31 @@ pub struct AnimationRef {
     /// Whether the clip starts with the scene.
     #[serde(default)]
     pub autoplay: bool,
+    /// Playback speed multiplier.
+    #[serde(default = "default_animation_speed")]
+    pub speed: f32,
+    /// Whether the clip repeats forever.
+    #[serde(default = "default_enabled")]
+    pub looping: bool,
+}
+
+impl Default for AnimationRef {
+    fn default() -> Self {
+        Self {
+            clip: None,
+            autoplay: false,
+            speed: 1.0,
+            looping: true,
+        }
+    }
+}
+
+fn default_animation_speed() -> f32 {
+    1.0
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 /// Pointer from a scene object to an imported model asset.
@@ -1388,6 +1413,7 @@ mod tests {
             Some(AnimationRef {
                 clip: Some("Spin".into()),
                 autoplay: true,
+                ..Default::default()
             })
         ));
         let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
@@ -1396,6 +1422,8 @@ mod tests {
             Some("Spin")
         );
         assert!(back.animation(id).is_some_and(|animation| animation.autoplay));
+        assert_eq!(back.animation(id).unwrap().speed, 1.0);
+        assert!(back.animation(id).unwrap().looping);
     }
 
     #[test]

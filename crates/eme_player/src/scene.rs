@@ -337,6 +337,8 @@ pub fn spawn_scene(
                             gltf: asset_server.load(rel.clone()),
                             selected: obj.animation.as_ref().and_then(|animation| animation.clip.clone()),
                             autoplay: obj.animation.as_ref().is_some_and(|animation| animation.autoplay),
+                            speed: obj.animation.as_ref().map_or(1.0, |animation| animation.speed),
+                            looping: obj.animation.as_ref().is_none_or(|animation| animation.looping),
                         });
                         spawned
                             .with_children(|parent| {

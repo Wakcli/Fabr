@@ -1908,7 +1908,7 @@ return {
             clips: vec!["Spin".into()],
             selected: Some("Spin".into()),
             playing: true,
-            error: None,
+            ..Default::default()
         });
         world.run_system_once(sync_scripts).unwrap();
         world.run_system_once(update_scripts).unwrap();

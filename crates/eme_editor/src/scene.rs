@@ -972,6 +972,8 @@ fn spawn_entity(
                         gltf: asset_server.load(rel.clone()),
                         selected: animation.and_then(|animation| animation.clip.clone()),
                         autoplay: animation.is_some_and(|animation| animation.autoplay),
+                        speed: animation.map_or(1.0, |animation| animation.speed),
+                        looping: animation.is_none_or(|animation| animation.looping),
                     });
                     spawned
                         .with_children(|pivot_entity| {

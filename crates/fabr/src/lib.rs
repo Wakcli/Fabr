@@ -84,6 +84,7 @@ mod tests {
         let config = FabrConfig::load(&dir).unwrap();
         assert_eq!(config.settings, ProjectSettings::default());
         assert_eq!(config.settings.graphics.msaa, 4);
+        assert_eq!(config.settings.audio.master_volume, 1.0);
         assert!(config.input.map.contains_key("jump"));
     }
 

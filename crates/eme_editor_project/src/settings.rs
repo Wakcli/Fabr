@@ -18,6 +18,8 @@ pub struct ProjectSettings {
     pub player: PlayerSettings,
     /// Renderer configuration.
     pub graphics: GraphicsSettings,
+    /// Audio configuration.
+    pub audio: AudioSettings,
     /// Named input actions and their key bindings.
     pub input: InputSettings,
 }
@@ -58,6 +60,20 @@ pub struct GraphicsSettings {
 impl Default for GraphicsSettings {
     fn default() -> Self {
         Self { msaa: 4 }
+    }
+}
+
+/// Audio configuration applied by the player.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSettings {
+    /// Master volume on a linear scale, 0.0 to 2.0.
+    pub master_volume: f32,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self { master_volume: 1.0 }
     }
 }
 
@@ -115,6 +131,9 @@ impl ProjectSettings {
         if !matches!(self.graphics.msaa, 1 | 2 | 4 | 8) {
             return Err("MSAA must be 1, 2, 4 or 8 samples".into());
         }
+        if !(0.0..=2.0).contains(&self.audio.master_volume) {
+            return Err("master volume must be between 0 and 2".into());
+        }
         Ok(())
     }
 }
@@ -145,6 +164,15 @@ mod tests {
         settings.graphics.msaa = 3;
         assert!(settings.validate().is_err());
         settings.graphics.msaa = 8;
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn audio_settings_are_validated() {
+        let mut settings = ProjectSettings::default();
+        settings.audio.master_volume = 2.5;
+        assert!(settings.validate().is_err());
+        settings.audio.master_volume = 0.0;
         assert!(settings.validate().is_ok());
     }
 

@@ -31,6 +31,8 @@ pub enum FieldKind {
     Height,
     /// MSAA sample count.
     Msaa,
+    /// Master audio volume.
+    MasterVolume,
     /// One input action, keys comma-separated.
     Action(String),
 }
@@ -232,6 +234,15 @@ pub fn sync(
         "MSAA",
         &state.settings.graphics.msaa.to_string(),
         FieldKind::Msaa,
+    );
+
+    section(host, &mut commands, "Audio");
+    field_row(
+        host,
+        &mut commands,
+        "Master volume",
+        &state.settings.audio.master_volume.to_string(),
+        FieldKind::MasterVolume,
     );
 
     section(host, &mut commands, "Input Actions");
@@ -460,6 +471,12 @@ fn commit(state: &mut ProjectSettingsState, kind: &FieldKind, raw: &str) {
         FieldKind::Msaa => match raw.trim().parse::<u32>() {
             Ok(value @ (1 | 2 | 4 | 8)) => state.settings.graphics.msaa = value,
             _ => state.error = "MSAA must be 1, 2, 4 or 8".into(),
+        },
+        FieldKind::MasterVolume => match raw.trim().parse::<f32>() {
+            Ok(value) if (0.0..=2.0).contains(&value) => {
+                state.settings.audio.master_volume = value;
+            }
+            _ => state.error = "master volume must be between 0 and 2".into(),
         },
         FieldKind::Action(action) => {
             let keys: Vec<String> = raw

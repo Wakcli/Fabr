@@ -12,6 +12,7 @@ rust-version = "1.96.0"
 [dependencies]
 eme = { path = "../..", version = "0.20.0-dev", default-features = false, features = [
   "3d",
+  "audio",
 ] }
 fabr = { path = "../fabr", version = "0.20.0-dev" }
 eme_game_overrides = { path = "../eme_game_overrides", version = "0.20.0-dev" }

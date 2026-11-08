@@ -8,6 +8,9 @@
     graphics: (
         msaa: 4,
     ),
+    audio: (
+        master_volume: 1.0,
+    ),
     input: (
         actions: {
             "jump": [

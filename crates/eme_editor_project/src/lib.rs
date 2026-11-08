@@ -9,11 +9,15 @@ pub mod manifest;
 /// Recent projects, layout, and theme file state on disk.
 pub mod recents;
 /// Project-wide player and input settings.
+pub mod packages;
 pub mod settings;
 
 pub use create::{create_project, open_project};
 pub use error::ProjectError;
 pub use manifest::{Manifest, MANIFEST_FILE, SCHEMA_VERSION};
+pub use packages::{
+    PackageEntry, PackageManifest, PackageSet, PACKAGES_FILE, PACKAGE_MANIFEST_FILE,
+};
 pub use settings::{
     AudioSettings, InputSettings, PhysicsSettings, PlayerSettings, ProjectSettings, SETTINGS_FILE,
 };

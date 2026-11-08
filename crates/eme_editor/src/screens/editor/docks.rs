@@ -1179,8 +1179,11 @@ pub fn history() -> Part {
     dock_frame(tabs, tail, body, tokens::WINDOW)
 }
 
+/// Frame times kept for the Stats history graph.
+pub const STATS_HISTORY: usize = 60;
+
 /// Live editor statistics sampled a few times per second.
-#[derive(Resource, Clone, Copy, Default)]
+#[derive(Resource, Clone, Default)]
 pub struct EditorStats {
     /// Frames per second, rounded.
     pub fps: u32,
@@ -1188,8 +1191,34 @@ pub struct EditorStats {
     pub frame_ms: f32,
     /// Live entity count.
     pub entities: u32,
+    /// Recent frame times in milliseconds, oldest first.
+    pub history: Vec<f32>,
+    /// Fastest frame in the history window.
+    pub min_ms: f32,
+    /// Mean frame time in the history window.
+    pub avg_ms: f32,
+    /// Slowest frame in the history window.
+    pub max_ms: f32,
     /// Bumped after each sample.
     pub rev: u64,
+}
+
+impl EditorStats {
+    /// Records one frame time and refreshes the summary.
+    pub fn sample(&mut self, frame_ms: f32, entities: u32) {
+        let frame_ms = frame_ms.max(0.000_1);
+        self.fps = (1000.0 / frame_ms).round() as u32;
+        self.frame_ms = frame_ms;
+        self.entities = entities;
+        if self.history.len() == STATS_HISTORY {
+            self.history.remove(0);
+        }
+        self.history.push(frame_ms);
+        self.min_ms = self.history.iter().copied().fold(f32::INFINITY, f32::min);
+        self.max_ms = self.history.iter().copied().fold(0.0, f32::max);
+        self.avg_ms = self.history.iter().sum::<f32>() / self.history.len() as f32;
+        self.rev = self.rev.wrapping_add(1);
+    }
 }
 
 /// Host for the Stats rows.
@@ -1209,10 +1238,7 @@ pub fn update_stats(
     }
     *elapsed = 0.0;
     let delta = time.delta_secs().max(0.000_001);
-    stats.fps = (1.0 / delta).round() as u32;
-    stats.frame_ms = delta * 1000.0;
-    stats.entities = entities.len();
-    stats.rev = stats.rev.wrapping_add(1);
+    stats.sample(delta * 1000.0, entities.len());
 }
 
 /// Stats dock body.
@@ -1259,6 +1285,68 @@ pub fn sync_stats(
         ("FPS", format!("{}", stats.fps)),
         ("Frame", format!("{:.2} ms", stats.frame_ms)),
         ("Entities", format!("{}", stats.entities)),
+    ] {
+        let label = text(label, FONT_SIZE, tokens::TEXT_DIM);
+        let value = text(value, FONT_SIZE, tokens::TEXT);
+        commands.spawn_scene(bsn! {
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                height: px(22),
+            }
+            ChildOf(host)
+            Children [ {label} -- {spacer()} -- {value} ]
+        });
+    }
+
+    if stats.history.is_empty() {
+        return;
+    }
+
+    let caption = text(
+        format!("Frame history ({STATS_HISTORY})"),
+        FONT_SIZE,
+        tokens::TEXT_DIM,
+    );
+    commands.spawn_scene(bsn! {
+        Node { height: px(20), display: Display::Flex, align_items: AlignItems::Center }
+        ChildOf(host)
+        Children [ {caption} ]
+    });
+
+    let graph = commands
+        .spawn_scene(bsn! {
+            Node {
+                height: px(48),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::FlexEnd,
+                column_gap: px(1),
+                padding: UiRect { left: px(4), right: px(4) },
+            }
+            ChildOf(host)
+        })
+        .id();
+    let max = stats.max_ms.max(1.0);
+    for frame in &stats.history {
+        let height = (frame / max * 44.0).max(1.0);
+        let color = if *frame > 16.7 {
+            tokens::AXIS_X
+        } else {
+            tokens::ACCENT
+        };
+        commands.spawn_scene(bsn! {
+            Node { width: px(3), height: px(height), border_radius: px(1) }
+            ThemeBackgroundColor(color)
+            ChildOf(graph)
+        });
+    }
+
+    for (label, value) in [
+        ("Min", format!("{:.2} ms", stats.min_ms)),
+        ("Avg", format!("{:.2} ms", stats.avg_ms)),
+        ("Max", format!("{:.2} ms", stats.max_ms)),
     ] {
         let label = text(label, FONT_SIZE, tokens::TEXT_DIM);
         let value = text(value, FONT_SIZE, tokens::TEXT);
@@ -1418,6 +1506,21 @@ fn select_outline_row(
 mod tests {
     use super::*;
     use eme_game_scene::ObjectTransform;
+
+    #[test]
+    fn stats_history_keeps_the_last_window_and_summarises_it() {
+        let mut stats = EditorStats::default();
+        for frame in 1..=70 {
+            stats.sample(frame as f32, 3);
+        }
+        assert_eq!(stats.history.len(), STATS_HISTORY);
+        assert_eq!(stats.history[0], 11.0);
+        assert_eq!(*stats.history.last().unwrap(), 70.0);
+        assert_eq!(stats.min_ms, 11.0);
+        assert_eq!(stats.max_ms, 70.0);
+        assert!((stats.avg_ms - 40.5).abs() < 0.001);
+        assert_eq!(stats.entities, 3);
+    }
 
     #[test]
     fn row_colors_follow_the_selection() {

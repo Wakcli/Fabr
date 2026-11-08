@@ -21,6 +21,7 @@ pub use eme_script::{
     ScriptedObject, ScriptsActive, UiElement,
 };
 
+use eme::prelude::*;
 use std::path::Path;
 
 /// Plugin ABI the generated game entry points speak.
@@ -28,12 +29,110 @@ pub const PLUGIN_ABI_VERSION: u32 = eme_plugin::ABI_VERSION;
 
 /// A Rust game: the typed gameplay entry point of the SDK.
 ///
-/// Implementations configure the app with systems and resources through the
-/// re-exported engine surface; [`game_plugin!`](crate::game_plugin) turns them
-/// into a loadable gameplay library.
-pub trait FabrGame {
+/// The lifecycle mirrors the Lua (`on_start`/`on_update`/`on_stop`) and C#
+/// (`OnStart`/`OnUpdate`/`OnStop`) contracts, so the same game logic can move
+/// between the three languages without changing shape. `build` installs extra
+/// systems and resources; the lifecycle hooks get a [`GameContext`] for
+/// value-based world access.
+pub trait FabrGame: Send + Sync + 'static {
     /// Installs the game's systems, resources and plugins.
-    fn build(&self, app: &mut App);
+    fn build(&self, _app: &mut App) {}
+
+    /// Runs once after the host app starts.
+    fn on_start(&mut self, _ctx: &mut GameContext) {}
+
+    /// Runs every frame with the frame's delta time in seconds.
+    fn on_update(&mut self, _ctx: &mut GameContext, _dt: f32) {}
+
+    /// Runs once when the host app is about to exit.
+    fn on_stop(&mut self, _ctx: &mut GameContext) {}
+}
+
+/// Value-based world access handed to a game's lifecycle hooks.
+///
+/// Handles are entities, values are plain numbers, and nothing here borrows
+/// from the world after the call returns; the same shape as the C# callback
+/// table and the Lua `fabr` table.
+pub struct GameContext<'w> {
+    world: &'w mut World,
+}
+
+impl<'w> GameContext<'w> {
+    /// Reads an object's world translation.
+    pub fn translation(&mut self, entity: Entity) -> Option<[f32; 3]> {
+        let transform = self.world.get::<Transform>(entity)?;
+        Some(transform.translation.to_array())
+    }
+
+    /// Writes an object's world translation; returns false for unknown objects.
+    pub fn set_translation(&mut self, entity: Entity, translation: [f32; 3]) -> bool {
+        let Some(mut transform) = self.world.get_mut::<Transform>(entity) else {
+            return false;
+        };
+        transform.translation = Vec3::from_array(translation);
+        true
+    }
+
+    /// Writes one line to the engine log.
+    pub fn log(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        eme::log::info!("{message}");
+    }
+}
+
+/// The running game's instance, kept as a resource for the lifecycle systems.
+#[derive(Resource)]
+struct GameRuntime {
+    game: Box<dyn FabrGame>,
+}
+
+/// Set once the host has seen an [`AppExit`](eme::app::AppExit).
+#[derive(Resource, Default)]
+struct GameStopRequested(bool);
+
+fn start_game(world: &mut World) {
+    world.resource_scope(|world, mut runtime: Mut<GameRuntime>| {
+        let mut ctx = GameContext { world };
+        runtime.game.on_start(&mut ctx);
+    });
+}
+
+fn update_game(world: &mut World) {
+    let dt = world.resource::<Time>().delta_secs();
+    world.resource_scope(|world, mut runtime: Mut<GameRuntime>| {
+        let mut ctx = GameContext { world };
+        runtime.game.on_update(&mut ctx, dt);
+    });
+}
+
+fn notice_game_exit(exit: MessageReader<AppExit>, mut stop: ResMut<GameStopRequested>) {
+    if !exit.is_empty() {
+        stop.0 = true;
+    }
+}
+
+fn stop_game(world: &mut World) {
+    if !world.resource::<GameStopRequested>().0 {
+        return;
+    }
+    world.resource_scope(|world, mut runtime: Mut<GameRuntime>| {
+        let mut ctx = GameContext { world };
+        runtime.game.on_stop(&mut ctx);
+    });
+    world.resource_mut::<GameStopRequested>().0 = false;
+}
+
+/// Installs a game into a live app: its build hook plus the lifecycle systems.
+pub fn install<G: FabrGame + Default>(app: &mut App) {
+    let game = G::default();
+    game.build(app);
+    app.insert_resource(GameRuntime {
+        game: Box::new(game),
+    })
+    .init_resource::<GameStopRequested>()
+    .add_systems(Startup, start_game)
+    .add_systems(Update, update_game)
+    .add_systems(Last, (notice_game_exit, stop_game).chain());
 }
 
 /// Builds a game into a live host app.
@@ -44,7 +143,7 @@ pub trait FabrGame {
 pub unsafe fn register_game<G: FabrGame + Default>(app: *mut core::ffi::c_void) {
     // SAFETY: the caller guarantees the pointer is the host's App.
     let app = unsafe { &mut *app.cast::<App>() };
-    G::default().build(app);
+    install::<G>(app);
 }
 
 /// Exports the plugin ABI for a [`FabrGame`] implementation.
@@ -121,13 +220,14 @@ pub mod prelude {
         key_binding, script_files, script_property_defaults, FabrConfig, InputActions, InputSettings,
         NodeKey, ObjectKind, ObjectTransform, PlayerSettings, ProjectSettings, SceneDoc, SceneObject,
         ScriptLanguage, ScriptLog, ScriptPlugin, ScriptRef, ScriptRoot, ScriptValue,
-        ScriptedObject, ScriptsActive, FabrGame, SETTINGS_FILE, VERSION,
+        ScriptedObject, ScriptsActive, FabrGame, GameContext, SETTINGS_FILE, VERSION,
     };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eme_ecs::system::RunSystemOnce;
     use crate::prelude::*;
 
     #[derive(Resource, Default)]
@@ -147,6 +247,51 @@ mod tests {
         let mut app = App::new();
         TestGame.build(&mut app);
         assert!(app.world().contains_resource::<GameMarker>());
+    }
+
+    #[test]
+    fn the_context_reads_and_writes_world_values() {
+        let mut world = World::new();
+        let entity = world
+            .spawn(Transform::from_xyz(1.0, 2.0, 3.0))
+            .id();
+        let mut ctx = GameContext { world: &mut world };
+        assert_eq!(ctx.translation(entity), Some([1.0, 2.0, 3.0]));
+        assert!(ctx.set_translation(entity, [4.0, 5.0, 6.0]));
+        assert_eq!(ctx.translation(entity), Some([4.0, 5.0, 6.0]));
+        let missing = ctx.world.spawn_empty().id();
+        ctx.world.despawn(missing);
+        assert!(!ctx.set_translation(missing, [0.0; 3]));
+    }
+
+    #[test]
+    fn lifecycle_hooks_run_in_order() {
+        use std::sync::Mutex;
+        static CALLS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+        #[derive(Default)]
+        struct Lifecycle;
+        impl FabrGame for Lifecycle {
+            fn on_start(&mut self, _ctx: &mut GameContext) {
+                CALLS.lock().unwrap().push("start");
+            }
+            fn on_update(&mut self, _ctx: &mut GameContext, _dt: f32) {
+                CALLS.lock().unwrap().push("update");
+            }
+            fn on_stop(&mut self, _ctx: &mut GameContext) {
+                CALLS.lock().unwrap().push("stop");
+            }
+        }
+        CALLS.lock().unwrap().clear();
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default());
+        install::<Lifecycle>(&mut app);
+        app.world_mut().run_system_once(start_game).unwrap();
+        app.world_mut().run_system_once(update_game).unwrap();
+        app.world_mut()
+            .resource_mut::<GameStopRequested>()
+            .0 = true;
+        app.world_mut().run_system_once(stop_game).unwrap();
+        assert_eq!(*CALLS.lock().unwrap(), ["start", "update", "stop"]);
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

@@ -378,6 +378,61 @@ fn integrate(
     }
 }
 
+/// A spring that keeps two bodies a rest distance apart.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct DistanceJoint {
+    /// First body; only this entity carries the joint.
+    pub a: Entity,
+    /// Second body.
+    pub b: Entity,
+    /// Distance the spring pulls toward.
+    pub rest: f32,
+    /// Spring constant; larger values pull harder.
+    pub stiffness: f32,
+    /// Velocity damping along the spring axis.
+    pub damping: f32,
+}
+
+/// Applies joint impulses; run before [`step_physics`] so the step consumes them.
+pub fn step_joints(
+    time: Res<Time>,
+    joints: Query<&DistanceJoint>,
+    transforms: Query<&Transform>,
+    mut bodies: Query<&mut PhysicsBody>,
+) {
+    let dt = time.delta_secs().clamp(0.0, 0.05);
+    if dt <= 0.0 {
+        return;
+    }
+    for joint in &joints {
+        let (Ok(pa), Ok(pb)) = (transforms.get(joint.a), transforms.get(joint.b)) else {
+            continue;
+        };
+        let delta = pb.translation - pa.translation;
+        let len = delta.length();
+        if len < 1e-4 {
+            continue;
+        }
+        let dir = delta / len;
+        let (va, vb) = (
+            bodies.get(joint.a).map(|body| body.velocity).unwrap_or_default(),
+            bodies.get(joint.b).map(|body| body.velocity).unwrap_or_default(),
+        );
+        let relative = (vb - va).dot(dir);
+        let force = dir * ((len - joint.rest) * joint.stiffness + relative * joint.damping);
+        if let Ok(mut body) = bodies.get_mut(joint.a)
+            && body.dynamic
+        {
+            body.velocity += force * dt;
+        }
+        if let Ok(mut body) = bodies.get_mut(joint.b)
+            && body.dynamic
+        {
+            body.velocity -= force * dt;
+        }
+    }
+}
+
 fn land(body: &mut PhysicsBody, settings: &PhysicsSettings) {
     body.velocity.y = -body.velocity.y * settings.bounce;
     if body.velocity.y.abs() < 0.5 {
@@ -571,6 +626,111 @@ mod tests {
         };
         body.apply_angular_impulse(Vec3::new(0.0, inertia.y * 2.0, 0.0), 2.0);
         assert!((body.angular_velocity.y - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_joint_pulls_two_bodies_toward_rest_length() {
+        use eme_ecs::system::IntoSystem;
+
+        let mut world = World::new();
+        world.insert_resource(Time::<()>::default());
+        world.insert_resource(PhysicsSettings {
+            gravity: 0.0,
+            ..PhysicsSettings::default()
+        });
+        let a = world
+            .spawn((
+                Transform::from_xyz(-3.0, 0.5, 0.0),
+                PhysicsBody {
+                    dynamic: true,
+                    ..PhysicsBody::from_spec(&PhysicsBodySpec::default())
+                },
+            ))
+            .id();
+        let b = world
+            .spawn((
+                Transform::from_xyz(3.0, 0.5, 0.0),
+                PhysicsBody {
+                    dynamic: true,
+                    ..PhysicsBody::from_spec(&PhysicsBodySpec::default())
+                },
+            ))
+            .id();
+        world.entity_mut(a).insert(DistanceJoint {
+            a,
+            b,
+            rest: 2.0,
+            stiffness: 20.0,
+            damping: 2.0,
+        });
+        let mut joints = IntoSystem::into_system(step_joints);
+        let mut physics = IntoSystem::into_system(step_physics);
+        joints.initialize(&mut world);
+        physics.initialize(&mut world);
+        for _ in 0..240 {
+            world
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+            let _ = joints.run((), &mut world);
+            let _ = physics.run((), &mut world);
+        }
+        let pa = world.get::<Transform>(a).unwrap().translation;
+        let pb = world.get::<Transform>(b).unwrap().translation;
+        let distance = (pb - pa).length();
+        assert!(
+            (distance - 2.0).abs() < 0.4,
+            "spring settled at {distance}, expected near 2"
+        );
+    }
+
+    #[test]
+    fn a_joint_ignores_static_bodies_and_missing_peers() {
+        use eme_ecs::system::IntoSystem;
+
+        let mut world = World::new();
+        world.insert_resource(Time::<()>::default());
+        world.insert_resource(PhysicsSettings::default());
+        let anchor = world
+            .spawn((
+                Transform::from_xyz(0.0, 2.0, 0.0),
+                PhysicsBody::from_spec(&PhysicsBodySpec {
+                    dynamic: false,
+                    half_extents: [0.5; 3],
+                    controller: false,
+                }),
+            ))
+            .id();
+        let body = world
+            .spawn((
+                Transform::from_xyz(0.0, 5.0, 0.0),
+                PhysicsBody {
+                    dynamic: true,
+                    ..PhysicsBody::from_spec(&PhysicsBodySpec::default())
+                },
+            ))
+            .id();
+        world.entity_mut(anchor).insert(DistanceJoint {
+            a: anchor,
+            b: body,
+            rest: 1.0,
+            stiffness: 10.0,
+            damping: 1.0,
+        });
+        let mut joints = IntoSystem::into_system(step_joints);
+        joints.initialize(&mut world);
+        world
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+        let _ = joints.run((), &mut world);
+        assert_eq!(
+            world.get::<PhysicsBody>(anchor).unwrap().velocity,
+            Vec3::ZERO,
+            "static anchors do not move"
+        );
+        assert!(
+            world.get::<PhysicsBody>(body).unwrap().velocity.y < 0.0,
+            "the spring pulls the body down toward the anchor"
+        );
     }
 
     #[test]

@@ -26,8 +26,8 @@ pub use nav::{
     NavAgent, NavGrid, NavGridSettings, NavPlugin, NavSet, refresh_nav_grid, step_nav_agents,
 };
 pub use physics::{
-    step_controllers, step_physics, walkable, ControllerSettings, KinematicController, PhysicsBody,
-    PhysicsSettings,
+    step_controllers, step_joints, step_physics, walkable, ControllerSettings, DistanceJoint,
+    KinematicController, PhysicsBody, PhysicsSettings,
 };
 
 /// The authored behaviour plus the transform it advances from.

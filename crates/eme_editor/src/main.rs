@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eme::asset::AssetPlugin;
 use eme::feathers::{dark_theme::create_dark_theme, theme::UiTheme, FeathersPlugins};
@@ -76,6 +76,22 @@ pub struct HubRes(pub HubState);
 #[derive(Resource, Deref, DerefMut)]
 pub struct LayoutRes(pub Layout);
 
+
+#[cfg(feature = "plugins")]
+#[expect(
+    unsafe_code,
+    reason = "external plugins are native libraries registered through a C ABI"
+)]
+fn load_external(
+    app: &mut App,
+    root: &Path,
+    entries: &[(String, String)],
+) -> (Vec<eme_plugin::LoadedPlugin>, Vec<String>) {
+    // SAFETY: `app` is borrowed for the call and stays alive afterwards; the
+    // configured libraries are the user's plugin binaries.
+    unsafe { eme_plugin::load_and_register(std::ptr::from_mut(app).cast(), root, entries) }
+}
+
 fn main() {
     let mut app = App::new();
     let start = std::env::var("EME_EDITOR_SCREEN").unwrap_or_else(|_| {
@@ -121,8 +137,8 @@ fn main() {
         screens::hub::HubPlugin,
     ))
     .add_systems(Startup, spawn_camera)
-    .add_systems(Update, capture_on_frame)
-    .run();
+    .add_systems(Update, capture_on_frame);
+    run_with_plugins(app);
 }
 
 fn capture_on_frame(mut commands: Commands, mut frame: Local<u32>) {
@@ -169,7 +185,7 @@ pub(crate) fn project_layout_path() -> PathBuf {
 }
 
 /// Reads a layout file, returning `None` for missing or invalid files.
-pub(crate) fn read_layout(path: &std::path::Path) -> Option<Layout> {
+pub(crate) fn read_layout(path: &Path) -> Option<Layout> {
     let src = std::fs::read_to_string(path).ok()?;
     match ron::from_str::<Layout>(&src) {
         Ok(layout) if layout.validate().is_ok() => Some(layout),
@@ -189,7 +205,7 @@ pub(crate) fn read_layout(path: &std::path::Path) -> Option<Layout> {
 }
 
 /// Writes a layout file, creating the parent folder when needed.
-pub(crate) fn write_layout(layout: &Layout, path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn write_layout(layout: &Layout, path: &Path) -> Result<(), String> {
     let text = ron::ser::to_string_pretty(
         layout,
         ron::ser::PrettyConfig::default().struct_names(true),
@@ -227,6 +243,33 @@ fn sample_hub() -> HubState {
         });
     }
     hub
+}
+
+
+
+#[cfg(feature = "plugins")]
+fn run_with_plugins(mut app: App) {
+    let root = build::workspace_dir();
+    let extensions = eme_game_runtime::load_for(&root);
+    let entries: Vec<(String, String)> = extensions
+        .external
+        .iter()
+        .map(|plugin| (plugin.name.clone(), plugin.library.clone()))
+        .collect();
+    let (plugins, errors) = load_external(&mut app, &root, &entries);
+    for error in errors {
+        warn!("plugin: {error}");
+    }
+    for plugin in &plugins {
+        info!("plugin: loaded {}", plugin.name);
+    }
+    let _plugins = plugins;
+    app.run();
+}
+
+#[cfg(not(feature = "plugins"))]
+fn run_with_plugins(app: App) {
+    app.run();
 }
 
 #[cfg(test)]

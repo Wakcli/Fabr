@@ -12,6 +12,11 @@ use eme_math::prelude::*;
 use eme_time::Time;
 use eme_transform::prelude::Transform;
 
+/// A small gravity and AABB physics step shared by the editor and player.
+pub mod physics;
+
+pub use physics::{step_physics, PhysicsBody, PhysicsSettings};
+
 /// The authored behaviour plus the transform it advances from.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct SceneBehaviour {
@@ -40,7 +45,10 @@ pub fn advance(spec: &Behaviour, base: &Transform, time: f32) -> Transform {
 }
 
 /// Writes every behaviour's transform for the current elapsed time.
-pub fn run_behaviours(time: Res<Time>, mut objects: Query<(&SceneBehaviour, &mut Transform)>) {
+pub fn run_behaviours(
+    time: Res<Time>,
+    mut objects: Query<(&SceneBehaviour, &mut Transform), Without<PhysicsBody>>,
+) {
     let now = time.elapsed_secs();
     for (behaviour, mut transform) in &mut objects {
         *transform = advance(&behaviour.spec, &behaviour.base, now);

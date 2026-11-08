@@ -13,7 +13,7 @@ pub use eme_game_scene::{
 };
 pub use eme_script::{
     key_binding, script_files, script_property_defaults, update_scripts, AudioBus, AudioMix,
-    InputActions, SceneRequests, ScriptLog, ScriptPlugin, ScriptReload, ScriptRoot, ScriptUi,
+    InputActions, SceneRequests, ScriptLog, ScriptPlugin, ScriptReload, ScriptRoot, SceneOp, ScriptUi,
     ScriptedObject, ScriptsActive, UiElement,
 };
 

@@ -313,12 +313,19 @@ pub struct SceneRequests {
     pub load: Option<String>,
     /// Reload the current scene file.
     pub reload: bool,
+    /// Extra scene documents to add, with the layer id the script received.
+    pub additive: Vec<(u64, String)>,
+    /// Layer ids requested for removal.
+    pub unload: Vec<u64>,
 }
 
 impl SceneRequests {
     /// Whether a request is waiting.
     pub fn pending(&self) -> bool {
-        self.load.is_some() || self.reload
+        self.load.is_some()
+            || self.reload
+            || !self.additive.is_empty()
+            || !self.unload.is_empty()
     }
 }
 
@@ -358,10 +365,29 @@ enum ControllerOp {
     Jump,
 }
 
-#[derive(Clone, Debug)]
-enum SceneOp {
+/// One scene operation raised by a script.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SceneOp {
+    /// Replace the running document with `path`.
     Load(String),
+    /// Add `path` as a layer with the id returned to the script.
+    Additive {
+        /// Layer id handed to the caller.
+        id: u64,
+        /// Scene file to add.
+        path: String,
+    },
+    /// Remove the layer with this id.
+    Unload(u64),
+    /// Re-read the running document.
     Reload,
+}
+
+/// Ids for additive scene layers, unique for the process lifetime.
+static NEXT_LAYER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_layer_id() -> u64 {
+    NEXT_LAYER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[derive(Clone, Debug)]
@@ -438,7 +464,7 @@ impl Default for ApiState {
 #[derive(Resource)]
 pub struct ScriptRuntime {
     /// Scene requests raised by scripts, drained by [`publish_scene_requests`].
-    pub scene_requests: Vec<(String, bool)>,
+    pub scene_requests: Vec<SceneOp>,
     /// HUD elements collected this update.
     pub ui: Vec<UiElement>,
     /// Button ids pressed since the last script update.
@@ -809,6 +835,34 @@ impl ScriptRuntime {
             "reload",
             lua.create_function(move |_, ()| {
                 api_reload.lock().unwrap().scene_ops.push(SceneOp::Reload);
+                Ok(true)
+            })?,
+        )?;
+        let api_additive = api.clone();
+        scene.set(
+            "load_additive",
+            lua.create_function(move |_, path: String| {
+                let id = next_layer_id();
+                api_additive
+                    .lock()
+                    .unwrap()
+                    .scene_ops
+                    .push(SceneOp::Additive {
+                        id,
+                        path: path.clone(),
+                    });
+                Ok(id)
+            })?,
+        )?;
+        let api_unload = api.clone();
+        scene.set(
+            "unload",
+            lua.create_function(move |_, id: u64| {
+                api_unload
+                    .lock()
+                    .unwrap()
+                    .scene_ops
+                    .push(SceneOp::Unload(id));
                 Ok(true)
             })?,
         )?;
@@ -1352,16 +1406,15 @@ pub fn update_scripts(
             ui.push(element);
         }
         for op in api.scene_ops.drain(..) {
-            match op {
-                SceneOp::Load(path) => {
-                    log.push(format!("scene: load requested {path}"));
-                    scene_requests.push((path, false));
+            match &op {
+                SceneOp::Load(path) => log.push(format!("scene: load requested {path}")),
+                SceneOp::Additive { id, path } => {
+                    log.push(format!("scene: additive load requested {path} as layer {id}"));
                 }
-                SceneOp::Reload => {
-                    log.push("scene: reload requested".to_string());
-                    scene_requests.push((String::new(), true));
-                }
+                SceneOp::Unload(id) => log.push(format!("scene: unload requested for layer {id}")),
+                SceneOp::Reload => log.push("scene: reload requested".to_string()),
             }
+            scene_requests.push(op);
         }
         for request in api.audio.drain(..) {
             if root.0.join(&request.path).is_file() {
@@ -1418,13 +1471,18 @@ pub fn publish_scene_requests(
     mut runtime: ResMut<ScriptRuntime>,
     mut requests: ResMut<SceneRequests>,
 ) {
-    for (path, reload) in runtime.scene_requests.drain(..) {
-        if reload {
-            requests.reload = true;
-            requests.load = None;
-        } else {
-            requests.load = Some(path);
-            requests.reload = false;
+    for op in runtime.scene_requests.drain(..) {
+        match op {
+            SceneOp::Load(path) => {
+                requests.load = Some(path);
+                requests.reload = false;
+            }
+            SceneOp::Additive { id, path } => requests.additive.push((id, path)),
+            SceneOp::Unload(id) => requests.unload.push(id),
+            SceneOp::Reload => {
+                requests.reload = true;
+                requests.load = None;
+            }
         }
     }
 }
@@ -2032,6 +2090,31 @@ return {
         let controller = world.get::<KinematicController>(entity).unwrap();
         assert!((controller.desired.x - 1.0).abs() < 1e-6);
         assert!(controller.jump);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_script_adds_and_unloads_a_scene_layer() {
+        let dir = scratch("scene-layers");
+        std::fs::write(
+            dir.join("layers.lua"),
+            "return { on_start = function(self) local id = fabr.scene.load_additive('scenes/extra.ember') fabr.scene.unload(id) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        scripted(&mut world, "layers.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        world.run_system_once(publish_scene_requests).unwrap();
+        let requests = world.resource::<SceneRequests>();
+        assert_eq!(requests.additive.len(), 1);
+        let (id, path) = &requests.additive[0];
+        assert!(path.ends_with("scenes/extra.ember"));
+        assert!(*id >= 1);
+        assert_eq!(requests.unload, vec![*id]);
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("additive load requested"), "{log}");
+        assert!(log.contains("unload requested"), "{log}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

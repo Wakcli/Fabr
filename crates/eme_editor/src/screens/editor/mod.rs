@@ -436,6 +436,16 @@ fn scene_transitions_in_player(
         requests.reload = false;
         log.push("scene: reload ignored in the editor; run the player".to_string());
     }
+    for (id, path) in requests.additive.drain(..) {
+        log.push(format!(
+            "scene: additive load {path} (layer {id}) ignored in the editor; run the player"
+        ));
+    }
+    for id in requests.unload.drain(..) {
+        log.push(format!(
+            "scene: unload of layer {id} ignored in the editor; run the player"
+        ));
+    }
 }
 
 fn extension_physics(ext: Res<eme_game_runtime::ExtensionSet>) -> bool {

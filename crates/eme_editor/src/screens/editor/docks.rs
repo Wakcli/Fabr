@@ -1034,7 +1034,45 @@ pub fn console() -> Part {
         crate::PRODUCT,
         crate::PRODUCT
     );
-    let mut lines = Vec::new();
+    let input = Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            height: px(20),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
+        }
+        EditableText::new("")
+        TextInput
+        TabIndex(0)
+        crate::console::ConsoleFilterInput
+        TextLayout { linebreak: LineBreak::NoWrap }
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        on(crate::console::focus_filter)
+    });
+    let hint = Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(24),
+            top: px(0),
+            height: px(FIELD_H - 2.0),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+        }
+        crate::console::ConsoleFilterHint
+        Pickable::IGNORE
+        Children [ {text("Filter output", FONT_SIZE, tokens::TEXT_DIM)} ]
+    });
+    let mut lines: Vec<Part> = vec![Box::new(bsn! {
+        Node { margin: UiRect { bottom: px(4) } }
+        Children [ {field(vec![icons::search_dim(), input, hint], FIELD_H)} ]
+    })];
     for line in [
         banner.as_str(),
         "Vulkan 1.3.280 - Clustered Forward - Device #0",

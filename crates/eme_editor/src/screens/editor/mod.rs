@@ -231,6 +231,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<build::BuildState>()
             .init_resource::<files::FileTree>()
             .init_resource::<crate::console::ConsoleLog>()
+            .init_resource::<crate::console::ConsoleFilter>()
             .init_resource::<crate::import::ImportService>()
             .init_resource::<crate::import::ModelWatcher>()
             .init_resource::<scene::ModelIndex>()
@@ -261,6 +262,8 @@ impl Plugin for EditorPlugin {
                     crate::selection_outline::sync_outlines,
                     (
                         crate::console::sync,
+                        crate::console::sync_filter,
+                        crate::console::sync_filter_hint,
                         sync_script_activity,
                         drain_script_logs,
                         crate::import::poll_system,

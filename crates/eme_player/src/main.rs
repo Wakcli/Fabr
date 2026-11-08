@@ -67,6 +67,22 @@ impl Args {
     }
 }
 
+
+#[cfg(feature = "plugins")]
+#[expect(
+    unsafe_code,
+    reason = "external plugins are native libraries registered through a C ABI"
+)]
+fn load_external(
+    app: &mut App,
+    root: &Path,
+    entries: &[(String, String)],
+) -> (Vec<eme_plugin::LoadedPlugin>, Vec<String>) {
+    // SAFETY: `app` is borrowed for the call and stays alive afterwards; the
+    // configured libraries are the user's plugin binaries.
+    unsafe { eme_plugin::load_and_register(std::ptr::from_mut(app).cast(), root, entries) }
+}
+
 fn main() {
     let args = Args::parse(std::env::args().skip(1)).unwrap_or_else(|err| die(err));
 
@@ -187,7 +203,7 @@ fn main() {
         app.add_plugins(eme_net::NetworkPlugin);
     }
     hud::install(&mut app);
-    app.run();
+    run_with_plugins(app, &extensions);
 }
 
 fn is_not_client(config: Res<eme_net::NetworkConfig>) -> bool {
@@ -340,6 +356,35 @@ fn say(msg: &str) {
 fn die(msg: impl core::fmt::Display) -> ! {
     let _ = writeln!(std::io::stderr(), "eme_player: {msg}");
     std::process::exit(1);
+}
+
+
+
+#[cfg(feature = "plugins")]
+fn run_with_plugins(mut app: App, extensions: &eme_game_runtime::ExtensionSet) {
+    let root = std::env::current_dir().unwrap_or_default();
+    let entries: Vec<(String, String)> = extensions
+        .external
+        .iter()
+        .map(|plugin| (plugin.name.clone(), plugin.library.clone()))
+        .collect();
+    let (plugins, errors) = load_external(&mut app, &root, &entries);
+    for error in errors {
+        warn!("plugin: {error}");
+    }
+    for plugin in &plugins {
+        info!("plugin: loaded {}", plugin.name);
+    }
+    let _plugins = plugins;
+    app.run();
+}
+
+#[cfg(not(feature = "plugins"))]
+fn run_with_plugins(mut app: App, extensions: &eme_game_runtime::ExtensionSet) {
+    if !extensions.external.is_empty() {
+        warn!("plugin: this build cannot load external plugins");
+    }
+    app.run();
 }
 
 #[cfg(test)]

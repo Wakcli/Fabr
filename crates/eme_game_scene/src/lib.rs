@@ -332,6 +332,17 @@ impl Default for PhysicsBodySpec {
     }
 }
 
+/// Animation selection authored on a model object.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AnimationRef {
+    /// Clip selected for playback.
+    #[serde(default)]
+    pub clip: Option<String>,
+    /// Whether the clip starts with the scene.
+    #[serde(default)]
+    pub autoplay: bool,
+}
+
 /// Pointer from a scene object to an imported model asset.
 ///
 /// The GUID is the durable identity: moving or renaming the file keeps it, and a
@@ -380,6 +391,9 @@ pub struct SceneObject {
     /// Optional simple rigid body.
     #[serde(default)]
     pub physics: Option<PhysicsBodySpec>,
+    /// Optional animation selection for imported models.
+    #[serde(default)]
+    pub animation: Option<AnimationRef>,
 }
 
 /// Offset applied on top of an imported node's transform.
@@ -560,6 +574,7 @@ impl SceneDoc {
             overrides: Vec::new(),
             script: None,
             physics: None,
+            animation: None,
         });
         id
     }
@@ -665,6 +680,23 @@ impl SceneDoc {
             }
             None => false,
         }
+    }
+
+    /// The animation selection authored on `id`, if any.
+    pub fn animation(&self, id: u64) -> Option<&AnimationRef> {
+        self.get(id).and_then(|obj| obj.animation.as_ref())
+    }
+
+    /// Sets or clears the animation selection on `id`.
+    pub fn set_animation(&mut self, id: u64, animation: Option<AnimationRef>) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        if obj.animation == animation {
+            return false;
+        }
+        obj.animation = animation;
+        true
     }
 
     /// The physics body authored on `id`, if any.
@@ -1279,6 +1311,29 @@ mod tests {
         assert!(doc.set_color(id, Some([0.8, 0.1, 0.2, 1.0])));
         let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
         assert_eq!(back.get(id).unwrap().color, Some([0.8, 0.1, 0.2, 1.0]));
+    }
+
+    #[test]
+    fn an_animation_selection_round_trips() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Model,
+            "Animated",
+            ObjectTransform::default(),
+        );
+        assert!(doc.set_animation(
+            id,
+            Some(AnimationRef {
+                clip: Some("Spin".into()),
+                autoplay: true,
+            })
+        ));
+        let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
+        assert_eq!(
+            back.animation(id).and_then(|animation| animation.clip.as_deref()),
+            Some("Spin")
+        );
+        assert!(back.animation(id).is_some_and(|animation| animation.autoplay));
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::thread;
 
 use eme::prelude::*;
+use eme_game_runtime::{ExtensionSet, ExternalPlugin, PLUGINS_FILE};
 use eme_game_scene::SceneDoc;
 
 use crate::persist;
@@ -436,7 +437,17 @@ fn package(
     let out_dir = target_dir();
     say(tx, Level::Step, format!("target dir {}", out_dir.display()));
     let export_dir = out_dir.join("export");
-    let player = resolve_player(&export_dir, profile, target, tx)?;
+    let root = workspace_dir();
+    let extensions = ExtensionSet::load(&root.join(PLUGINS_FILE));
+    let dynamic = !extensions.external.is_empty() && target == Target::Linux;
+    if !extensions.external.is_empty() && !dynamic {
+        say(
+            tx,
+            Level::Step,
+            "external gameplay plugins are Linux-only in exports; not staged for this target",
+        );
+    }
+    let player = resolve_player(&export_dir, profile, target, dynamic, tx)?;
 
     let out = PathBuf::from(target.out_dir());
     let assets = Path::new(ASSET_DIR);
@@ -446,6 +457,8 @@ fn package(
         &out,
         assets.is_dir().then_some(assets),
         target,
+        dynamic,
+        &extensions,
         tx,
     )?;
     Ok(out)
@@ -456,9 +469,21 @@ fn resolve_player(
     export_dir: &Path,
     profile: Profile,
     target: Target,
+    dynamic: bool,
     tx: &Sender<Msg>,
 ) -> Result<PathBuf, String> {
     let chosen = player_path(export_dir, target, profile);
+    let mode = if dynamic { "dynamic" } else { "static" };
+    let marker = export_dir.join("plugins-mode");
+    let built = std::fs::read_to_string(&marker).unwrap_or_default();
+    if chosen.is_file() && built.trim() != mode {
+        say(
+            tx,
+            Level::Step,
+            format!("player feature set changed to {mode}; rebuilding"),
+        );
+        std::fs::remove_file(&chosen).map_err(|err| io(&chosen, err))?;
+    }
     if chosen.is_file() {
         say(
             tx,
@@ -480,8 +505,9 @@ fn resolve_player(
                 .unwrap_or_default()
         ),
     );
-    build_player(tx, profile, target, export_dir)?;
+    build_player(tx, profile, target, dynamic, export_dir)?;
     if chosen.is_file() {
+        std::fs::write(&marker, mode).map_err(|err| io(&marker, err))?;
         say(tx, Level::Step, "player built");
         return Ok(chosen);
     }
@@ -512,6 +538,7 @@ fn build_player(
     tx: &Sender<Msg>,
     profile: Profile,
     target: Target,
+    dynamic: bool,
     export_dir: &Path,
 ) -> Result<(), String> {
     let cargo = cargo_command(target);
@@ -519,11 +546,18 @@ fn build_player(
     say(
         tx,
         Level::Step,
-        "static player: external plugins load in the editor and dev player only",
+        if dynamic {
+            "dynamic player: stages the engine dylib and gameplay plugins"
+        } else {
+            "static player: external plugins load in the editor and dev player only"
+        },
     );
     let mut command = Command::new(&cargo.program);
+    command.args(["build", "-p", PLAYER_PKG]);
+    if !dynamic {
+        command.arg("--no-default-features");
+    }
     command
-        .args(["build", "-p", PLAYER_PKG, "--no-default-features"])
         .args(profile.cargo_flags())
         .env("CARGO_TARGET_DIR", export_dir);
     if let Some(triple) = target.cargo_target() {
@@ -572,6 +606,8 @@ fn stage(
     out: &Path,
     assets: Option<&Path>,
     target: Target,
+    dynamic: bool,
+    extensions: &ExtensionSet,
     tx: &Sender<Msg>,
 ) -> Result<(), String> {
     if out.exists() {
@@ -604,6 +640,9 @@ fn stage(
         None => say(tx, Level::Step, "no assets/ folder to copy"),
     }
     stage_packages(&workspace_dir(), out, tx)?;
+    if dynamic {
+        stage_runtime(out, player, &game, extensions, tx)?;
+    }
 
     let settings = workspace_dir().join(eme_editor_project::SETTINGS_FILE);
     if settings.is_file() {
@@ -647,6 +686,125 @@ fn stage_packages(root: &Path, out: &Path, tx: &Sender<Msg>) -> Result<(), Strin
                 manifest.name, entry.version, entry.path
             ),
         );
+    }
+    Ok(())
+}
+
+/// Copies the engine dylib and gameplay plugins next to an exported game.
+fn stage_runtime(
+    out: &Path,
+    source_player: &Path,
+    game: &Path,
+    extensions: &ExtensionSet,
+    tx: &Sender<Msg>,
+) -> Result<(), String> {
+    let staged = stage_runtime_files(out, source_player, extensions, tx)?;
+    let mut rpath_targets = vec![(game.to_path_buf(), "$ORIGIN")];
+    let engine = out.join("libeme_dylib.so");
+    if engine.is_file() {
+        rpath_targets.push((engine, "$ORIGIN"));
+    }
+    for plugin in &staged {
+        rpath_targets.push((out.join(&plugin.library), "$ORIGIN/.."));
+    }
+    for (path, rpath) in rpath_targets {
+        set_rpath(&path, rpath)?;
+        say(
+            tx,
+            Level::Step,
+            format!("rpath {rpath} on {}", path.display()),
+        );
+    }
+    Ok(())
+}
+
+fn stage_runtime_files(
+    out: &Path,
+    source_player: &Path,
+    extensions: &ExtensionSet,
+    tx: &Sender<Msg>,
+) -> Result<Vec<ExternalPlugin>, String> {
+    let plugins_dir = out.join("plugins");
+    std::fs::create_dir_all(&plugins_dir).map_err(|err| io(&plugins_dir, err))?;
+    let mut staged = Vec::new();
+    for plugin in &extensions.external {
+        let path = {
+            let candidate = PathBuf::from(&plugin.library);
+            if candidate.is_absolute() {
+                candidate
+            } else {
+                workspace_dir().join(candidate)
+            }
+        };
+        if !path.is_file() {
+            return Err(format!(
+                "gameplay plugin {} is missing at {}",
+                plugin.name,
+                path.display()
+            ));
+        }
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| format!("{} has no file name", path.display()))?;
+        let staged_path = plugins_dir.join(&name);
+        std::fs::copy(&path, &staged_path).map_err(|err| io(&path, err))?;
+        staged.push(ExternalPlugin {
+            name: plugin.name.clone(),
+            library: format!("plugins/{name}"),
+        });
+        say(
+            tx,
+            Level::Step,
+            format!("staged gameplay plugin {} as plugins/{name}", plugin.name),
+        );
+    }
+
+    // the dynamic player and its plugins need the engine and Rust std dylibs
+    let lib_dir = source_player.parent().ok_or_else(|| {
+        format!("{} has no parent directory", source_player.display())
+    })?;
+    for entry in std::fs::read_dir(lib_dir).map_err(|err| io(lib_dir, err))? {
+        let entry = entry.map_err(|err| io(lib_dir, err))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let runtime = name == "libeme_dylib.so"
+            || (name.starts_with("libstd-") && name.ends_with(".so"));
+        if !runtime {
+            continue;
+        }
+        let target = out.join(&name);
+        std::fs::copy(entry.path(), &target).map_err(|err| io(&target, err))?;
+        set_executable(&target)?;
+        say(tx, Level::Step, format!("staged runtime library {name}"));
+    }
+
+    let set = ExtensionSet {
+        enabled: extensions.enabled.clone(),
+        external: staged,
+    };
+    set.save(&out.join(PLUGINS_FILE))?;
+    say(
+        tx,
+        Level::Step,
+        format!(
+            "staged {} gameplay plugin(s) and {PLUGINS_FILE}",
+            set.external.len()
+        ),
+    );
+    Ok(set.external)
+}
+
+fn set_rpath(path: &Path, rpath: &str) -> Result<(), String> {
+    let status = Command::new("patchelf")
+        .args(["--set-rpath", rpath])
+        .arg(path)
+        .status()
+        .map_err(|err| format!("could not run patchelf: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "patchelf failed for {} (is patchelf installed?)",
+            path.display()
+        ));
     }
     Ok(())
 }
@@ -771,11 +929,11 @@ mod tests {
         write(&dir.join("release").join(name), b"release");
         let (tx, _rx) = mpsc::channel();
         assert_eq!(
-            resolve_player(&dir, Profile::Release, Target::Linux, &tx).unwrap(),
+            resolve_player(&dir, Profile::Release, Target::Linux, false, &tx).unwrap(),
             dir.join("release").join(name)
         );
         assert_eq!(
-            resolve_player(&dir, Profile::Debug, Target::Linux, &tx).unwrap(),
+            resolve_player(&dir, Profile::Debug, Target::Linux, false, &tx).unwrap(),
             dir.join("debug").join(name)
         );
     }
@@ -848,6 +1006,8 @@ mod tests {
             &out,
             Some(&assets),
             Target::Linux,
+            false,
+            &ExtensionSet::default(),
             &tx,
         )
         .unwrap();
@@ -877,7 +1037,17 @@ mod tests {
         let out = dir.join("build/linux");
 
         let (tx, _rx) = mpsc::channel();
-        stage(&player, &scene, &out, None, Target::Linux, &tx).unwrap();
+        stage(
+            &player,
+            &scene,
+            &out,
+            None,
+            Target::Linux,
+            false,
+            &ExtensionSet::default(),
+            &tx,
+        )
+        .unwrap();
         let mode = std::fs::metadata(out.join(Target::Linux.binary_name()))
             .unwrap()
             .permissions()
@@ -937,6 +1107,42 @@ mod tests {
     }
 
     #[test]
+    fn gameplay_plugins_and_runtime_libraries_are_staged() {
+        let root = scratch("runtime-files");
+        let source = root.join("export/debug");
+        std::fs::create_dir_all(&source).unwrap();
+        write(&source.join("eme_player"), b"player");
+        write(&source.join("libeme_dylib.so"), b"engine");
+        write(&source.join("libstd-test.so"), b"std");
+        let plugin = root.join("libgameplay.so");
+        write(&plugin, b"plugin");
+        let out = root.join("build/linux");
+        std::fs::create_dir_all(&out).unwrap();
+        let extensions = ExtensionSet {
+            enabled: ["scripting".to_string()].into_iter().collect(),
+            external: vec![ExternalPlugin {
+                name: "game".into(),
+                library: plugin.to_string_lossy().into_owned(),
+            }],
+        };
+        let (tx, _rx) = mpsc::channel();
+        let staged =
+            stage_runtime_files(&out, &source.join("eme_player"), &extensions, &tx).unwrap();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].library, "plugins/libgameplay.so");
+        assert_eq!(
+            std::fs::read(out.join("plugins/libgameplay.so")).unwrap(),
+            b"plugin"
+        );
+        assert_eq!(std::fs::read(out.join("libeme_dylib.so")).unwrap(), b"engine");
+        assert_eq!(std::fs::read(out.join("libstd-test.so")).unwrap(), b"std");
+        let config = ExtensionSet::load(&out.join(PLUGINS_FILE));
+        assert!(config.enabled.contains("scripting"));
+        assert_eq!(config.external, staged);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn stage_cleans_a_previous_build() {
         let dir = scratch("clean");
         let player = dir.join("player");
@@ -947,7 +1153,17 @@ mod tests {
         write(&out.join("stale.txt"), b"old");
 
         let (tx, _rx) = mpsc::channel();
-        stage(&player, &scene, &out, None, Target::Linux, &tx).unwrap();
+        stage(
+            &player,
+            &scene,
+            &out,
+            None,
+            Target::Linux,
+            false,
+            &ExtensionSet::default(),
+            &tx,
+        )
+        .unwrap();
         assert!(!out.join("stale.txt").exists());
         assert!(out.join(Target::Linux.binary_name()).is_file());
         std::fs::remove_dir_all(&dir).unwrap();

@@ -105,7 +105,8 @@ fn main() {
     }
 
     let loaded = scene::load(args.scene.as_deref()).unwrap_or_else(|err| die(err));
-    let config = fabr::FabrConfig::load(Path::new(".")).unwrap_or_else(|err| {
+    let root = game_root();
+    let config = fabr::FabrConfig::load(&root).unwrap_or_else(|err| {
         let _ = writeln!(std::io::stderr(), "fabr settings: {err}; using defaults");
         fabr::FabrConfig::default()
     });
@@ -123,7 +124,7 @@ fn main() {
     };
 
     let assets = asset_root();
-    let extensions = eme_game_runtime::load_for(Path::new("."));
+    let extensions = eme_game_runtime::load_for(&root);
     let scripting = extensions.enabled(eme_game_runtime::Extension::Scripting);
     let physics = extensions.enabled(eme_game_runtime::Extension::Physics);
     let mut app = App::new();
@@ -226,6 +227,23 @@ fn main() {
         ),
     );
     run_with_plugins(app, &extensions);
+}
+
+/// Folder holding `fabr.plugins.ron` and the project settings.
+///
+/// Exported games are launched by path, so prefer the executable's folder when
+/// the working directory is not the game folder.
+fn game_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if cwd.join(eme_game_runtime::PLUGINS_FILE).is_file()
+        || cwd.join(fabr::SETTINGS_FILE).is_file()
+    {
+        return cwd;
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or(cwd)
 }
 
 fn is_not_client(config: Res<eme_net::NetworkConfig>) -> bool {
@@ -425,7 +443,7 @@ fn die(msg: impl core::fmt::Display) -> ! {
 
 #[cfg(feature = "plugins")]
 fn run_with_plugins(mut app: App, extensions: &eme_game_runtime::ExtensionSet) {
-    let root = std::env::current_dir().unwrap_or_default();
+    let root = game_root();
     let entries: Vec<(String, String)> = extensions
         .external
         .iter()

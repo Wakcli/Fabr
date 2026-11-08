@@ -18,7 +18,7 @@ use eme_asset::{AssetServer, Handle};
 use eme_audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use eme_ecs::prelude::*;
 use eme_anim::AnimationSet;
-use eme_game_runtime::{NavAgent, NavGrid, PhysicsBody};
+use eme_game_runtime::{KinematicController, NavAgent, NavGrid, PhysicsBody};
 use eme_game_scene::{ScriptRef, ScriptValue};
 use eme_input::prelude::*;
 use eme_math::prelude::*;
@@ -353,6 +353,12 @@ enum AnimationOp {
 }
 
 #[derive(Clone, Debug)]
+enum ControllerOp {
+    Walk(f32, f32),
+    Jump,
+}
+
+#[derive(Clone, Debug)]
 enum SceneOp {
     Load(String),
     Reload,
@@ -388,6 +394,7 @@ struct ApiState {
     scene_ops: Vec<SceneOp>,
     ui: Vec<UiElement>,
     ui_clicks: Vec<u32>,
+    controller_ops: Vec<(Entity, ControllerOp)>,
     delta: f32,
     elapsed: f32,
     properties: BTreeMap<String, ScriptValue>,
@@ -419,6 +426,7 @@ impl Default for ApiState {
             scene_ops: Vec::new(),
             ui: Vec::new(),
             ui_clicks: Vec::new(),
+            controller_ops: Vec::new(),
             delta: 0.0,
             elapsed: 0.0,
             properties: BTreeMap::new(),
@@ -762,6 +770,27 @@ impl ScriptRuntime {
         let api_clicked = api.clone();
         ui.set("clicked", lua.create_function(move |_, id: u32| Ok(api_clicked.lock().unwrap().ui_clicks.contains(&id)))?)?;
         fabr.set("ui", ui)?;
+        let api_walk = api.clone();
+        self_table.set(
+            "walk",
+            lua.create_function(move |_, (_self, x, z): (Value, f32, f32)| {
+                let mut state = api_walk.lock().unwrap();
+                let entity = state.self_entity;
+                state.controller_ops.push((entity, ControllerOp::Walk(x, z)));
+                Ok(())
+            })?,
+        )?;
+        let api_jump = api.clone();
+        self_table.set(
+            "jump",
+            lua.create_function(move |_, _self: Value| {
+                let mut state = api_jump.lock().unwrap();
+                let entity = state.self_entity;
+                state.controller_ops.push((entity, ControllerOp::Jump));
+                Ok(())
+            })?,
+        )?;
+
         let api_scene = api.clone();
         let scene = lua.create_table()?;
         scene.set(
@@ -1130,13 +1159,13 @@ pub fn update_scripts(
     mut audio: ResMut<ScriptAudio>,
     mut runtime: ResMut<ScriptRuntime>,
     mut log: ResMut<ScriptLog>,
-    mut transforms: Query<(Entity, &mut Transform)>,
+    mut transforms: Query<(Entity, &mut Transform, Option<&Name>)>,
     mut bodies: Query<(Entity, &mut PhysicsBody)>,
     mut animations: Query<(Entity, &mut AnimationSet)>,
     mut agents: Query<(Entity, &mut NavAgent)>,
+    mut controllers: Query<&mut KinematicController>,
     grid: Res<NavGrid>,
     mut commands: Commands,
-    names: Query<(Entity, &Name)>,
 ) {
     if !active.0 {
         return;
@@ -1159,11 +1188,11 @@ pub fn update_scripts(
 
     let mut scene_transforms = HashMap::new();
     let mut name_map = HashMap::new();
-    for (entity, transform) in &mut transforms {
+    for (entity, transform, name) in &mut transforms {
         scene_transforms.insert(entity, (transform.translation, transform.rotation));
-    }
-    for (entity, name) in &names {
-        name_map.insert(name.as_str().to_owned(), entity);
+        if let Some(name) = name {
+            name_map.insert(name.as_str().to_owned(), entity);
+        }
     }
     let mut velocities = HashMap::new();
     let mut grounded = HashSet::new();
@@ -1247,6 +1276,7 @@ pub fn update_scripts(
             api.nav_ops.clear();
             api.ui.clear();
             api.ui_clicks = std::mem::take(ui_clicks);
+            api.controller_ops.clear();
             api.scene_ops.clear();
         }
 
@@ -1310,6 +1340,14 @@ pub fn update_scripts(
                 }
             }
         }
+        for (entity, op) in api.controller_ops.drain(..) {
+            if let Ok(mut controller) = controllers.get_mut(entity) {
+                match op {
+                    ControllerOp::Walk(x, z) => controller.walk(x, z),
+                    ControllerOp::Jump => controller.jump(),
+                }
+            }
+        }
         for element in api.ui.drain(..) {
             ui.push(element);
         }
@@ -1339,7 +1377,7 @@ pub fn update_scripts(
             }
         }
         for (target, translation, rotation) in &api.ops {
-            if let Ok((_, mut transform)) = transforms.get_mut(*target) {
+            if let Ok((_, mut transform, _)) = transforms.get_mut(*target) {
                 transform.translation = *translation;
                 transform.rotation = *rotation;
             }
@@ -1973,6 +2011,27 @@ return {
         world.run_system_once(update_scripts).unwrap();
         assert!(world.resource::<ScriptLog>().lines().join("\n").contains("clicked 3"));
         assert!(world.resource::<ScriptUi>().clicks.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_script_walks_and_jumps_a_controller() {
+        let dir = scratch("controller");
+        std::fs::write(
+            dir.join("walk.lua"),
+            "return { on_start = function(self) self:walk(1, 0) self:jump() end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "walk.lua", BTreeMap::new());
+        world
+            .entity_mut(entity)
+            .insert(KinematicController::new(Vec3::splat(0.5)));
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let controller = world.get::<KinematicController>(entity).unwrap();
+        assert!((controller.desired.x - 1.0).abs() < 1e-6);
+        assert!(controller.jump);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

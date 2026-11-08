@@ -47,6 +47,9 @@ members = [
 exclude = [
   # Integration tests are not part of the workspace
   "tests-integration",
+  # Python tooling directories are not Rust packages
+  "tools/agent",
+  "tools/architecture",
 ]
 
 [workspace.lints.clippy]

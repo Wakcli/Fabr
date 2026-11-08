@@ -1079,11 +1079,21 @@ fn collect_scripts(dir: &Path, root: &Path, depth: usize, extension: &str, out: 
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+            && !is_framework_assembly(&path)
             && let Ok(rel) = path.strip_prefix(root)
         {
             out.push(rel.to_string_lossy().replace('\\', "/"));
         }
     }
+}
+
+/// Runtime assemblies that sit beside game scripts but are not scripts.
+fn is_framework_assembly(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    name == csharp::BINDINGS_ASSEMBLY || name.ends_with(".resources.dll")
 }
 
 /// Reads the property defaults a script declares, without running its lifecycle.
@@ -1329,10 +1339,13 @@ pub fn sync_scripts(
             continue;
         }
         let full = root.0.join(path);
+        // the bootstrap keys instances by the entity handle, so the old
+        // instance must be stopped and unloaded before the new one loads
+        csharp.remove(entity, &mut log);
         match csharp::load(&mut csharp, entity, path, class, &full) {
             Ok(instance) => {
                 csharp.clear_failed(path, class);
-                if csharp.remove(entity, &mut log).is_some() && loaded {
+                if loaded {
                     log.push(format!("script {path}: reloaded"));
                 }
                 csharp.insert(entity, instance);
@@ -1340,9 +1353,6 @@ pub fn sync_scripts(
             Err(err) => {
                 csharp.mark_failed(path, class);
                 log.push(format!("script {path}: {err}"));
-                if loaded && !reloading {
-                    csharp.remove(entity, &mut log);
-                }
             }
         }
     }
@@ -2421,45 +2431,15 @@ return {
         assert!(InputActions::from_names(&names).is_err());
     }
 
-    const CSHARP_SCRIPT: &str = r#"
-using System.Runtime.InteropServices;
-
-namespace Game;
-
-[StructLayout(LayoutKind.Sequential)]
-public unsafe struct FabrApi
-{
-    public void* Context;
-    public delegate* unmanaged[Cdecl]<void*, byte*, void> Log;
-    public delegate* unmanaged[Cdecl]<void*, ulong, float, float, float, int> SetTranslation;
-    public delegate* unmanaged[Cdecl]<void*, ulong, float*, int> GetTranslation;
-}
-
-public static class Spin
-{
-    [UnmanagedCallersOnly]
-    public static unsafe void Start(FabrApi* api, ulong entity)
-    {
-        byte[] message = System.Text.Encoding.UTF8.GetBytes("csharp start\0");
-        fixed (byte* text = message) { api->Log(api->Context, text); }
+    /// The CLR host and the managed bootstrap are process-wide, so the C#
+    /// scene tests must not run at the same time.
+    fn csharp_guard() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::Mutex;
+        static GUARD: Mutex<()> = Mutex::new(());
+        GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-
-    [UnmanagedCallersOnly]
-    public static unsafe void Update(FabrApi* api, ulong entity, float dt)
-    {
-        float* position = stackalloc float[3];
-        if (api->GetTranslation(api->Context, entity, position) == 0) { return; }
-        api->SetTranslation(api->Context, entity, position[0], position[1] + dt, position[2]);
-    }
-
-    [UnmanagedCallersOnly]
-    public static unsafe void Stop(FabrApi* api, ulong entity)
-    {
-        byte[] message = System.Text.Encoding.UTF8.GetBytes("csharp stop\0");
-        fixed (byte* text = message) { api->Log(api->Context, text); }
-    }
-}
-"#;
 
     fn dotnet_available() -> bool {
         std::process::Command::new("dotnet")
@@ -2468,30 +2448,99 @@ public static class Spin
             .is_ok_and(|out| out.status.success())
     }
 
-    fn build_csharp_script(dir: &Path) -> PathBuf {
+    fn run_dotnet(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("dotnet")
+            .current_dir(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "dotnet {args:?} failed");
+    }
+
+    /// Builds the managed bootstrap once per test process.
+    fn bindings() -> PathBuf {
+        static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        BUILT
+            .get_or_init(|| {
+                let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../sdk/csharp/Fabr.Bindings");
+                let out = std::env::temp_dir()
+                    .join(format!("fabr-bindings-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&out);
+                run_dotnet(
+                    &sdk,
+                    &["build", "-c", "Release", "-o", out.to_str().unwrap()],
+                );
+                out
+            })
+            .clone()
+    }
+
+    fn game_script_source(speed: f32) -> String {
+        format!(
+            r#"
+using System.Numerics;
+using Fabr.Bindings;
+
+namespace Game;
+
+public sealed class Spin : FabrScript
+{{
+    private float elapsed;
+
+    public override void OnStart() => Log("csharp start");
+
+    public override void OnUpdate(float dt)
+    {{
+        Translate(new Vector3({speed} * dt, 0.0f, 0.0f));
+        elapsed += dt;
+        if (elapsed > 0.25f)
+        {{
+            elapsed = 0.0f;
+            Log($"csharp x={{Position.X:F2}}");
+        }}
+    }}
+
+    public override void OnStop() => Log("csharp stop");
+}}
+"#
+        )
+    }
+
+    fn build_game_script(dir: &Path, bindings: &Path, speed: f32) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             dir.join("Game.csproj"),
-            r#"<Project Sdk="Microsoft.NET.Sdk">
+            format!(
+                r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <OutputType>Library</OutputType>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <EnableDynamicLoading>true</EnableDynamicLoading>
-    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
   </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Fabr.Bindings">
+      <HintPath>{}</HintPath>
+    </Reference>
+  </ItemGroup>
 </Project>
 "#,
+                bindings.join("Fabr.Bindings.dll").display()
+            ),
         )
         .unwrap();
-        std::fs::write(dir.join("Script.cs"), CSHARP_SCRIPT).unwrap();
-        let status = std::process::Command::new("dotnet")
-            .current_dir(dir)
-            .args(["build", "-c", "Release", "-o", "out"])
-            .status()
-            .unwrap();
-        assert!(status.success(), "dotnet build failed");
-        dir.join("out")
+        std::fs::write(dir.join("Script.cs"), game_script_source(speed)).unwrap();
+        run_dotnet(dir, &["build", "-c", "Release", "-o", "out"]);
+        dir.join("out/Game.dll")
+    }
+
+    fn stage_managed(root: &Path, game: &Path, bindings: &Path) {
+        let managed = root.join("scripts/managed");
+        std::fs::create_dir_all(&managed).unwrap();
+        for name in ["Fabr.Bindings.dll", "Fabr.Bindings.runtimeconfig.json"] {
+            std::fs::copy(bindings.join(name), managed.join(name)).unwrap();
+        }
+        std::fs::copy(game, managed.join("Game.dll")).unwrap();
     }
 
     fn csharp_scripted(world: &mut World, path: &str, class: &str) -> Entity {
@@ -2512,6 +2561,7 @@ public static class Spin
 
     #[test]
     fn csharp_and_lua_scripts_run_side_by_side() {
+        let _guard = csharp_guard();
         if !dotnet_available() {
             use std::io::Write;
             let _ = writeln!(
@@ -2521,16 +2571,15 @@ public static class Spin
             return;
         }
         let dir = scratch("csharp");
-        std::fs::create_dir_all(dir.join("scripts/managed")).unwrap();
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
         std::fs::write(
             dir.join("scripts/spin.lua"),
             "return { on_update = function(self, dt) self:translate(2.0 * dt, 0, 0) end }",
         )
         .unwrap();
-        let out = build_csharp_script(&dir.join("project"));
-        for name in ["Game.dll", "Game.runtimeconfig.json"] {
-            std::fs::copy(out.join(name), dir.join("scripts/managed").join(name)).unwrap();
-        }
+        let bindings = bindings();
+        let game = build_game_script(&dir.join("project"), &bindings, 1.0);
+        stage_managed(&dir, &game, &bindings);
 
         let mut world = world(&dir);
         let lua = scripted(&mut world, "scripts/spin.lua", BTreeMap::new());
@@ -2543,11 +2592,51 @@ public static class Spin
         world.run_system_once(update_csharp_scripts).unwrap();
 
         assert_eq!(world.get::<Transform>(lua).unwrap().translation.x, 1.0);
-        assert_eq!(world.get::<Transform>(managed).unwrap().translation.y, 0.5);
+        assert_eq!(world.get::<Transform>(managed).unwrap().translation.x, 0.5);
         let lines = world.resource::<ScriptLog>().lines().to_vec();
         assert!(lines.contains(&"csharp start".to_owned()), "{lines:?}");
         assert!(!lines.iter().any(|line| line.contains("script scripts/managed")), "{lines:?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reloading_a_rebuilt_csharp_assembly_uses_the_new_code() {
+        let _guard = csharp_guard();
+        if !dotnet_available() {
+            return;
+        }
+        let dir = scratch("csharp-reload");
+        std::fs::create_dir_all(dir.join("scripts/managed")).unwrap();
+        let bindings = bindings();
+        let project = dir.join("project");
+        let game = build_game_script(&project, &bindings, 1.0);
+        stage_managed(&dir, &game, &bindings);
+
+        let mut world = world(&dir);
+        let managed = csharp_scripted(&mut world, "scripts/managed/Game.dll", "Game.Spin");
+        world.run_system_once(sync_scripts).unwrap();
+        advance(&mut world, 0.5);
+        world.run_system_once(update_csharp_scripts).unwrap();
+        let first = world.get::<Transform>(managed).unwrap().translation.x;
+        assert!((first - 0.5).abs() < 1e-4, "{first}");
+
+        let game = build_game_script(&project, &bindings, 4.0);
+        std::fs::copy(&game, dir.join("scripts/managed/Game.dll")).unwrap();
+        world
+            .resource_mut::<ScriptReload>()
+            .request("scripts/managed/Game.dll");
+        world.run_system_once(sync_scripts).unwrap();
+        advance(&mut world, 0.5);
+        world.run_system_once(update_csharp_scripts).unwrap();
+        let second = world.get::<Transform>(managed).unwrap().translation.x;
+        assert!((second - 2.5).abs() < 1e-4, "expected 2.5 after reload, got {second}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn advance(world: &mut World, seconds: f32) {
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(seconds));
     }
 
     #[test]
@@ -2557,6 +2646,8 @@ public static class Spin
         std::fs::write(dir.join("scripts/spin.lua"), "return {}").unwrap();
         std::fs::write(dir.join("scripts/managed/Game.dll"), b"dll").unwrap();
         std::fs::write(dir.join("scripts/managed/Game.runtimeconfig.json"), b"{}").unwrap();
+        std::fs::write(dir.join("scripts/managed/Fabr.Bindings.dll"), b"runtime").unwrap();
+        std::fs::write(dir.join("scripts/managed/Game.resources.dll"), b"resources").unwrap();
         assert_eq!(script_files(&dir), ["scripts/spin.lua"]);
         assert_eq!(
             script_files_for(&dir, ScriptLanguage::CSharp),

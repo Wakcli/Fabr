@@ -260,6 +260,32 @@ impl DotnetHost {
     }
 }
 
+// SAFETY: hostfxr hosts one process-wide runtime; the engine serializes every
+// managed call on the main thread, so the raw handles never cross threads in
+// use even though they are stored in a shared cell.
+unsafe impl Send for DotnetHost {}
+// SAFETY: same as the `Send` impl above.
+unsafe impl Sync for DotnetHost {}
+
+/// The process-wide runtime, initialized from the first runtime config.
+///
+/// .NET supports one runtime per process; subsequent calls reuse it and ignore
+/// their config. A game ships one bootstrap, so this is the intended scope.
+pub fn shared_host(runtime_config: &Path) -> Result<&'static DotnetHost, HostError> {
+    use std::sync::{Mutex, OnceLock};
+    static HOST: OnceLock<DotnetHost> = OnceLock::new();
+    static INIT: Mutex<()> = Mutex::new(());
+    if let Some(host) = HOST.get() {
+        return Ok(host);
+    }
+    let _guard = INIT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(host) = HOST.get() {
+        return Ok(host);
+    }
+    let host = DotnetHost::initialize(runtime_config)?;
+    Ok(HOST.get_or_init(|| host))
+}
+
 impl Drop for DotnetHost {
     fn drop(&mut self) {
         // SAFETY: the handle came from a successful initialization and is closed once.

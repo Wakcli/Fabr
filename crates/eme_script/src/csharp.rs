@@ -2,28 +2,46 @@
 
 //! C# gameplay scripts hosted by the .NET runtime.
 //!
-//! A C# script is a compiled assembly listed in the scene; the engine resolves
-//! the `Start`, `Update` and `Stop` entry points of its class and calls them
-//! with an [`FabrApi`] table whose context is this script's instance state.
+//! A C# script is a compiled assembly listed in the scene. The scene stores the
+//! class that derives from the SDK's `FabrScript`; the managed bootstrap loads
+//! it into a collectible [`AssemblyLoadContext`], so rebuilding an assembly and
+//! requesting a reload picks up the new code without restarting the game.
+//!
+//! [`AssemblyLoadContext`]: https://learn.microsoft.com/dotnet/core/dependency-loading/understanding-assemblyloadcontext
+//!
 //! Callbacks queue operations instead of touching the world directly, so the
 //! managed side never aliases ECS borrows.
 
 use std::collections::{HashMap, HashSet};
+use alloc::ffi::CString;
 use std::ffi::{CStr, c_char, c_void};
-use alloc::sync::Arc;
 use std::path::Path;
 
+use alloc::sync::Arc;
 use eme_ecs::prelude::*;
 use eme_math::prelude::*;
-use eme_script_csharp::{DotnetHost, FabrApi, ScriptEntryPoints};
+use eme_script_csharp::{FabrApi, shared_host};
 use eme_transform::prelude::Transform;
 
 use crate::ScriptLog;
 
+/// Managed bootstrap assembly staged next to the game's scripts.
+pub const BINDINGS_ASSEMBLY: &str = "Fabr.Bindings.dll";
+
+/// `[UnmanagedCallersOnly]` entry points of the managed bootstrap.
+#[derive(Clone, Copy)]
+struct Bootstrap {
+    load: unsafe extern "C" fn(*mut FabrApi, u64, *const c_char, *const c_char) -> i32,
+    start: unsafe extern "C" fn(*mut FabrApi, u64) -> i32,
+    update: unsafe extern "C" fn(*mut FabrApi, u64, f32) -> i32,
+    stop: unsafe extern "C" fn(*mut FabrApi, u64) -> i32,
+    unload: unsafe extern "C" fn(u64) -> i32,
+}
+
 /// C# scripts that are loaded and running.
 #[derive(Resource, Default)]
 pub struct CSharpScripts {
-    host: Option<DotnetHost>,
+    bootstrap: Option<Bootstrap>,
     instances: HashMap<Entity, CSharpInstance>,
     failed: HashSet<(String, String)>,
 }
@@ -38,7 +56,7 @@ pub(crate) struct CSharpInstance {
     entity: Entity,
     path: String,
     class: String,
-    entry: ScriptEntryPoints,
+    bootstrap: Bootstrap,
     api: FabrApi,
     context: Box<CSharpContext>,
     started: bool,
@@ -51,7 +69,7 @@ struct CSharpContext {
     log: Vec<String>,
 }
 
-/// Resolves the `Start`/`Update`/`Stop` entry points of one scene script.
+/// Loads one scene script through the managed bootstrap.
 pub(crate) fn load(
     scripts: &mut CSharpScripts,
     entity: Entity,
@@ -62,64 +80,165 @@ pub(crate) fn load(
     if !assembly.is_file() {
         return Err(format!("{}: no such assembly", assembly.display()));
     }
-    let config = assembly.with_extension("runtimeconfig.json");
-    if !config.is_file() {
+    let bindings = assembly.with_file_name(BINDINGS_ASSEMBLY);
+    if !bindings.is_file() {
         return Err(format!(
-            "{}: missing .NET runtime config {}",
-            assembly.display(),
-            config.display()
+            "{}: missing managed bootstrap next to the assembly",
+            bindings.display()
         ));
     }
-    if scripts.host.is_none() {
-        let host = DotnetHost::initialize(&config).map_err(|err| err.to_string())?;
-        scripts.host = Some(host);
-    }
-    let host = scripts.host.as_ref().expect("host initialized above");
-    let qualified = qualified_class(class, assembly);
-    let entry = host
-        .script(assembly, &qualified)
-        .map_err(|err| format!("{qualified}: {err}"))?;
+    let bootstrap = scripts.bootstrap(&bindings)?;
     let mut context = Box::new(CSharpContext {
         snapshot: Arc::new(HashMap::new()),
         ops: Vec::new(),
         log: Vec::new(),
     });
-    let context_ptr = std::ptr::from_mut(&mut *context).cast::<c_void>();
+    let mut api = FabrApi {
+        context: std::ptr::from_mut(&mut *context).cast::<c_void>(),
+        log: api_log,
+        set_translation: api_set_translation,
+        get_translation: api_get_translation,
+    };
+    let assembly_text = CString::new(assembly.to_string_lossy().as_bytes())
+        .map_err(|err| err.to_string())?;
+    let class_text = CString::new(class).map_err(|err| err.to_string())?;
+    // SAFETY: the API table and context live in this instance, and both
+    // strings are valid C strings for the duration of the call.
+    let code = unsafe {
+        (bootstrap.load)(
+            &mut api,
+            entity.to_bits(),
+            assembly_text.as_ptr(),
+            class_text.as_ptr(),
+        )
+    };
+    if code != 0 {
+        return Err(failure(&mut context, "load"));
+    }
     Ok(CSharpInstance {
         entity,
         path: path.to_owned(),
         class: class.to_owned(),
-        entry,
-        api: FabrApi {
-            context: context_ptr,
-            log: api_log,
-            set_translation: api_set_translation,
-            get_translation: api_get_translation,
-        },
+        bootstrap,
+        api,
         context,
         started: false,
         failed: false,
     })
 }
 
-/// Adds the assembly name when the author wrote only the class.
-fn qualified_class(class: &str, assembly: &Path) -> String {
-    if class.contains(',') {
-        return class.to_owned();
+/// Drains the managed log into the failure message.
+fn failure(context: &mut CSharpContext, phase: &str) -> String {
+    let lines = std::mem::take(&mut context.log);
+    if lines.is_empty() {
+        format!("csharp {phase} failed")
+    } else {
+        lines.join("; ")
     }
-    let stem = assembly
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    format!("{class}, {stem}")
 }
 
-/// Calls `Stop` and moves the script's log lines into the engine log.
+impl CSharpScripts {
+    fn bootstrap(&mut self, bindings: &Path) -> Result<Bootstrap, String> {
+        if let Some(bootstrap) = self.bootstrap {
+            return Ok(bootstrap);
+        }
+        let config = bindings.with_extension("runtimeconfig.json");
+        if !config.is_file() {
+            return Err(format!(
+                "{}: missing .NET runtime config {}",
+                bindings.display(),
+                config.display()
+            ));
+        }
+        let host = shared_host(&config).map_err(|err| err.to_string())?;
+        let entry = |method: &str| {
+            host.entry_point(bindings, "Fabr.Bindings.ScriptHost, Fabr.Bindings", method)
+                .map_err(|err| format!("{method}: {err}"))
+        };
+        let load = entry("Load")?;
+        let start = entry("Start")?;
+        let update = entry("Update")?;
+        let stop = entry("Stop")?;
+        let unload = entry("Unload")?;
+        type Load = unsafe extern "C" fn(*mut FabrApi, u64, *const c_char, *const c_char) -> i32;
+        type Start = unsafe extern "C" fn(*mut FabrApi, u64) -> i32;
+        type Update = unsafe extern "C" fn(*mut FabrApi, u64, f32) -> i32;
+        type Stop = unsafe extern "C" fn(*mut FabrApi, u64) -> i32;
+        type Unload = unsafe extern "C" fn(u64) -> i32;
+        // SAFETY: the managed contract fixes these signatures for the five
+        // [UnmanagedCallersOnly] methods, resolved from validated exports.
+        let bootstrap = unsafe {
+            Bootstrap {
+                load: std::mem::transmute::<*mut c_void, Load>(load),
+                start: std::mem::transmute::<*mut c_void, Start>(start),
+                update: std::mem::transmute::<*mut c_void, Update>(update),
+                stop: std::mem::transmute::<*mut c_void, Stop>(stop),
+                unload: std::mem::transmute::<*mut c_void, Unload>(unload),
+            }
+        };
+        self.bootstrap = Some(bootstrap);
+        Ok(bootstrap)
+    }
+
+    /// Whether any C# script is loaded, used to skip the per-frame pass.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.instances.is_empty()
+    }
+
+    /// Mutable access to one loaded instance.
+    pub(crate) fn instance_mut(&mut self, entity: Entity) -> Option<&mut CSharpInstance> {
+        self.instances.get_mut(&entity)
+    }
+
+    /// Stops and unloads a script, dropping its assembly load context.
+    pub(crate) fn remove(&mut self, entity: Entity, log: &mut ScriptLog) {
+        let Some(mut instance) = self.instances.remove(&entity) else {
+            return;
+        };
+        stop(&mut instance, log);
+        // SAFETY: the handle belongs to this instance and the bootstrap is live.
+        unsafe { (instance.bootstrap.unload)(instance.entity.to_bits()) };
+    }
+
+    /// Whether a script already failed and must not be retried until reload.
+    pub(crate) fn has_failed(&self, path: &str, class: &str) -> bool {
+        self.failed.contains(&(path.to_owned(), class.to_owned()))
+    }
+
+    /// Marks a script as broken so it is not reopened every frame.
+    pub(crate) fn mark_failed(&mut self, path: &str, class: &str) {
+        self.failed.insert((path.to_owned(), class.to_owned()));
+    }
+
+    /// Clears the failure mark so a reload can try again.
+    pub(crate) fn clear_failed(&mut self, path: &str, class: &str) {
+        self.failed.remove(&(path.to_owned(), class.to_owned()));
+    }
+
+    /// Registers a loaded instance.
+    pub(crate) fn insert(&mut self, entity: Entity, instance: CSharpInstance) {
+        self.instances.insert(entity, instance);
+    }
+
+    /// Entities with a live instance.
+    pub(crate) fn entities(&self) -> Vec<Entity> {
+        self.instances.keys().copied().collect()
+    }
+
+    /// Whether the entity runs this assembly and class.
+    pub(crate) fn matches(&self, entity: Entity, path: &str, class: &str) -> bool {
+        self.instances
+            .get(&entity)
+            .is_some_and(|instance| instance.path == path && instance.class == class)
+    }
+}
+
+/// Calls `OnStop` and moves the script's log lines into the engine log.
 pub(crate) fn stop(instance: &mut CSharpInstance, log: &mut ScriptLog) {
     if instance.started && !instance.failed {
         // SAFETY: the table and context live in this instance, and the entry
-        // point was resolved from the same assembly by the validated host.
-        unsafe { instance.entry.stop(&mut instance.api, instance.entity.to_bits()) };
+        // point was resolved from the bootstrap by the validated host.
+        unsafe { (instance.bootstrap.stop)(&mut instance.api, instance.entity.to_bits()) };
         instance.started = false;
     }
     for line in instance.context.log.drain(..) {
@@ -205,18 +324,27 @@ pub(crate) fn step(
     }
     instance.context.snapshot = Arc::clone(snapshot);
     instance.context.ops.clear();
-    let entry = instance.entry;
     let handle = instance.entity.to_bits();
+    let mut code = 0;
     if !instance.started {
         // SAFETY: the table and context live in this instance, and the handle
         // is the scripted entity the snapshot describes.
-        unsafe { entry.start(&mut instance.api, handle) };
-        instance.started = true;
+        code = unsafe { (instance.bootstrap.start)(&mut instance.api, handle) };
+        if code == 0 {
+            instance.started = true;
+        }
     }
-    // SAFETY: same instance-owned table and entry points.
-    unsafe { entry.update(&mut instance.api, handle, dt) };
+    if code == 0 {
+        // SAFETY: same instance-owned table and bootstrap.
+        code = unsafe { (instance.bootstrap.update)(&mut instance.api, handle, dt) };
+    }
     for line in instance.context.log.drain(..) {
         log.push(line);
+    }
+    if code != 0 {
+        instance.failed = true;
+        log.push(format!("script {}: disabled after a managed error", instance.path));
+        return Vec::new();
     }
     std::mem::take(&mut instance.context.ops)
 }
@@ -237,56 +365,7 @@ pub(crate) fn apply_ops(
 pub(crate) fn stop_all(scripts: &mut CSharpScripts, log: &mut ScriptLog) {
     for (_, mut instance) in scripts.instances.drain() {
         stop(&mut instance, log);
-    }
-}
-
-impl CSharpScripts {
-    /// Whether any C# script is loaded, used to skip the per-frame pass.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.instances.is_empty()
-    }
-
-    /// Mutable access to one loaded instance.
-    pub(crate) fn instance_mut(&mut self, entity: Entity) -> Option<&mut CSharpInstance> {
-        self.instances.get_mut(&entity)
-    }
-
-    /// Removes a loaded instance and calls `Stop`.
-    pub(crate) fn remove(&mut self, entity: Entity, log: &mut ScriptLog) -> Option<CSharpInstance> {
-        let mut instance = self.instances.remove(&entity)?;
-        stop(&mut instance, log);
-        Some(instance)
-    }
-
-    /// Whether a script already failed and must not be retried until reload.
-    pub(crate) fn has_failed(&self, path: &str, class: &str) -> bool {
-        self.failed.contains(&(path.to_owned(), class.to_owned()))
-    }
-
-    /// Marks a script as broken so it is not reopened every frame.
-    pub(crate) fn mark_failed(&mut self, path: &str, class: &str) {
-        self.failed.insert((path.to_owned(), class.to_owned()));
-    }
-
-    /// Clears the failure mark so a reload can try again.
-    pub(crate) fn clear_failed(&mut self, path: &str, class: &str) {
-        self.failed.remove(&(path.to_owned(), class.to_owned()));
-    }
-
-    /// Registers a loaded instance.
-    pub(crate) fn insert(&mut self, entity: Entity, instance: CSharpInstance) {
-        self.instances.insert(entity, instance);
-    }
-
-    /// Entities with a live instance.
-    pub(crate) fn entities(&self) -> Vec<Entity> {
-        self.instances.keys().copied().collect()
-    }
-
-    /// The assembly path and class of a loaded instance.
-    pub(crate) fn matches(&self, entity: Entity, path: &str, class: &str) -> bool {
-        self.instances
-            .get(&entity)
-            .is_some_and(|instance| instance.path == path && instance.class == class)
+        // SAFETY: the handle belongs to this instance and the bootstrap is live.
+        unsafe { (instance.bootstrap.unload)(instance.entity.to_bits()) };
     }
 }

@@ -51,3 +51,7 @@ assets/textures/GroundSand005/**
 
 # Editor runtime scene output
 /scenes/
+
+# .NET build output from the C# SDK and game projects
+bin/
+obj/

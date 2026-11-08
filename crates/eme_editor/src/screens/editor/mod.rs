@@ -239,6 +239,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<inspector::ReattachState>()
             .init_resource::<inspector::ScriptPicker>()
             .init_resource::<docks::EditorStats>()
+            .init_resource::<docks::SceneFilter>()
             .init_resource::<files::ImportMenu>()
             .init_resource::<files::AssetDrag>()
             .init_resource::<crate::import::OptionsPanel>()
@@ -309,7 +310,13 @@ impl Plugin for EditorPlugin {
             )
             .add_systems(
                 Update,
-                (docks::update_stats, docks::sync_stats, docks::sync_outline),
+                (
+                    docks::update_stats,
+                    docks::sync_stats,
+                    docks::sync_outline,
+                    docks::sync_scene_filter,
+                    docks::sync_filter_hint,
+                ),
             )
             .add_systems(
                 Update,

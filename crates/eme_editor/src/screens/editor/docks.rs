@@ -3,11 +3,17 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
+use eme::feathers::constants::fonts;
 use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor, ThemeToken};
+use eme::input_focus::tab_navigation::TabIndex;
+use eme::input_focus::{FocusCause, InputFocus};
 use eme::math::Rect;
 use eme::prelude::*;
 use eme::scene::bsn;
-use eme::ui_widgets::{Activate, Button, ScrollArea};
+use eme::text::{
+    EditableText, FontSize, FontSourceTemplate, FontWeight, LineBreak, TextFont, TextLayout,
+};
+use eme::ui_widgets::{Activate, Button, ScrollArea, TextInput};
 use eme::window::{PrimaryWindow, Window};
 use eme_game_overrides::{ModelNodeCatalog, ModelNodeInfo};
 use eme_game_scene::{NodeKey, ObjectKind, OverrideOp, SceneDoc};
@@ -52,6 +58,42 @@ pub fn hierarchy() -> Part {
         ]
     });
 
+    let input = Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            height: px(20),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
+        }
+        EditableText::new("")
+        TextInput
+        TabIndex(0)
+        SceneFilterInput
+        TextLayout { linebreak: LineBreak::NoWrap }
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        on(focus_filter)
+    });
+    let hint = Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(24),
+            top: px(0),
+            height: px(FIELD_H - 2.0),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+        }
+        SceneFilterHint
+        Pickable::IGNORE
+        Children [ {text("Filter nodes", FONT_SIZE, tokens::TEXT_DIM)} ]
+    });
+
     let filter = Box::new(bsn! {
         Node {
             padding: UiRect {
@@ -63,13 +105,7 @@ pub fn hierarchy() -> Part {
         }
         ThemeBackgroundColor(tokens::PANEL)
         Children [
-            {field(
-                vec![
-                    icons::search_dim(),
-                    text("Filter nodes", FONT_SIZE, tokens::TEXT_DIM),
-                ],
-                FIELD_H,
-            )}
+            {field(vec![icons::search_dim(), input, hint], FIELD_H)}
         ]
     });
 
@@ -125,6 +161,95 @@ fn tree_rows() -> Part {
 /// drop-to-root area.
 #[derive(Component, Clone, Default)]
 pub struct SceneRows;
+
+/// Text typed into the hierarchy filter.
+#[derive(Resource, Clone, Default)]
+pub struct SceneFilter {
+    /// Case-insensitive substring matched against object names.
+    pub query: String,
+    /// Bumped whenever [`query`](Self::query) changes.
+    pub rev: u64,
+}
+
+impl SceneFilter {
+    /// Objects to show, or `None` when the filter is empty.
+    ///
+    /// A match keeps its whole ancestor chain so the tree stays navigable.
+    pub fn visible(&self, doc: &SceneDoc) -> Option<HashSet<u64>> {
+        let query = self.query.trim().to_lowercase();
+        if query.is_empty() {
+            return None;
+        }
+        let mut ids = HashSet::new();
+        for obj in &doc.objects {
+            if !obj.name.to_lowercase().contains(&query) {
+                continue;
+            }
+            ids.insert(obj.id);
+            let mut parent = obj.parent;
+            while let Some(id) = parent {
+                if !ids.insert(id) {
+                    break;
+                }
+                parent = doc.get(id).and_then(|obj| obj.parent);
+            }
+        }
+        Some(ids)
+    }
+}
+
+/// The hierarchy filter's text input.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SceneFilterInput;
+
+/// Placeholder shown while the filter is empty.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SceneFilterHint;
+
+/// Copies the filter field's text into [`SceneFilter`].
+pub fn sync_scene_filter(
+    mut filter: ResMut<SceneFilter>,
+    inputs: Query<&EditableText, With<SceneFilterInput>>,
+) {
+    let Ok(input) = inputs.single() else {
+        return;
+    };
+    let value = input.value().to_string();
+    if value == filter.query {
+        return;
+    }
+    filter.query = value;
+    filter.rev = filter.rev.wrapping_add(1);
+}
+
+/// Hides the placeholder once the filter has text.
+pub fn sync_filter_hint(
+    filter: Res<SceneFilter>,
+    mut hints: Query<&mut Node, With<SceneFilterHint>>,
+) {
+    let want = if filter.query.is_empty() {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut hints {
+        if node.display != want {
+            node.display = want;
+        }
+    }
+}
+
+/// Gives the filter field input focus when it is pressed.
+fn focus_filter(
+    press: On<PointerPress>,
+    inputs: Query<(), With<SceneFilterInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if press.button != PointerButton::Primary || !inputs.contains(press.entity) {
+        return;
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
 
 /// Scene-tree row pointing at one spawned object.
 #[derive(Component, Clone, Copy, Default)]
@@ -314,8 +439,11 @@ fn tree_signature(
     tree: &SceneTree,
     catalogues: &HashMap<u64, Vec<ModelNodeInfo>>,
     node_selection: &NodeSelection,
+    filter: &SceneFilter,
 ) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    filter.query.hash(&mut hasher);
+    filter.rev.hash(&mut hasher);
     state.doc.len().hash(&mut hasher);
     for obj in &state.doc.objects {
         obj.id.hash(&mut hasher);
@@ -384,6 +512,7 @@ pub fn rebuild_scene_rows(
     mut commands: Commands,
     hosts: Query<(Entity, &ComputedNode, &UiGlobalTransform), With<SceneRows>>,
     state: Res<SceneState>,
+    filter: Res<SceneFilter>,
     tree: Option<ResMut<SceneTree>>,
     rows: Query<(Entity, &SceneRow, &ThemeBackgroundColor, &Children)>,
     node_rows: Query<(Entity, &SceneNodeRow, &ThemeBackgroundColor, &Children)>,
@@ -418,7 +547,7 @@ pub fn rebuild_scene_rows(
     for (owner, catalog) in &catalogs {
         catalogues.insert(owner.0, catalog.nodes.clone());
     }
-    let sig = tree_signature(&state, &tree, &catalogues, &node_selection);
+    let sig = tree_signature(&state, &tree, &catalogues, &node_selection, &filter);
     if tree.host == Some(host) && tree.signature == Some(sig) {
         return;
     }
@@ -426,7 +555,21 @@ pub fn rebuild_scene_rows(
     tree.signature = Some(sig);
     commands.entity(host).despawn_children();
 
-    if state.doc.is_empty() {
+    let visible = filter.visible(&state.doc);
+    let no_collapse = HashSet::new();
+    let collapsed = if visible.is_some() {
+        &no_collapse
+    } else {
+        &tree.collapsed
+    };
+    let order = tree_order(&state.doc, collapsed);
+
+    if order.is_empty() {
+        let message = if filter.query.trim().is_empty() {
+            "No objects in scene"
+        } else {
+            "No matching objects"
+        };
         let empty = bsn! {
             Node {
                 height: px(TREE_ROW_H),
@@ -436,13 +579,19 @@ pub fn rebuild_scene_rows(
                 padding: UiRect::horizontal(px(8)),
             }
             ChildOf(host)
-            Children [ {text("No objects in scene", FONT_SIZE, tokens::TEXT_DIM)} ]
+            Children [ {text(message, FONT_SIZE, tokens::TEXT_DIM)} ]
         };
         commands.spawn_scene(empty);
         return;
     }
 
-    for (id, depth) in tree_order(&state.doc, &tree.collapsed) {
+    for (id, depth) in order {
+        if visible
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(&id))
+        {
+            continue;
+        }
         let Some(obj) = state.doc.get(id) else {
             continue;
         };
@@ -1394,6 +1543,60 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_keeps_matches_and_their_ancestors() {
+        let doc = doc_with_tree();
+        let filter = SceneFilter {
+            query: "E".into(),
+            rev: 1,
+        };
+        let visible = filter.visible(&doc).unwrap();
+        assert!(visible.contains(&5), "matching object");
+        assert!(visible.contains(&2), "parent of the match");
+        assert!(visible.contains(&1), "root ancestor");
+        assert!(!visible.contains(&3), "unrelated sibling");
+        assert!(!visible.contains(&4), "unrelated root");
+    }
+
+    #[test]
+    fn an_empty_filter_shows_everything() {
+        let doc = doc_with_tree();
+        assert!(SceneFilter::default().visible(&doc).is_none());
+        assert!(
+            SceneFilter {
+                query: "   ".into(),
+                rev: 1,
+            }
+            .visible(&doc)
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn the_filter_is_case_insensitive() {
+        let doc = doc_with_tree();
+        let visible = SceneFilter {
+            query: "b".into(),
+            rev: 1,
+        }
+        .visible(&doc)
+        .unwrap();
+        assert!(visible.contains(&2));
+    }
+
+    #[test]
+    fn the_filter_field_updates_the_resource() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(SceneFilter::default());
+        world.spawn((EditableText::new("cube"), SceneFilterInput));
+        world.run_system_once(sync_scene_filter).unwrap();
+        let filter = world.resource::<SceneFilter>();
+        assert_eq!(filter.query, "cube");
+        assert_eq!(filter.rev, 1);
+    }
+
+    #[test]
     fn signature_tracks_the_document_not_the_selection() {
         let mut state = SceneState::default();
         let a = state.spawn(ObjectKind::Cube);
@@ -1401,20 +1604,20 @@ mod tests {
         let mut tree = SceneTree::default();
         let none = HashMap::new();
         let node = NodeSelection::default();
-        let sig = tree_signature(&state, &tree, &none, &node);
+        let sig = tree_signature(&state, &tree, &none, &node, &SceneFilter::default());
 
         state.select_only(a);
-        assert_eq!(tree_signature(&state, &tree, &none, &node), sig);
+        assert_eq!(tree_signature(&state, &tree, &none, &node, &SceneFilter::default()), sig);
 
         tree.toggle(a);
-        let collapsed = tree_signature(&state, &tree, &none, &node);
+        let collapsed = tree_signature(&state, &tree, &none, &node, &SceneFilter::default());
         assert_ne!(collapsed, sig, "collapse must force a rebuild");
 
         state.doc.rename(a, "Crate");
-        let renamed = tree_signature(&state, &tree, &none, &node);
+        let renamed = tree_signature(&state, &tree, &none, &node, &SceneFilter::default());
         assert_ne!(renamed, collapsed);
 
         state.doc.set_parent(a, Some(b));
-        assert_ne!(tree_signature(&state, &tree, &none, &node), renamed);
+        assert_ne!(tree_signature(&state, &tree, &none, &node, &SceneFilter::default()), renamed);
     }
 }

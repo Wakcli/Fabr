@@ -12,13 +12,13 @@ use eme::ui_widgets::{Activate, Button};
 
 use super::chrome::*;
 use super::icons;
-use crate::build::{self, BuildState, Level, Profile, Target};
+use crate::build::{BuildState, Level, Profile, Target};
 use crate::persist::SCENE_PATH;
 use crate::scene::SceneState;
 use crate::tokens;
 
 const PANEL_W: f32 = 560.0;
-const PANEL_H: f32 = 478.0;
+const PANEL_H: f32 = 526.0;
 const LABEL_W: f32 = 104.0;
 const LOG_SIZE: f32 = 12.0;
 const LOG_LINES: usize = 10;
@@ -161,9 +161,9 @@ fn panel(state: &BuildState) -> impl Scene {
     let kids = vec![
         header(),
         divider(),
-        target_section(),
+        target_section(state),
         profile_section(state),
-        value_row("Output folder", build::OUT_DIR),
+        value_row("Output folder", state.target.out_dir()),
         value_row("Main scene", SCENE_PATH),
         log_section(state),
         footer(state),
@@ -329,19 +329,14 @@ fn profile_chip(profile: Profile, active: bool) -> Part {
     })
 }
 
-fn target_section() -> Part {
+fn target_section(state: &BuildState) -> Part {
     let mut chips: Vec<Part> = Vec::new();
-    let mut refused: Vec<&'static str> = Vec::new();
     for target in Target::ALL {
         if !chips.is_empty() {
             chips.push(hgap(6.0));
         }
-        chips.push(chip(target.label(), target.ready()));
-        if !target.ready() {
-            refused.push(target.label());
-        }
+        chips.push(target_chip(target, state.target == target));
     }
-    let note = format!("{} need a CI template", refused.join(" and "));
 
     Box::new(bsn! {
         Node {
@@ -352,18 +347,25 @@ fn target_section() -> Part {
         Children [
             {row("Target", chips)}
             --
-            {note_line(&note)}
+            {note_line(state.target.note())}
         ]
     })
 }
 
-fn chip(name: &str, ready: bool) -> Part {
-    let (bg, fg) = if ready {
+/// A selectable platform chip; unavailable platforms are disabled.
+#[derive(Component, Clone, Copy, Default)]
+pub struct TargetChip(pub Target);
+
+fn target_chip(target: Target, active: bool) -> Part {
+    let ready = target.ready();
+    let (bg, fg) = if !ready {
+        (tokens::FIELD, tokens::TEXT_DIM)
+    } else if active {
         (tokens::ACCENT, tokens::WINDOW)
     } else {
-        (tokens::FIELD, tokens::TEXT_DIM)
+        (tokens::FIELD, tokens::TEXT)
     };
-    let label = text_bold(name, FONT_SIZE_OUTPUT, fg);
+    let label = text_bold(target.label(), FONT_SIZE_OUTPUT, fg);
 
     if ready {
         Box::new(bsn! {
@@ -377,7 +379,9 @@ fn chip(name: &str, ready: bool) -> Part {
             }
             ThemeBackgroundColor(bg)
             Button
+            TargetChip(target)
             Children [ {label} ]
+            on(select_target)
         })
     } else {
         Box::new(bsn! {
@@ -392,9 +396,21 @@ fn chip(name: &str, ready: bool) -> Part {
             ThemeBackgroundColor(bg)
             Button
             InteractionDisabled
+            TargetChip(target)
             Children [ {label} ]
         })
     }
+}
+
+fn select_target(
+    activate: On<Activate>,
+    chips: Query<&TargetChip>,
+    mut state: ResMut<BuildState>,
+) {
+    let Ok(chip) = chips.get(activate.entity) else {
+        return;
+    };
+    state.set_target(chip.0);
 }
 
 fn log_section(state: &BuildState) -> Part {
@@ -531,7 +547,19 @@ fn run_game(state: &mut BuildState) {
     let Some(game) = state.game.clone() else {
         return;
     };
-    match Command::new(&game).current_dir(build::OUT_DIR).spawn() {
+    if state.target != Target::Linux {
+        state.line(
+            Level::Error,
+            format!(
+                "{} build cannot run here; copy {} to a {} machine",
+                state.target.label(),
+                state.target.out_dir(),
+                state.target.label()
+            ),
+        );
+        return;
+    }
+    match Command::new(&game).current_dir(state.target.out_dir()).spawn() {
         Ok(child) => state.line(
             Level::Done,
             format!("launched {} (pid {})", game.display(), child.id()),

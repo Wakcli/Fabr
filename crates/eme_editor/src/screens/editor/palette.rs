@@ -83,6 +83,10 @@ pub const COMMANDS: &[Command] = &[
         action: TopAction::Extensions,
     },
     Command {
+        label: "Animation Editor",
+        action: TopAction::AnimationEditor,
+    },
+    Command {
         label: "About Fabr",
         action: TopAction::About,
     },
@@ -517,6 +521,7 @@ mod tests {
             .insert_resource(crate::shortcuts::ShortcutsState::load())
             .init_resource::<crate::shortcuts::ShortcutConfig>()
             .insert_resource(crate::extensions::ExtensionsState::load())
+            .init_resource::<crate::animation::AnimationState>()
             .insert_resource(ProjectSettingsState {
                 open: false,
                 settings: Default::default(),

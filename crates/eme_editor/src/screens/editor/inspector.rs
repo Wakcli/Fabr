@@ -1959,6 +1959,7 @@ fn play_animation_clip(
             Some(AnimationRef {
                 clip: Some(row.1.clone()),
                 autoplay: true,
+                ..Default::default()
             }),
         );
         state.touch();

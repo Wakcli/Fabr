@@ -25,6 +25,7 @@ mod extensions;
 mod profile;
 mod hud;
 mod memory;
+mod animation;
 mod orbit;
 mod persist;
 mod play;

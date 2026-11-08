@@ -69,6 +69,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {crate::extensions::panel()}
             --
+            {crate::animation::panel()}
+            --
             {palette::overlay()}
             --
             {inspector::script_picker()}
@@ -241,6 +243,7 @@ impl Plugin for EditorPlugin {
         crate::shortcuts::install(app);
         crate::extensions::install(app);
         crate::profile::install(app);
+        crate::animation::install(app);
         crate::hud::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()

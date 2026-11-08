@@ -7,6 +7,7 @@ use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeToken};
 use eme::feathers::tokens as feather;
 use eme::input_focus::{FocusCause, InputFocus};
 use eme::picking::hover::Hovered;
+use eme::ecs::system::SystemParam;
 use eme::prelude::*;
 use eme::scene::bsn;
 use eme::text::{EditableText, TextEdit};
@@ -815,6 +816,8 @@ pub enum TopAction {
     Shortcuts,
     /// Manage optional engine extensions.
     Extensions,
+    /// Open the animation editor.
+    AnimationEditor,
     /// Today's build, in the console.
     About,
 }
@@ -891,6 +894,7 @@ pub fn sync_top_menu(
             ("Reset Layout", TopAction::ResetLayout),
             ("Keyboard Shortcuts…", TopAction::Shortcuts),
             ("Extensions…", TopAction::Extensions),
+            ("Animation Editor…", TopAction::AnimationEditor),
         ],
         TopKind::Help => &[("About Fabr", TopAction::About)],
     };
@@ -915,6 +919,20 @@ pub fn sync_top_menu(
     }
 }
 
+/// Windows and dialogs the menu commands act on.
+#[derive(SystemParam)]
+pub struct Windows<'w> {
+    settings: ResMut<'w, crate::settings::ProjectSettingsState>,
+    build: ResMut<'w, crate::build::BuildState>,
+    mixer: ResMut<'w, crate::mixer::MixerState>,
+    packages: ResMut<'w, crate::packages::PackagesState>,
+    layout: ResMut<'w, crate::LayoutRes>,
+    shortcuts: ResMut<'w, crate::shortcuts::ShortcutsState>,
+    shortcut_config: Res<'w, crate::shortcuts::ShortcutConfig>,
+    extensions: ResMut<'w, crate::extensions::ExtensionsState>,
+    animation: ResMut<'w, crate::animation::AnimationState>,
+}
+
 /// Runs one top-level menu command and closes the menu.
 pub fn run_top_action(
     activate: On<Activate>,
@@ -923,14 +941,8 @@ pub fn run_top_action(
     mut state: ResMut<SceneState>,
     mut undo: ResMut<Undo>,
     mut log: ResMut<ConsoleLog>,
-    mut settings: ResMut<crate::settings::ProjectSettingsState>,
-    mut build: ResMut<crate::build::BuildState>,
-    mut mixer: ResMut<crate::mixer::MixerState>,
-    mut packages: ResMut<crate::packages::PackagesState>,
-    mut layout: ResMut<crate::LayoutRes>,
-    mut shortcuts: ResMut<crate::shortcuts::ShortcutsState>,
-    shortcut_config: Res<crate::shortcuts::ShortcutConfig>,
-    mut extensions: ResMut<crate::extensions::ExtensionsState>,
+    mut windows: Windows,
+    sets: Query<&eme_anim::AnimationSet>,
     mut reload: ResMut<eme_script::ScriptReload>,
     index: Res<scene::ModelIndex>,
 ) {
@@ -968,18 +980,27 @@ pub fn run_top_action(
             }
             log.push("reload requested for all scripts".to_string());
         }
-        TopAction::ProjectSettings => crate::settings::open(&mut settings),
-        TopAction::Build => build.open(),
-        TopAction::AudioMixer => crate::mixer::open(&mut mixer),
-        TopAction::PackageManager => crate::packages::open(&mut packages),
-        TopAction::SaveLayout => crate::screens::editor::dock::save_layout(&layout),
+        TopAction::ProjectSettings => crate::settings::open(&mut windows.settings),
+        TopAction::Build => windows.build.open(),
+        TopAction::AudioMixer => crate::mixer::open(&mut windows.mixer),
+        TopAction::PackageManager => crate::packages::open(&mut windows.packages),
+        TopAction::SaveLayout => crate::screens::editor::dock::save_layout(&windows.layout),
         TopAction::Shortcuts => {
-            crate::shortcuts::open(&mut shortcuts, &shortcut_config);
+            crate::shortcuts::open(&mut windows.shortcuts, &windows.shortcut_config);
         }
-        TopAction::Extensions => crate::extensions::open(&mut extensions),
+        TopAction::Extensions => crate::extensions::open(&mut windows.extensions),
+        TopAction::AnimationEditor => {
+            let selected = state.primary().and_then(|id| {
+                state
+                    .entities
+                    .get(&id)
+                    .and_then(|entity| sets.get(*entity).ok())
+            });
+            windows.animation.open_with(selected);
+        }
         TopAction::ResetLayout => {
-            layout.0 = eme_editor_core::Layout::default_editor();
-            crate::screens::editor::dock::save_layout(&layout);
+            windows.layout.0 = eme_editor_core::Layout::default_editor();
+            crate::screens::editor::dock::save_layout(&windows.layout);
         }
         TopAction::About => log.push(format!(
             "Fabr {} — built on the Eme engine",

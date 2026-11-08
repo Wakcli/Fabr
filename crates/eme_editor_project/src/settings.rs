@@ -16,6 +16,8 @@ pub const SETTINGS_FILE: &str = "fabr.project.ron";
 pub struct ProjectSettings {
     /// Window and player configuration.
     pub player: PlayerSettings,
+    /// Renderer configuration.
+    pub graphics: GraphicsSettings,
     /// Named input actions and their key bindings.
     pub input: InputSettings,
 }
@@ -42,6 +44,20 @@ impl Default for PlayerSettings {
             height: 720,
             vsync: true,
         }
+    }
+}
+
+/// Renderer configuration applied by the player.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GraphicsSettings {
+    /// MSAA sample count: 1, 2, 4 or 8.
+    pub msaa: u32,
+}
+
+impl Default for GraphicsSettings {
+    fn default() -> Self {
+        Self { msaa: 4 }
     }
 }
 
@@ -96,6 +112,9 @@ impl ProjectSettings {
         if self.input.actions.values().any(Vec::is_empty) {
             return Err("input actions cannot have an empty key list".into());
         }
+        if !matches!(self.graphics.msaa, 1 | 2 | 4 | 8) {
+            return Err("MSAA must be 1, 2, 4 or 8 samples".into());
+        }
         Ok(())
     }
 }
@@ -118,6 +137,15 @@ mod tests {
         let path = std::env::temp_dir().join("fabr-no-settings-here.ron");
         let _ = std::fs::remove_file(&path);
         assert_eq!(ProjectSettings::load_or_default(&path).unwrap(), ProjectSettings::default());
+    }
+
+    #[test]
+    fn graphics_settings_are_validated() {
+        let mut settings = ProjectSettings::default();
+        settings.graphics.msaa = 3;
+        assert!(settings.validate().is_err());
+        settings.graphics.msaa = 8;
+        assert!(settings.validate().is_ok());
     }
 
     #[test]

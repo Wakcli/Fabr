@@ -2,6 +2,7 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 
 use eme::prelude::*;
+use eme::render::view::Msaa;
 use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
 use fabr::ScriptedObject;
@@ -172,8 +173,13 @@ pub fn announce(scene: Res<LoadedScene>) {
     );
 }
 
+/// MSAA sample count from project settings.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct PlayerMsaa(pub u32);
+
 pub fn spawn_scene(
     mut commands: Commands,
+    msaa: Res<PlayerMsaa>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
@@ -308,7 +314,7 @@ pub fn spawn_scene(
     let view = view.unwrap_or_else(|| {
         Transform::from_translation(DEFAULT_CAM).looking_at(Vec3::ZERO, Vec3::Y)
     });
-    commands.spawn((Camera3d::default(), view));
+    commands.spawn((Camera3d::default(), view, Msaa::from_samples(msaa.0)));
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.80, 0.85, 1.0),
         brightness: AMBIENT,

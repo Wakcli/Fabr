@@ -29,6 +29,8 @@ pub enum FieldKind {
     Width,
     /// Window height.
     Height,
+    /// MSAA sample count.
+    Msaa,
     /// One input action, keys comma-separated.
     Action(String),
 }
@@ -222,6 +224,15 @@ pub fn sync(
         FieldKind::Height,
     );
     toggle_row(host, &mut commands, "VSync", state.settings.player.vsync);
+
+    section(host, &mut commands, "Graphics");
+    field_row(
+        host,
+        &mut commands,
+        "MSAA",
+        &state.settings.graphics.msaa.to_string(),
+        FieldKind::Msaa,
+    );
 
     section(host, &mut commands, "Input Actions");
     for (action, keys) in &state.settings.input.actions {
@@ -445,6 +456,10 @@ fn commit(state: &mut ProjectSettingsState, kind: &FieldKind, raw: &str) {
         FieldKind::Height => match raw.trim().parse::<u32>() {
             Ok(value) if value > 0 => state.settings.player.height = value,
             _ => state.error = "height must be a positive number".into(),
+        },
+        FieldKind::Msaa => match raw.trim().parse::<u32>() {
+            Ok(value @ (1 | 2 | 4 | 8)) => state.settings.graphics.msaa = value,
+            _ => state.error = "MSAA must be 1, 2, 4 or 8".into(),
         },
         FieldKind::Action(action) => {
             let keys: Vec<String> = raw

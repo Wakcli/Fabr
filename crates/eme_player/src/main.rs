@@ -82,6 +82,7 @@ fn main() {
         .insert_resource(fabr::ScriptsActive(true))
         .insert_resource(fabr::ScriptRoot(PathBuf::from("assets")))
         .insert_resource(actions)
+        .insert_resource(scene::PlayerMsaa(settings.graphics.msaa))
         .insert_resource(loaded)
         .add_systems(Startup, (scene::announce, scene::spawn_scene))
         .add_systems(

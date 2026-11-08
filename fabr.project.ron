@@ -5,6 +5,9 @@
         height: 720,
         vsync: true,
     ),
+    graphics: (
+        msaa: 4,
+    ),
     input: (
         actions: {
             "jump": [

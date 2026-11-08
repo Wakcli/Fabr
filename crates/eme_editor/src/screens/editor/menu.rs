@@ -803,6 +803,8 @@ pub enum TopAction {
     ProjectSettings,
     /// Open the build dialog.
     Build,
+    /// Open the audio mixer.
+    AudioMixer,
     /// Today's build, in the console.
     About,
 }
@@ -871,7 +873,10 @@ pub fn sync_top_menu(
             ("Clear Console", TopAction::ClearConsole),
             ("Reload Scripts", TopAction::ReloadScripts),
         ],
-        TopKind::Editor => &[("Project Settings…", TopAction::ProjectSettings)],
+        TopKind::Editor => &[
+            ("Project Settings…", TopAction::ProjectSettings),
+            ("Audio Mixer…", TopAction::AudioMixer),
+        ],
         TopKind::Help => &[("About Fabr", TopAction::About)],
     };
     for (label, action) in entries {
@@ -905,6 +910,7 @@ pub fn run_top_action(
     mut log: ResMut<ConsoleLog>,
     mut settings: ResMut<crate::settings::ProjectSettingsState>,
     mut build: ResMut<crate::build::BuildState>,
+    mut mixer: ResMut<crate::mixer::MixerState>,
     mut reload: ResMut<eme_script::ScriptReload>,
     index: Res<scene::ModelIndex>,
 ) {
@@ -944,6 +950,7 @@ pub fn run_top_action(
         }
         TopAction::ProjectSettings => crate::settings::open(&mut settings),
         TopAction::Build => build.open(),
+        TopAction::AudioMixer => crate::mixer::open(&mut mixer),
         TopAction::About => log.push(format!(
             "Fabr {} — built on the Eme engine",
             env!("CARGO_PKG_VERSION")

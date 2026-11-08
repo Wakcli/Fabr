@@ -59,6 +59,10 @@ pub const COMMANDS: &[Command] = &[
         action: TopAction::Build,
     },
     Command {
+        label: "Audio Mixer",
+        action: TopAction::AudioMixer,
+    },
+    Command {
         label: "About Fabr",
         action: TopAction::About,
     },
@@ -481,6 +485,7 @@ mod tests {
             .insert_resource(eme_script::ScriptReload::default())
             .insert_resource(ModelIndex::default())
             .insert_resource(BuildState::default())
+            .insert_resource(crate::mixer::MixerState::load())
             .insert_resource(ProjectSettingsState {
                 open: false,
                 settings: Default::default(),

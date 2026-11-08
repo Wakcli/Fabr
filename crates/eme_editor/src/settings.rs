@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use eme::audio::Volume;
 use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor, ThemeToken};
 use eme::input::keyboard::KeyboardInput;
 use eme::input_focus::tab_navigation::TabIndex;
@@ -33,6 +34,10 @@ pub enum FieldKind {
     Msaa,
     /// Master audio volume.
     MasterVolume,
+    /// Sound-effect bus volume.
+    SfxVolume,
+    /// Music bus volume.
+    MusicVolume,
     /// Downward gravity.
     Gravity,
     /// Vertical restitution.
@@ -82,6 +87,13 @@ impl ProjectSettingsState {
 }
 
 /// Installs the settings resource, input actions and UI systems.
+fn runtime_mix(settings: &eme_editor_project::AudioSettings) -> eme_script::AudioMix {
+    eme_script::AudioMix {
+        sfx: settings.sfx_volume,
+        music: settings.music_volume,
+    }
+}
+
 fn runtime_physics(settings: &eme_editor_project::PhysicsSettings) -> eme_game_runtime::PhysicsSettings {
     eme_game_runtime::PhysicsSettings {
         gravity: settings.gravity,
@@ -95,8 +107,14 @@ pub fn install(app: &mut App) {
     let actions = eme_script::InputActions::from_names(&state.settings.input.actions)
         .unwrap_or_default();
     let physics = runtime_physics(&state.settings.physics);
+    let mix = runtime_mix(&state.settings.audio);
+    let volume = GlobalVolume::new(Volume::Linear(
+        state.settings.audio.master_volume,
+    ));
     app.insert_resource(actions)
         .insert_resource(physics)
+        .insert_resource(mix)
+        .insert_resource(volume)
         .insert_resource(state)
         .add_systems(Update, sync);
 }
@@ -284,6 +302,20 @@ pub fn sync(
         "Master volume",
         &state.settings.audio.master_volume.to_string(),
         FieldKind::MasterVolume,
+    );
+    field_row(
+        host,
+        &mut commands,
+        "SFX volume",
+        &state.settings.audio.sfx_volume.to_string(),
+        FieldKind::SfxVolume,
+    );
+    field_row(
+        host,
+        &mut commands,
+        "Music volume",
+        &state.settings.audio.music_volume.to_string(),
+        FieldKind::MusicVolume,
     );
 
     section(host, &mut commands, "Physics");
@@ -548,6 +580,18 @@ fn commit(state: &mut ProjectSettingsState, kind: &FieldKind, raw: &str) {
             }
             _ => state.error = "master volume must be between 0 and 2".into(),
         },
+        FieldKind::SfxVolume => match raw.trim().parse::<f32>() {
+            Ok(value) if (0.0..=2.0).contains(&value) => {
+                state.settings.audio.sfx_volume = value;
+            }
+            _ => state.error = "SFX volume must be between 0 and 2".into(),
+        },
+        FieldKind::MusicVolume => match raw.trim().parse::<f32>() {
+            Ok(value) if (0.0..=2.0).contains(&value) => {
+                state.settings.audio.music_volume = value;
+            }
+            _ => state.error = "music volume must be between 0 and 2".into(),
+        },
         FieldKind::Gravity => match raw.trim().parse::<f32>() {
             Ok(value) if (0.0..=100.0).contains(&value) => {
                 state.settings.physics.gravity = value;
@@ -593,6 +637,8 @@ fn save_settings(
     mut state: ResMut<ProjectSettingsState>,
     mut actions: ResMut<eme_script::InputActions>,
     mut physics: ResMut<eme_game_runtime::PhysicsSettings>,
+    mut mix: ResMut<eme_script::AudioMix>,
+    mut volume: ResMut<GlobalVolume>,
     mut log: ResMut<ConsoleLog>,
 ) {
     let path = state.path();
@@ -602,6 +648,10 @@ fn save_settings(
                 Ok(next) => {
                     *actions = next;
                     *physics = runtime_physics(&state.settings.physics);
+                    *mix = runtime_mix(&state.settings.audio);
+                    *volume = GlobalVolume::new(Volume::Linear(
+                        state.settings.audio.master_volume,
+                    ));
                     state.status = format!("saved {}", path.display());
                     state.error.clear();
                 }
@@ -792,6 +842,13 @@ mod tests {
         commit(&mut state, &FieldKind::MasterVolume, "9");
         assert_eq!(state.settings.audio.master_volume, 0.25);
         assert!(!state.error.is_empty());
+
+        commit(&mut state, &FieldKind::SfxVolume, "0.5");
+        assert_eq!(state.settings.audio.sfx_volume, 0.5);
+        commit(&mut state, &FieldKind::SfxVolume, "3");
+        assert_eq!(state.settings.audio.sfx_volume, 0.5);
+        commit(&mut state, &FieldKind::MusicVolume, "0.25");
+        assert_eq!(state.settings.audio.music_volume, 0.25);
 
         commit(&mut state, &FieldKind::Gravity, "20");
         assert_eq!(state.settings.physics.gravity, 20.0);

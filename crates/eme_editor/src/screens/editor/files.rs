@@ -5,11 +5,17 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeToken};
+use eme::feathers::constants::fonts;
+use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor, ThemeToken};
+use eme::input_focus::tab_navigation::TabIndex;
+use eme::input_focus::{FocusCause, InputFocus};
 use eme::prelude::*;
 use eme::window::{FileDragAndDrop, PrimaryWindow, Window};
 use eme::scene::bsn;
-use eme::ui_widgets::{Activate, Button, ScrollArea};
+use eme::text::{
+    EditableText, FontSize, FontSourceTemplate, FontWeight, LineBreak, TextFont, TextLayout,
+};
+use eme::ui_widgets::{Activate, Button, ScrollArea, TextInput};
 
 use super::chrome::*;
 use super::icons;
@@ -61,10 +67,13 @@ pub struct FileTree {
     root: PathBuf,
     scan: Scan,
     expanded: HashSet<String>,
+    index: Vec<IndexEntry>,
+    index_sig: u64,
     selected: Option<String>,
     signature: Option<u64>,
     rev: u64,
     built: u64,
+    built_filter: u64,
     host: Option<Entity>,
     ready: bool,
     /// A rebuild was requested while a row was being clicked; it runs next frame.
@@ -95,10 +104,13 @@ impl FileTree {
             root,
             scan: Scan::default(),
             expanded: HashSet::new(),
+            index: Vec::new(),
+            index_sig: 0,
             selected: None,
             signature: None,
             rev: 0,
             built: 0,
+            built_filter: 0,
             host: None,
             ready: false,
             pending: false,
@@ -108,6 +120,12 @@ impl FileTree {
     /// Rescans the project folder, returning whether its signature changed.
     fn rescan(&mut self) -> bool {
         let scan = scan(&self.root, &self.expanded);
+        let (index, index_sig) = index_tree(&self.root);
+        if index_sig != self.index_sig {
+            self.index = index;
+            self.index_sig = index_sig;
+            self.rev = self.rev.wrapping_add(1);
+        }
         if self.ready && self.signature == Some(scan.signature) {
             return false;
         }
@@ -153,6 +171,14 @@ struct FsNode {
     children: Listing,
 }
 
+/// One entry in the flat search index, independent of which folders are open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IndexEntry {
+    name: String,
+    rel: String,
+    is_dir: bool,
+}
+
 /// A full walk of the project folder and the hash that identifies its contents.
 #[derive(Clone, Default)]
 struct Scan {
@@ -170,6 +196,11 @@ enum Row {
         is_dir: bool,
         depth: usize,
     },
+    Match {
+        name: String,
+        rel: String,
+        is_dir: bool,
+    },
     More {
         count: usize,
         depth: usize,
@@ -178,6 +209,7 @@ enum Row {
         depth: usize,
     },
     MissingRoot,
+    NoMatches,
 }
 
 fn scan(root: &Path, expanded: &HashSet<String>) -> Scan {
@@ -272,6 +304,67 @@ fn scan_dir(
     listing
 }
 
+fn index_tree(root: &Path) -> (Vec<IndexEntry>, u64) {
+    let mut out = Vec::new();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if root.is_dir() {
+        index_dir(root, "", 1, &mut out, &mut hasher);
+    }
+    (out, hasher.finish())
+}
+
+fn index_dir(
+    dir: &Path,
+    rel: &str,
+    depth: usize,
+    out: &mut Vec<IndexEntry>,
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<(String, bool)> = Vec::new();
+    for entry in read.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || SKIP.contains(&name.as_str()) {
+            continue;
+        }
+        if name.ends_with(".import.ron") || name.ends_with(".import-preset.ron") {
+            continue;
+        }
+        entries.push((name, file_type.is_dir()));
+    }
+    entries.sort_by(|a, b| {
+        a.0.to_lowercase()
+            .cmp(&b.0.to_lowercase())
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let (dirs, files): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| entry.1);
+    for (name, is_dir) in dirs.into_iter().chain(files).take(MAX_ENTRIES) {
+        name.hash(hasher);
+        is_dir.hash(hasher);
+        let child_rel = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        out.push(IndexEntry {
+            name: name.clone(),
+            rel: child_rel.clone(),
+            is_dir,
+        });
+        if is_dir && depth < MAX_DEPTH {
+            index_dir(&dir.join(&name), &child_rel, depth + 1, out, hasher);
+        }
+    }
+}
+
 fn mtime(meta: &std::fs::Metadata) -> u128 {
     meta.modified()
         .ok()
@@ -333,6 +426,79 @@ pub(crate) struct FileRow {
     is_dir: bool,
 }
 
+/// Text typed into the asset browser filter.
+#[derive(Resource, Clone, Default)]
+pub struct FileFilter {
+    /// Case-insensitive substring matched against entry names.
+    pub query: String,
+    /// Bumped whenever [`query`](Self::query) changes.
+    pub rev: u64,
+}
+
+/// The asset browser filter's text input.
+#[derive(Component, Clone, Copy, Default)]
+pub struct FileFilterInput;
+
+/// Placeholder shown while the asset filter is empty.
+#[derive(Component, Clone, Copy, Default)]
+pub struct FileFilterHint;
+
+/// Copies the filter field's text into [`FileFilter`].
+pub fn sync_file_filter(
+    mut filter: ResMut<FileFilter>,
+    inputs: Query<&EditableText, With<FileFilterInput>>,
+) {
+    let Ok(input) = inputs.single() else {
+        return;
+    };
+    let value = input.value().to_string();
+    if value == filter.query {
+        return;
+    }
+    filter.query = value;
+    filter.rev = filter.rev.wrapping_add(1);
+}
+
+/// Hides the placeholder once the filter has text.
+pub fn sync_file_filter_hint(
+    filter: Res<FileFilter>,
+    mut hints: Query<&mut Node, With<FileFilterHint>>,
+) {
+    let want = if filter.query.is_empty() {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut hints {
+        if node.display != want {
+            node.display = want;
+        }
+    }
+}
+
+/// Gives the filter field input focus when it is pressed.
+fn focus_file_filter(
+    press: On<PointerPress>,
+    inputs: Query<(), With<FileFilterInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if press.button != PointerButton::Primary || !inputs.contains(press.entity) {
+        return;
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
+
+/// Focuses the filter input when its row is clicked.
+fn focus_file_filter_row(
+    _: On<Activate>,
+    inputs: Query<Entity, With<FileFilterInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if let Ok(input) = inputs.single() {
+        focus.set(input, FocusCause::Pressed);
+    }
+}
+
 /// Project panel body: the breadcrumb and the scrolling file tree.
 pub fn body() -> Part {
     Box::new(bsn! {
@@ -348,6 +514,8 @@ pub fn body() -> Part {
         ThemeBackgroundColor(tokens::INSET)
         Children [
             {breadcrumb()}
+            --
+            {asset_filter_field()}
             --
             Node {
                 flex_grow: 1.0,
@@ -381,6 +549,50 @@ fn breadcrumb() -> Part {
             --
             {icon_button(icons::breadcrumb_caret(), 12.0)}
         ]
+    })
+}
+
+fn asset_filter_field() -> Part {
+    let input = Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            height: px(20),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
+        }
+        EditableText::new("")
+        TextInput
+        TabIndex(0)
+        FileFilterInput
+        TextLayout { linebreak: LineBreak::NoWrap }
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        on(focus_file_filter)
+    });
+    let hint = Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(24),
+            top: px(0),
+            height: px(FIELD_H - 2.0),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+        }
+        FileFilterHint
+        Pickable::IGNORE
+        Children [ {text("Filter assets", FONT_SIZE, tokens::TEXT_DIM)} ]
+    });
+    Box::new(bsn! {
+        Node { padding: UiRect { left: px(6), right: px(6), bottom: px(4) } }
+        Button
+        Children [ {field(vec![icons::search_dim(), input, hint], FIELD_H)} ]
+        on(focus_file_filter_row)
     })
 }
 
@@ -421,6 +633,7 @@ fn refresh_files(_click: On<Activate>, mut tree: ResMut<FileTree>) {
 pub fn sync_file_rows(
     mut commands: Commands,
     hosts: Query<Entity, With<FileRows>>,
+    filter: Res<FileFilter>,
     tree: Option<ResMut<FileTree>>,
 ) {
     let Some(mut tree) = tree else {
@@ -433,7 +646,11 @@ pub fn sync_file_rows(
     let Ok(host) = hosts.single() else {
         return;
     };
-    if tree.host == Some(host) && tree.built == tree.rev && !tree.pending {
+    if tree.host == Some(host)
+        && tree.built == tree.rev
+        && tree.built_filter == filter.rev
+        && !tree.pending
+    {
         return;
     }
     if !tree.pending {
@@ -444,8 +661,17 @@ pub fn sync_file_rows(
     tree.pending = false;
     tree.host = Some(host);
     tree.built = tree.rev;
+    tree.built_filter = filter.rev;
     despawn_children(&mut commands, host);
-    for row in rows(&tree.scan, &tree.expanded) {
+    let mut display = if filter.query.trim().is_empty() {
+        rows(&tree.scan, &tree.expanded)
+    } else {
+        matching_rows(&tree.index, &filter.query)
+    };
+    if display.is_empty() && !filter.query.trim().is_empty() && !tree.scan.missing {
+        display.push(Row::NoMatches);
+    }
+    for row in display {
         spawn_row(&mut commands, host, &tree, row);
     }
 }
@@ -453,6 +679,23 @@ pub fn sync_file_rows(
 /// Rescans the project folder; run once a second so edits on disk show up.
 pub fn poll_files(mut tree: ResMut<FileTree>) {
     tree.rescan();
+}
+
+/// Flat list of every indexed entry whose name matches, with its full path.
+fn matching_rows(index: &[IndexEntry], query: &str) -> Vec<Row> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    index
+        .iter()
+        .filter(|entry| entry.name.to_lowercase().contains(&query))
+        .map(|entry| Row::Match {
+            name: entry.rel.clone(),
+            rel: entry.rel.clone(),
+            is_dir: entry.is_dir,
+        })
+        .collect()
 }
 
 fn spawn_row(commands: &mut Commands, host: Entity, tree: &FileTree, row: Row) {
@@ -467,6 +710,12 @@ fn spawn_row(commands: &mut Commands, host: Entity, tree: &FileTree, row: Row) {
             spawn_muted(commands, host, format!("… {count} more"), depth);
         }
         Row::Empty { depth } => spawn_muted(commands, host, "empty".into(), depth),
+        Row::Match { name, rel, is_dir } => {
+            spawn_match(commands, host, tree, name, rel, is_dir);
+        }
+        Row::NoMatches => {
+            spawn_muted(commands, host, "No matching assets".into(), 0);
+        }
         Row::MissingRoot => {
             spawn_muted(commands, host, "no project folder".into(), 0);
         }
@@ -531,6 +780,42 @@ fn spawn_entry(
         FileRow { rel, is_dir }
         ChildOf(host)
         Children [ {kids} ]
+        on(click_file)
+        on(open_folder_menu)
+        on(start_asset_drag)
+    };
+    commands.spawn_scene(row);
+}
+
+fn spawn_match(
+    commands: &mut Commands,
+    host: Entity,
+    tree: &FileTree,
+    name: String,
+    rel: String,
+    is_dir: bool,
+) {
+    let selected = !is_dir && tree.selected.as_deref() == Some(rel.as_str());
+    let (bg, fg) = row_colors(selected);
+    let glyph = match kind(&name, is_dir) {
+        Kind::Dir => icons::folder(),
+        Kind::Scene => icons::badge(icons::SCENE),
+        Kind::File => icons::file(),
+    };
+    let row = bsn! {
+        Node {
+            height: px(TREE_ROW_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(8)),
+            column_gap: px(6),
+        }
+        ThemeBackgroundColor(bg)
+        Button
+        FileRow { rel, is_dir }
+        ChildOf(host)
+        Children [ {glyph} -- {text(name, FONT_SIZE, fg)} ]
         on(click_file)
         on(open_folder_menu)
         on(start_asset_drag)
@@ -657,7 +942,7 @@ mod tests {
     fn names(rows: &[Row]) -> Vec<String> {
         rows.iter()
             .filter_map(|row| match row {
-                Row::Entry { name, .. } => Some(name.clone()),
+                Row::Entry { name, .. } | Row::Match { name, .. } => Some(name.clone()),
                 _ => None,
             })
             .collect()
@@ -665,6 +950,46 @@ mod tests {
 
     fn open(rels: &[&str]) -> HashSet<String> {
         rels.iter().map(|rel| (*rel).to_string()).collect()
+    }
+
+    #[test]
+    fn the_asset_filter_matches_names_case_insensitively() {
+        let index = vec![
+            IndexEntry {
+                name: "assets".into(),
+                rel: "assets".into(),
+                is_dir: true,
+            },
+            IndexEntry {
+                name: "cube.glb".into(),
+                rel: "assets/models/cube.glb".into(),
+                is_dir: false,
+            },
+            IndexEntry {
+                name: "scenes".into(),
+                rel: "scenes".into(),
+                is_dir: true,
+            },
+        ];
+        let out = matching_rows(&index, "CUBE");
+        assert_eq!(names(&out), ["assets/models/cube.glb"]);
+        let out = matching_rows(&index, "scenes");
+        assert_eq!(names(&out), ["scenes"]);
+        assert!(matching_rows(&index, "zzz").is_empty());
+        assert!(matching_rows(&index, "").is_empty());
+    }
+
+    #[test]
+    fn the_asset_filter_field_updates_the_resource() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(FileFilter::default());
+        world.spawn((EditableText::new("fabr"), FileFilterInput));
+        world.run_system_once(sync_file_filter).unwrap();
+        let filter = world.resource::<FileFilter>();
+        assert_eq!(filter.query, "fabr");
+        assert_eq!(filter.rev, 1);
     }
 
     #[test]

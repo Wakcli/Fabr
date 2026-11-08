@@ -247,6 +247,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<docks::EditorStats>()
             .init_resource::<docks::SceneFilter>()
             .init_resource::<files::ImportMenu>()
+            .init_resource::<files::FileFilter>()
             .init_resource::<files::AssetDrag>()
             .init_resource::<crate::import::OptionsPanel>()
                         .add_observer(menu::request_object_menu)
@@ -295,6 +296,8 @@ impl Plugin for EditorPlugin {
                     docks::rebuild_scene_rows,
                     (
                         files::sync_file_rows,
+                        files::sync_file_filter,
+                        files::sync_file_filter_hint,
                         files::poll_files.run_if(eme::time::common_conditions::on_timer(
                             core::time::Duration::from_secs(3),
                         )),

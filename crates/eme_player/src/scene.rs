@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use eme::prelude::*;
 use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
+use eme_script::ScriptedObject;
 use eme_game_scene::{
     Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
 };
@@ -190,9 +191,16 @@ pub fn spawn_scene(
         let trs = to_transform(obj.translation, obj.rotation, obj.scale);
         let behaviour = behaviour_for(obj);
         let name = Name::new(obj.name.clone());
+        let script = obj.script.clone().map(|script| ScriptedObject {
+            object_id: obj.id,
+            script,
+        });
         match body(obj.kind) {
             Body::Empty => {
-                commands.spawn((trs, behaviour, name));
+                let mut spawned = commands.spawn((trs, behaviour, name));
+                if let Some(script) = script {
+                    spawned.insert(script);
+                }
             }
             Body::Camera => {
                 view.get_or_insert(trs);
@@ -208,8 +216,11 @@ pub fn spawn_scene(
                         let handle =
                             asset_server.load(GltfAssetLabel::Scene(0).from_asset(rel));
                         let pivot = eme_game_runtime::pivot_transform(import);
-                        commands
-                            .spawn((trs, behaviour, name, Visibility::Inherited))
+                        let mut spawned = commands.spawn((trs, behaviour, name, Visibility::Inherited));
+                        if let Some(script) = script {
+                            spawned.insert(script);
+                        }
+                        spawned
                             .with_children(|parent| {
                                 parent
                                     .spawn((pivot, Visibility::Inherited))
@@ -228,7 +239,7 @@ pub fn spawn_scene(
                 }
             }
             Body::PointLight => {
-                commands.spawn((
+                let mut spawned = commands.spawn((
                     PointLight {
                         intensity: POINT_INTENSITY,
                         range: POINT_RANGE,
@@ -238,9 +249,12 @@ pub fn spawn_scene(
                     behaviour,
                     name,
                 ));
+                if let Some(script) = script {
+                    spawned.insert(script);
+                }
             }
             Body::Sun => {
-                commands.spawn((
+                let mut spawned = commands.spawn((
                     DirectionalLight {
                         illuminance: SUN_ILLUMINANCE,
                         shadow_maps_enabled: shadows,
@@ -250,6 +264,9 @@ pub fn spawn_scene(
                     behaviour,
                     name,
                 ));
+                if let Some(script) = script {
+                    spawned.insert(script);
+                }
                 has_sun = true;
                 shadows = false;
             }
@@ -263,13 +280,16 @@ pub fn spawn_scene(
                 let mut material = StandardMaterial::from(base);
                 material.perceptual_roughness = ROUGHNESS;
                 material.metallic = 0.0;
-                commands.spawn((
+                let mut spawned = commands.spawn((
                     Mesh3d(mesh),
                     MeshMaterial3d(materials.add(material)),
                     trs,
                     behaviour,
                     name,
                 ));
+                if let Some(script) = script {
+                    spawned.insert(script);
+                }
             }
         }
     }

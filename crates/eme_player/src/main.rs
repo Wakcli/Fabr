@@ -69,6 +69,9 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(eme_script::ScriptPlugin)
+        .insert_resource(eme_script::ScriptsActive(true))
+        .insert_resource(eme_script::ScriptRoot(PathBuf::from("assets")))
         .insert_resource(loaded)
         .add_systems(Startup, (scene::announce, scene::spawn_scene))
         .add_systems(
@@ -78,6 +81,7 @@ fn main() {
                 capture_on_frame,
                 eme_game_runtime::run_behaviours,
                 eme_game_overrides::sync_model_nodes,
+                log_script_lines,
             ),
         )
         .run();
@@ -111,6 +115,16 @@ fn write_demo() {
         die(format!("could not write {DEMO_PATH}: {err}"));
     }
     say(&format!("wrote {DEMO_PATH}"));
+}
+
+fn log_script_lines(mut log: ResMut<eme_script::ScriptLog>, mut seen: Local<u64>) {
+    if log.rev() == *seen {
+        return;
+    }
+    *seen = log.rev();
+    for line in log.drain() {
+        info!("{line}");
+    }
 }
 
 fn exit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {

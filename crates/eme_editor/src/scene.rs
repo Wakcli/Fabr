@@ -14,6 +14,7 @@ use eme::ui::widget::ViewportNode;
 use eme::window::{PrimaryWindow, Window};
 use eme_editor_core::Selection;
 use eme_game_overrides::ModelOverrides;
+use eme_script::ScriptedObject;
 use eme_game_runtime::{GuidIndex, ModelImport, NodeKey, SceneBehaviour};
 use eme_game_scene::{Behaviour, ObjectKind, ObjectTransform, SceneDoc, SceneObject};
 
@@ -541,6 +542,17 @@ pub fn reconcile_scene(
             Some(entity) if links.get(entity).is_ok_and(|link| link.kind == kind) => {
                 let mut entity = commands.entity(entity);
                 entity.insert((Name::new(name), behaviour));
+                match obj.script.clone() {
+                    Some(script) => {
+                        entity.insert(ScriptedObject {
+                            object_id: id,
+                            script,
+                        });
+                    }
+                    None => {
+                        entity.remove::<ScriptedObject>();
+                    }
+                }
                 // the behaviour system owns the transform during an embedded
                 // session, so the document must not overwrite it here
                 if !playing {
@@ -566,6 +578,7 @@ pub fn reconcile_scene(
                     spec,
                     obj.asset.as_ref(),
                     &obj.overrides,
+                    obj.script.as_ref(),
                 );
                 state.entities.insert(id, entity);
             }
@@ -586,6 +599,7 @@ pub fn reconcile_scene(
                     spec,
                     obj.asset.as_ref(),
                     &obj.overrides,
+                    obj.script.as_ref(),
                 );
                 state.entities.insert(id, entity);
             }
@@ -832,6 +846,7 @@ fn spawn_entity(
     spec: Behaviour,
     asset: Option<&eme_game_scene::AssetRef>,
     overrides: &[eme_game_scene::NodeOverride],
+    script: Option<&eme_game_scene::ScriptRef>,
 ) -> Entity {
     let trs = to_transform(transform);
     let behaviour = SceneBehaviour { spec, base: trs };
@@ -946,6 +961,12 @@ fn spawn_entity(
         }
     };
 
+    if let Some(script) = script {
+        commands.entity(entity).insert(ScriptedObject {
+            object_id: id,
+            script: script.clone(),
+        });
+    }
     commands
         .entity(entity)
         .insert((Name::new(name), SceneLink { id, kind }, behaviour))

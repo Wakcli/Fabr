@@ -11,10 +11,11 @@ use eme::text::{
     EditableText, FontSize, FontSourceTemplate, FontWeight, LineBreak, TextEdit, TextFont,
     TextLayout,
 };
-use eme::ui_widgets::{Activate, Button, TextInput};
+use eme::ui_widgets::{Activate, Button, ScrollArea, TextInput};
 use eme_game_overrides::{ModelNodeCatalog, ModelOverrideStatus, OrphanReason};
 use eme_game_scene::{
-    Behaviour, BehaviourKind, NodeKey, OverrideOp, ObjectTransform, TransformDelta,
+    Behaviour, BehaviourKind, NodeKey, ObjectTransform, OverrideOp, ScriptRef, ScriptValue,
+    TransformDelta,
 };
 use std::path::{Path, PathBuf};
 
@@ -225,7 +226,7 @@ pub fn body() -> Part {
             --
             {section(Section::Visibility, "Visibility", vec![visibility_row()])}
             --
-            {section(Section::Script, "Script", vec![script_row()])}
+            {script_section()}
             --
             {spacer()}
         ]
@@ -1240,32 +1241,476 @@ fn visibility_row() -> Part {
     })
 }
 
-fn script_row() -> Part {
-    Box::new(bsn! {
+fn script_section() -> Part {
+    let host = Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+        }
+        ScriptRows
+    }) as Part;
+    let body = Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: px(2),
+        }
+        SectionBody(Section::Script)
+        Children [ {host} ]
+    }) as Part;
+    col(0.0, vec![section_header(Section::Script, "Script"), body])
+}
+
+/// Rebuilds the Script section rows for the selected object.
+pub fn sync_script_rows(
+    state: Res<SceneState>,
+    mut commands: Commands,
+    hosts: Query<Entity, With<ScriptRows>>,
+    mut shown: Local<Option<(Entity, String)>>,
+) {
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    let Some(obj) = state.selected_object() else {
+        let signature = "none".to_string();
+        if shown.as_ref() != Some(&(host, signature.clone())) {
+            *shown = Some((host, signature));
+            commands.entity(host).despawn_children();
+            let line = text("No selection", FONT_SIZE, tokens::TEXT_DIM);
+            commands.spawn_scene(bsn! {
+                Node { padding: UiRect::horizontal(px(8)) }
+                ChildOf(host)
+                Children [ {line} ]
+            });
+        }
+        return;
+    };
+
+    let path = obj.script.as_ref().map(|script| script.path.clone());
+    let defaults = path.as_deref().map(|path| {
+        eme_script::script_property_defaults(&crate::asset_root(), path)
+    });
+    let mut signature = format!("{}|{}", obj.id, path.clone().unwrap_or_default());
+    if let Some(Ok(defaults)) = &defaults {
+        for (key, value) in defaults {
+            signature.push_str(&format!("|{key}={value:?}"));
+            if let Some(over) = obj
+                .script
+                .as_ref()
+                .and_then(|script| script.properties.get(key))
+            {
+                signature.push_str(&format!("={over:?}"));
+            }
+        }
+    }
+    if let Some(Err(err)) = &defaults {
+        signature.push_str(&format!("|error:{err}"));
+    }
+    if shown.as_ref() == Some(&(host, signature.clone())) {
+        return;
+    }
+    *shown = Some((host, signature));
+    commands.entity(host).despawn_children();
+
+    let object = obj.id;
+    let label = text("Script", FONT_SIZE, tokens::TEXT);
+    let value = text_clipped(
+        path.clone().unwrap_or_else(|| "None".into()),
+        FONT_SIZE,
+        if path.is_some() {
+            tokens::ACCENT
+        } else {
+            tokens::TEXT_DIM
+        },
+    );
+    let row = commands.spawn_scene(bsn! {
         Node {
             display: Display::Flex,
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            padding: UiRect {
-                left: px(10),
-                right: px(8),
-                top: px(4),
-                bottom: px(5),
-            },
-            column_gap: px(6),
+            padding: UiRect::horizontal(px(8)),
+            column_gap: px(4),
         }
-        Children [
-            {label_cell("Script")}
-            --
-            {field(
-                vec![
-                    icons::file(),
-                    text("Empty", FONT_SIZE, tokens::TEXT_DIM),
-                ],
-                FIELD_H,
-            )}
-        ]
+        ChildOf(host)
+        Children [ {label} -- {spacer()} -- {value} ]
+    }).id();
+    commands
+        .spawn_scene(bsn! {
+            Node {
+                height: px(22),
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(6)),
+            }
+            Button
+            ChildOf(row)
+            Children [ {text("Choose…", FONT_SIZE, tokens::TEXT)} ]
+        })
+        .insert(OpenScriptPicker(object))
+        .observe(open_script_picker);
+
+    let Some(path) = path else {
+        let hint = text("Select a .lua script to run in Play.", FONT_SIZE, tokens::TEXT_DIM);
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)) }
+            ChildOf(host)
+            Children [ {hint} ]
+        });
+        return;
+    };
+
+    let defaults = match defaults {
+        Some(Ok(defaults)) => defaults,
+        Some(Err(err)) => {
+            let line = text(err, FONT_SIZE, tokens::TEXT_DIM);
+            commands.spawn_scene(bsn! {
+                Node { padding: UiRect::horizontal(px(8)) }
+                ChildOf(host)
+                Children [ {line} ]
+            });
+            return;
+        }
+        None => return,
+    };
+    if defaults.is_empty() {
+        let hint = text("No exposed properties.", FONT_SIZE, tokens::TEXT_DIM);
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)) }
+            ChildOf(host)
+            Children [ {hint} ]
+        });
+        return;
+    }
+
+    for (key, default) in defaults {
+        let current = obj
+            .script
+            .as_ref()
+            .and_then(|script| script.properties.get(&key))
+            .cloned()
+            .unwrap_or_else(|| default.clone());
+        let label = text(key.clone(), FONT_SIZE, tokens::TEXT);
+        let row = commands.spawn_scene(bsn! {
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(8)),
+                column_gap: px(6),
+            }
+            ChildOf(host)
+            Children [ {label} -- {spacer()} ]
+        }).id();
+        let shown = match &current {
+            ScriptValue::Bool(value) => value.to_string(),
+            ScriptValue::Number(value) => fmt_num(*value as f32),
+            ScriptValue::Text(value) => value.clone(),
+        };
+        commands
+            .spawn_scene(bsn! {
+                Node {
+                    flex_grow: 1.0,
+                    flex_basis: px(0),
+                    height: px(20),
+                    display: Display::Flex,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(px(4)),
+                    overflow: Overflow::clip(),
+                }
+                ThemeBackgroundColor(tokens::FIELD)
+                EditableText::new(shown)
+                TextInput
+                TabIndex(0)
+                TextLayout {
+                    linebreak: LineBreak::NoWrap,
+                }
+                TextFont {
+                    font: FontSourceTemplate::Handle(fonts::REGULAR),
+                    font_size: FontSize::Px(FONT_SIZE),
+                    weight: FontWeight::NORMAL,
+                }
+                ThemeTextColor(tokens::TEXT)
+                ChildOf(row)
+            })
+            .insert(ScriptField(object, key.clone(), default))
+            .observe(focus_script_field)
+            .observe(blur_script_field)
+            .observe(script_field_key);
+    }
+    let _ = path;
+}
+
+/// Marks the dynamic Script section host.
+#[derive(Component, Clone, Default)]
+pub struct ScriptRows;
+
+/// Button that opens the script picker for an object.
+#[derive(Component, Clone, Copy, Default)]
+pub struct OpenScriptPicker(pub u64);
+
+/// One editable script property.
+#[derive(Component, Clone, Default)]
+pub struct ScriptField(pub u64, pub String, pub ScriptValue);
+
+/// Focused property edit.
+#[derive(Component, Clone, Default)]
+pub struct ScriptFieldEdit;
+
+/// Script picker overlay state.
+#[derive(Resource, Clone, Default)]
+pub struct ScriptPicker {
+    /// Position in window coordinates.
+    pub at: Option<Vec2>,
+    /// Object the chosen script is attached to.
+    pub object: Option<u64>,
+    /// Script files under assets.
+    pub choices: Vec<String>,
+}
+
+/// Marks the picker's root.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ScriptPickerRoot;
+
+/// Host for picker rows.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ScriptPickerRows;
+
+/// One picker choice; an empty path clears the script.
+#[derive(Component, Clone, Default)]
+pub struct ScriptChoice(pub u64, pub String);
+
+/// The script picker overlay.
+pub fn script_picker() -> Part {
+    let rows = Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            max_height: px(350),
+            overflow: Overflow::scroll_y(),
+        }
+        ScrollArea
+        ScriptPickerRows
+    }) as Part;
+    Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            display: Display::None,
+            left: px(0),
+            top: px(0),
+            width: px(360),
+            max_height: px(360),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            border: px(1),
+            border_radius: px(4),
+            padding: px(2),
+            overflow: Overflow::clip(),
+        }
+        ScriptPickerRoot
+        GlobalZIndex(320)
+        ThemeBackgroundColor(tokens::WINDOW)
+        ThemeBorderColor(tokens::BORDER)
+        Children [ {rows} ]
     })
+}
+
+/// Opens the picker for the selected object.
+fn open_script_picker(
+    activate: On<Activate>,
+    buttons: Query<&OpenScriptPicker>,
+    mut picker: ResMut<ScriptPicker>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    picker.at = Some(Vec2::new(420.0, 240.0));
+    picker.object = Some(button.0);
+    picker.choices = eme_script::script_files(&crate::asset_root());
+}
+
+/// Rebuilds the picker rows.
+pub fn sync_script_picker(
+    picker: Res<ScriptPicker>,
+    mut commands: Commands,
+    mut roots: Query<&mut Node, With<ScriptPickerRoot>>,
+    hosts: Query<Entity, With<ScriptPickerRows>>,
+    mut shown: Local<Option<(Entity, usize, Vec2)>>,
+) {
+    for mut node in &mut roots {
+        let display = if picker.at.is_some() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != display {
+            node.display = display;
+        }
+        if let Some(at) = picker.at {
+            node.left = px(at.x);
+            node.top = px(at.y);
+        }
+    }
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    let Some(at) = picker.at else {
+        *shown = None;
+        return;
+    };
+    let signature = (host, picker.choices.len(), at);
+    if shown.as_ref() == Some(&signature) {
+        return;
+    }
+    *shown = Some(signature);
+    commands.entity(host).despawn_children();
+    let Some(object) = picker.object else {
+        return;
+    };
+    spawn_choice(&mut commands, host, object, String::new(), "None".into());
+    for choice in &picker.choices {
+        spawn_choice(&mut commands, host, object, choice.clone(), choice.clone());
+    }
+}
+
+fn spawn_choice(commands: &mut Commands, host: Entity, object: u64, path: String, label: String) {
+    let text = text_clipped(label, FONT_SIZE, tokens::TEXT);
+    commands
+        .spawn_scene(bsn! {
+            Node {
+                height: px(22),
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(8)),
+                overflow: Overflow::clip(),
+            }
+            Button
+            ChildOf(host)
+            Children [ {text} ]
+        })
+        .insert(ScriptChoice(object, path))
+        .observe(choose_script);
+}
+
+fn choose_script(
+    activate: On<Activate>,
+    choices: Query<&ScriptChoice>,
+    mut picker: ResMut<ScriptPicker>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+) {
+    let Ok(choice) = choices.get(activate.entity) else {
+        return;
+    };
+    undo.checkpoint(&state, "Attach Script");
+    if choice.1.is_empty() {
+        state.doc.set_script(choice.0, None);
+    } else {
+        state.doc.set_script(
+            choice.0,
+            Some(ScriptRef {
+                path: choice.1.clone(),
+                properties: Default::default(),
+            }),
+        );
+    }
+    state.touch();
+    picker.at = None;
+}
+
+fn focus_script_field(
+    press: On<PointerPress>,
+    fields: Query<&ScriptField>,
+    mut values: Query<&mut EditableText>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    if press.button != PointerButton::Primary || !fields.contains(press.entity) {
+        return;
+    }
+    commands.entity(press.entity).insert(ScriptFieldEdit);
+    if let Ok(mut value) = values.get_mut(press.entity) {
+        value.queue_edit(TextEdit::SelectAll);
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
+
+fn script_field_key(
+    key: On<FocusedInput<KeyboardInput>>,
+    fields: Query<(&ScriptField, &EditableText)>,
+    edits: Query<&ScriptFieldEdit>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    let input = &key.input;
+    if !input.state.is_pressed() || input.repeat {
+        return;
+    }
+    let entity = key.focused_entity;
+    let Ok((field, value)) = fields.get(entity) else {
+        return;
+    };
+    if input.key_code == KeyCode::Escape {
+        commands.entity(entity).remove::<ScriptFieldEdit>();
+        return;
+    }
+    if input.key_code != KeyCode::Enter {
+        return;
+    }
+    if edits.contains(entity) {
+        commit_script_field(&mut state, &mut undo, field, value.value().to_string().as_str());
+    }
+    commands.entity(entity).remove::<ScriptFieldEdit>();
+    focus.clear();
+}
+
+fn blur_script_field(
+    lost: On<FocusLost>,
+    edits: Query<&ScriptFieldEdit>,
+    fields: Query<(&ScriptField, &EditableText)>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut commands: Commands,
+) {
+    let entity = lost.event_target();
+    if !edits.contains(entity) {
+        return;
+    }
+    commands.entity(entity).remove::<ScriptFieldEdit>();
+    let Ok((field, value)) = fields.get(entity) else {
+        return;
+    };
+    commit_script_field(&mut state, &mut undo, field, value.value().to_string().as_str());
+}
+
+fn commit_script_field(
+    state: &mut SceneState,
+    undo: &mut Undo,
+    field: &ScriptField,
+    raw: &str,
+) -> bool {
+    let value = match &field.2 {
+        ScriptValue::Bool(_) => match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => ScriptValue::Bool(true),
+            "false" | "0" | "no" => ScriptValue::Bool(false),
+            _ => return false,
+        },
+        ScriptValue::Number(_) => {
+            let Ok(value) = raw.trim().parse::<f64>() else {
+                return false;
+            };
+            ScriptValue::Number(value)
+        }
+        ScriptValue::Text(_) => ScriptValue::Text(raw.to_owned()),
+    };
+    undo.checkpoint(state, "Edit Script Property");
+    state.doc.set_script_property(field.0, field.1.clone(), value);
+    state.touch();
+    true
 }
 
 fn fmt_num(value: f32) -> String {
@@ -1700,6 +2145,28 @@ pub fn typing_guard(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn script_property_edits_are_committed_with_undo() {
+        let mut state = SceneState::default();
+        let id = state.spawn(ObjectKind::Cube);
+        state.doc.set_script(
+            id,
+            Some(ScriptRef {
+                path: "scripts/spin.lua".into(),
+                properties: Default::default(),
+            }),
+        );
+        let mut undo = Undo::default();
+        let field = ScriptField(id, "speed".into(), ScriptValue::Number(1.0));
+        assert!(commit_script_field(&mut state, &mut undo, &field, "2.5"));
+        assert_eq!(
+            state.doc.script(id).unwrap().properties.get("speed"),
+            Some(&ScriptValue::Number(2.5))
+        );
+        assert!(undo.can_undo());
+        assert!(!commit_script_field(&mut state, &mut undo, &field, "nope"));
+    }
     use super::*;
     use eme_game_scene::ObjectKind;
 
@@ -2081,4 +2548,5 @@ fn reimport(
         &crate::build::workspace_dir(),
         &mut log,
     );
+
 }

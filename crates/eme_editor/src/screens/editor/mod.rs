@@ -56,6 +56,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {crate::import::panel()}
             --
+            {inspector::script_picker()}
+            --
             {files::import_menu()}
             --
             {crate::play::flyout()}
@@ -187,6 +189,8 @@ impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
         viewport::plugins(app);
         dock::plugins(app);
+        app.add_plugins(eme_script::ScriptPlugin);
+        app.insert_resource(eme_script::ScriptRoot(crate::asset_root()));
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()
@@ -209,7 +213,9 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::import::ModelWatcher>()
             .init_resource::<scene::ModelIndex>()
             .init_resource::<scene::NodeSelection>()
+            .init_resource::<crate::script_watch::ScriptWatcher>()
             .init_resource::<inspector::ReattachState>()
+            .init_resource::<inspector::ScriptPicker>()
             .init_resource::<files::ImportMenu>()
             .init_resource::<files::AssetDrag>()
             .init_resource::<crate::import::OptionsPanel>()
@@ -231,6 +237,8 @@ impl Plugin for EditorPlugin {
                     crate::selection_outline::sync_outlines,
                     (
                         crate::console::sync,
+                        sync_script_activity,
+                        drain_script_logs,
                         crate::import::poll_system,
                         crate::import::apply_reloads,
                         crate::import::status_system,
@@ -261,9 +269,14 @@ impl Plugin for EditorPlugin {
                         crate::import::watch_models.run_if(eme::time::common_conditions::on_timer(
                             core::time::Duration::from_millis(500),
                         )),
+                        crate::script_watch::watch_scripts.run_if(eme::time::common_conditions::on_timer(
+                            core::time::Duration::from_millis(500),
+                        )),
                     ),
                     (
                         inspector::sync_inspector,
+                        inspector::sync_script_rows,
+                        inspector::sync_script_picker,
                         inspector::sync_node_inspector,
                         inspector::sync_override_panel,
                         inspector::sync_import_report,
@@ -300,6 +313,31 @@ impl Plugin for EditorPlugin {
             .add_systems(Startup, crate::selection_outline::init_outline_material)
             .add_systems(PostUpdate, scene::reconcile_scene)
             .add_systems(Last, scene::purge_stale);
+    }
+}
+
+fn sync_script_activity(
+    play: Res<crate::play::PlayState>,
+    view: Res<orbit::ViewMode>,
+    mut active: ResMut<eme_script::ScriptsActive>,
+) {
+    let next = play.running() && *view == orbit::ViewMode::Game;
+    if active.0 != next {
+        active.0 = next;
+    }
+}
+
+fn drain_script_logs(
+    mut scripts: ResMut<eme_script::ScriptLog>,
+    mut console: ResMut<crate::console::ConsoleLog>,
+    mut seen: Local<u64>,
+) {
+    if scripts.rev() == *seen {
+        return;
+    }
+    *seen = scripts.rev();
+    for line in scripts.drain() {
+        console.push(line);
     }
 }
 

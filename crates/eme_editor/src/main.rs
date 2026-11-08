@@ -18,6 +18,7 @@ mod orbit;
 mod persist;
 mod play;
 mod scene;
+mod script_watch;
 mod screens;
 mod selection_outline;
 mod theme_bridge;

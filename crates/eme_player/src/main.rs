@@ -32,6 +32,7 @@ struct Args {
     scene: Option<PathBuf>,
     host: Option<u16>,
     connect: Option<String>,
+    interp: Option<f32>,
     write_demo: bool,
     help: bool,
 }
@@ -52,6 +53,10 @@ impl Args {
                 }
                 "--connect" => {
                     out.connect = Some(args.next().ok_or("--connect needs host:port")?);
+                }
+                "--interp" => {
+                    let value = args.next().ok_or("--interp needs seconds")?;
+                    out.interp = Some(value.parse().map_err(|_| "invalid --interp value")?);
                 }
                 "--write-demo" => out.write_demo = true,
                 "--help" | "-h" => out.help = true,
@@ -156,6 +161,7 @@ fn main() {
                 log_script_lines,
                 eme_game_runtime::step_physics.after(fabr::update_scripts),
                 scene::materialize_replicated,
+                log_net_trace,
                 log_network,
             ),
         )
@@ -185,6 +191,30 @@ fn is_not_client(config: Res<eme_net::NetworkConfig>) -> bool {
     !matches!(config.role, eme_net::NetworkRole::Client { .. })
 }
 
+fn log_net_trace(
+    config: Res<eme_net::NetworkConfig>,
+    time: Res<Time>,
+    objects: Query<(&eme_net::ReplicatedObject, &Transform)>,
+    mut elapsed: Local<f32>,
+) {
+    if std::env::var_os("EME_NET_TRACE").is_none()
+        || !matches!(config.role, eme_net::NetworkRole::Client { .. })
+    {
+        return;
+    }
+    *elapsed += time.delta_secs();
+    if *elapsed < 0.4 {
+        return;
+    }
+    *elapsed = 0.0;
+    let mut list: Vec<(u64, f32)> = objects
+        .iter()
+        .map(|(object, transform)| (object.0, transform.translation.x))
+        .collect();
+    list.sort_by_key(|(id, _)| *id);
+    info!("net trace {list:?}");
+}
+
 fn network_config(args: &Args) -> eme_net::NetworkConfig {
     let role = if let Some(port) = args.host {
         eme_net::NetworkRole::Server { port }
@@ -193,7 +223,10 @@ fn network_config(args: &Args) -> eme_net::NetworkConfig {
     } else {
         eme_net::NetworkRole::Offline
     };
-    eme_net::NetworkConfig { role }
+    eme_net::NetworkConfig {
+        role,
+        interpolation_delay: args.interp.unwrap_or(0.1),
+    }
 }
 
 fn log_network(status: Res<eme_net::NetworkStatus>, mut last: Local<u64>) {
@@ -218,6 +251,7 @@ usage: eme_player [--scene <path>]
                   scene.ember next to the executable, then scenes/main.ember
   --host <port>   host a local replication server
   --connect <a>   connect to host:port and apply replicated transforms
+  --interp <s>    client interpolation delay in seconds (default 0.1)
   --write-demo    write a demo scene to scenes/player-demo.ember and exit
   -h, --help      show this text
 

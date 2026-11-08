@@ -92,7 +92,11 @@ fn main() {
     };
 
     let assets = asset_root();
-    App::new()
+    let extensions = eme_game_runtime::load_for(Path::new("."));
+    let scripting = extensions.enabled(eme_game_runtime::Extension::Scripting);
+    let physics = extensions.enabled(eme_game_runtime::Extension::Physics);
+    let mut app = App::new();
+    app
         .add_plugins(DefaultPlugins.set(AssetPlugin {
             file_path: assets.to_string_lossy().into_owned(),
             ..default()
@@ -106,14 +110,11 @@ fn main() {
             ..default()
         }))
         .add_plugins(fabr::ScriptPlugin)
-        .add_plugins(eme_anim::AnimationRuntimePlugin)
-        .add_plugins(eme_net::NetworkPlugin)
-        .add_plugins(eme_game_runtime::NavPlugin)
-        .insert_resource(network_config(&args))
-        .insert_resource(fabr::ScriptsActive(!matches!(
-            network_config(&args).role,
-            eme_net::NetworkRole::Client { .. }
-        )))
+        .insert_resource(fabr::ScriptsActive(
+            scripting
+                && !matches!(network_config(&args).role, eme_net::NetworkRole::Client { .. }),
+        ))
+        .insert_resource(extensions.clone())
         .insert_resource(fabr::ScriptRoot(assets))
         .insert_resource(actions)
         .insert_resource(scene::PlayerMsaa(settings.graphics.msaa))
@@ -126,6 +127,7 @@ fn main() {
             gravity: settings.physics.gravity,
             bounce: settings.physics.bounce,
             enabled: settings.physics.enabled
+                && physics
                 && !matches!(network_config(&args).role, eme_net::NetworkRole::Client { .. }),
         })
         .insert_resource(GlobalVolume::new(eme::audio::Volume::Linear(
@@ -162,8 +164,17 @@ fn main() {
                     .after(fabr::update_scripts),
                 eme_game_runtime::NavSet.after(fabr::update_scripts),
             ),
-        )
-        .run();
+        );
+    if extensions.enabled(eme_game_runtime::Extension::Animation) {
+        app.add_plugins(eme_anim::AnimationRuntimePlugin);
+    }
+    if extensions.enabled(eme_game_runtime::Extension::Navigation) {
+        app.add_plugins(eme_game_runtime::NavPlugin);
+    }
+    if extensions.enabled(eme_game_runtime::Extension::Networking) {
+        app.add_plugins(eme_net::NetworkPlugin);
+    }
+    app.run();
 }
 
 fn is_not_client(config: Res<eme_net::NetworkConfig>) -> bool {

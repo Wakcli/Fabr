@@ -12,8 +12,8 @@ pub use eme::prelude::App;
 pub use eme_editor_project::{InputSettings, PlayerSettings, ProjectSettings, SETTINGS_FILE};
 pub use eme_game_scene::{
     AssetRef, Behaviour, BehaviourKind, NodeKey, NodeOverride, ObjectKind, ObjectTransform,
-    OverrideOp, SceneDoc, SceneError, SceneObject, ScriptRef, ScriptValue, TransformDelta,
-    FORMAT_VERSION,
+    OverrideOp, SceneDoc, SceneError, SceneObject, ScriptLanguage, ScriptRef, ScriptValue,
+    TransformDelta, FORMAT_VERSION,
 };
 pub use eme_script::{
     key_binding, script_files, script_property_defaults, update_scripts, AudioBus, AudioMix,
@@ -120,8 +120,8 @@ pub mod prelude {
     pub use crate::{
         key_binding, script_files, script_property_defaults, FabrConfig, InputActions, InputSettings,
         NodeKey, ObjectKind, ObjectTransform, PlayerSettings, ProjectSettings, SceneDoc, SceneObject,
-        ScriptLog, ScriptPlugin, ScriptRef, ScriptRoot, ScriptValue, ScriptedObject, ScriptsActive,
-        FabrGame, SETTINGS_FILE, VERSION,
+        ScriptLanguage, ScriptLog, ScriptPlugin, ScriptRef, ScriptRoot, ScriptValue,
+        ScriptedObject, ScriptsActive, FabrGame, SETTINGS_FILE, VERSION,
     };
 }
 
@@ -206,6 +206,7 @@ mod tests {
             Some(ScriptRef {
                 path: "scripts/spin.lua".into(),
                 properties: Default::default(),
+                ..Default::default()
             })
         ));
         assert!(doc.script(id).is_some());

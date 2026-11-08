@@ -21,12 +21,16 @@ use eme_anim::AnimationSet;
 use eme_game_runtime::{
     DistanceJoint, KinematicController, NavAgent, NavGrid, PhysicsBody,
 };
-use eme_game_scene::{ScriptRef, ScriptValue};
+use eme_game_scene::{ScriptLanguage, ScriptRef, ScriptValue};
 use eme_input::prelude::*;
 use eme_math::prelude::*;
 use eme_time::Time;
 use eme_transform::prelude::Transform;
 use mlua::{Lua, RegistryKey, Table, Value};
+
+mod csharp;
+
+pub use csharp::CSharpScripts;
 
 /// Marks a spawned entity that runs a Lua script.
 #[derive(Component, Clone, Debug, PartialEq)]
@@ -1043,13 +1047,24 @@ fn normalize_key(name: &str) -> String {
 
 /// Script files under `root/scripts`, relative to `root`.
 pub fn script_files(root: &Path) -> Vec<String> {
+    script_files_for(root, ScriptLanguage::Lua)
+}
+
+/// Script artifacts of one language under `<root>/scripts`, relative to `root`.
+pub fn script_files_for(root: &Path, language: ScriptLanguage) -> Vec<String> {
     let mut out = Vec::new();
-    collect_scripts(&root.join("scripts"), root, 0, &mut out);
+    collect_scripts(
+        &root.join("scripts"),
+        root,
+        0,
+        language.extension(),
+        &mut out,
+    );
     out.sort();
     out
 }
 
-fn collect_scripts(dir: &Path, root: &Path, depth: usize, out: &mut Vec<String>) {
+fn collect_scripts(dir: &Path, root: &Path, depth: usize, extension: &str, out: &mut Vec<String>) {
     if depth > 4 {
         return;
     }
@@ -1059,11 +1074,11 @@ fn collect_scripts(dir: &Path, root: &Path, depth: usize, out: &mut Vec<String>)
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_scripts(&path, root, depth + 1, out);
+            collect_scripts(&path, root, depth + 1, extension, out);
         } else if path
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("lua"))
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
             && let Ok(rel) = path.strip_prefix(root)
         {
             out.push(rel.to_string_lossy().replace('\\', "/"));
@@ -1168,6 +1183,7 @@ pub fn sync_scripts(
     mut runtime: ResMut<ScriptRuntime>,
     mut reload: ResMut<ScriptReload>,
     mut log: ResMut<ScriptLog>,
+    mut csharp: ResMut<CSharpScripts>,
     scripted: Query<(Entity, &ScriptedObject)>,
     transforms: Query<(Entity, &Transform)>,
     names: Query<(Entity, &Name)>,
@@ -1183,12 +1199,27 @@ pub fn sync_scripts(
         for (_, mut instance) in instances.drain() {
             stop_instance(lua, &mut instance, &mut log);
         }
+        csharp::stop_all(&mut csharp, &mut log);
         return;
     }
 
     let mut live = HashMap::new();
+    let mut csharp_live = HashMap::new();
     for (entity, scripted) in &scripted {
-        live.insert(entity, scripted.script.path.clone());
+        match scripted.script.language {
+            ScriptLanguage::Lua => {
+                live.insert(entity, scripted.script.path.clone());
+            }
+            ScriptLanguage::CSharp => {
+                csharp_live.insert(
+                    entity,
+                    (
+                        scripted.script.path.clone(),
+                        scripted.script.class.clone().unwrap_or_default(),
+                    ),
+                );
+            }
+        }
     }
     let stale: Vec<Entity> = instances
         .keys()
@@ -1199,6 +1230,14 @@ pub fn sync_scripts(
         if let Some(mut instance) = instances.remove(&entity) {
             stop_instance(lua, &mut instance, &mut log);
         }
+    }
+    let csharp_stale: Vec<Entity> = csharp
+        .entities()
+        .into_iter()
+        .filter(|entity| !csharp_live.contains_key(entity))
+        .collect();
+    for entity in csharp_stale {
+        csharp.remove(entity, &mut log);
     }
 
     let reloads: Vec<String> = std::mem::take(&mut reload.paths);
@@ -1219,6 +1258,9 @@ pub fn sync_scripts(
     };
 
     for (entity, scripted) in &scripted {
+        if scripted.script.language != ScriptLanguage::Lua {
+            continue;
+        }
         let path = &scripted.script.path;
         let existing = instances.get(&entity);
         let same_path = existing.is_some_and(|instance| &instance.path == path);
@@ -1263,6 +1305,47 @@ pub fn sync_scripts(
             }
         }
     }
+
+    for (entity, scripted) in &scripted {
+        if scripted.script.language != ScriptLanguage::CSharp {
+            continue;
+        }
+        let path = scripted.script.path.as_str();
+        let class = scripted.script.class.as_deref().unwrap_or("").trim();
+        if class.is_empty() {
+            if !csharp.has_failed(path, "") {
+                csharp.mark_failed(path, "");
+                log.push(format!("script {path}: C# scripts need a class name"));
+            }
+            continue;
+        }
+        let reloading = reloads.iter().any(|queued| queued == path);
+        let loaded = csharp.matches(entity, path, class);
+        let needs_load = !loaded || reloading;
+        if !needs_load {
+            continue;
+        }
+        if !reloading && csharp.has_failed(path, class) {
+            continue;
+        }
+        let full = root.0.join(path);
+        match csharp::load(&mut csharp, entity, path, class, &full) {
+            Ok(instance) => {
+                csharp.clear_failed(path, class);
+                if csharp.remove(entity, &mut log).is_some() && loaded {
+                    log.push(format!("script {path}: reloaded"));
+                }
+                csharp.insert(entity, instance);
+            }
+            Err(err) => {
+                csharp.mark_failed(path, class);
+                log.push(format!("script {path}: {err}"));
+                if loaded && !reloading {
+                    csharp.remove(entity, &mut log);
+                }
+            }
+        }
+    }
 }
 
 /// Runs `on_start` once and `on_update` for every live instance.
@@ -1281,7 +1364,7 @@ pub fn update_scripts(
     mut animations: Query<(Entity, &mut AnimationSet)>,
     mut agents: Query<(Entity, &mut NavAgent)>,
     mut controllers: Query<&mut KinematicController>,
-    grid: Res<NavGrid>,
+    grid: Option<Res<NavGrid>>,
     mut commands: Commands,
 ) {
     if !active.0 {
@@ -1321,7 +1404,7 @@ pub fn update_scripts(
             grounded.insert(entity);
         }
     }
-    let nav = Arc::new(grid.clone());
+    let nav = Arc::new(grid.as_deref().cloned().unwrap_or_default());
     let mut anim_clips = HashMap::new();
     let mut anim_selected = HashMap::new();
     let mut anim_playing = HashSet::new();
@@ -1526,6 +1609,33 @@ pub fn update_scripts(
     }
 }
 
+/// Runs C# scripts after the Lua pass against the same frame's transforms.
+pub fn update_csharp_scripts(
+    active: Res<ScriptsActive>,
+    time: Res<Time>,
+    mut scripts: ResMut<CSharpScripts>,
+    mut log: ResMut<ScriptLog>,
+    mut transforms: Query<(Entity, &mut Transform, Option<&Name>)>,
+) {
+    if !active.0 || scripts.is_empty() {
+        return;
+    }
+    let mut snapshot = HashMap::new();
+    for (entity, transform, _) in &mut transforms {
+        snapshot.insert(entity, transform.translation);
+    }
+    let snapshot = Arc::new(snapshot);
+    let mut entities = scripts.entities();
+    entities.sort_unstable();
+    for entity in entities {
+        let Some(instance) = scripts.instance_mut(entity) else {
+            continue;
+        };
+        let ops = csharp::step(instance, &snapshot, time.delta_secs(), &mut log);
+        csharp::apply_ops(ops, &mut transforms);
+    }
+}
+
 /// Spawns an [`AudioPlayer`] that despawns when the clip ends.
 fn spawn_audio(commands: &mut Commands, source: Handle<AudioSource>, volume: f32) {
     commands.spawn((
@@ -1601,10 +1711,17 @@ impl Plugin for ScriptPlugin {
             .init_resource::<ScriptUi>()
             .init_resource::<AudioMix>()
             .init_resource::<ScriptRuntime>()
+            .init_resource::<CSharpScripts>()
             .add_systems(Update, sync_scripts)
             .add_systems(
                 Update,
                 update_scripts.after(eme_game_runtime::run_behaviours),
+            )
+            .add_systems(
+                Update,
+                update_csharp_scripts
+                    .after(update_scripts)
+                    .after(eme_game_runtime::run_behaviours),
             )
             .add_systems(Update, play_script_audio.after(update_scripts))
             .add_systems(Update, publish_scene_requests.after(update_scripts))
@@ -1637,6 +1754,7 @@ mod tests {
         world.insert_resource(NavGrid::default());
         world.insert_resource(AudioMix::default());
         world.insert_resource(ScriptRuntime::default());
+        world.insert_resource(CSharpScripts::default());
         world.insert_resource(Time::<()>::default());
         world.insert_resource(ButtonInput::<KeyCode>::default());
         world.insert_resource(ButtonInput::<MouseButton>::default());
@@ -1652,6 +1770,7 @@ mod tests {
             script: ScriptRef {
                 path: path.to_owned(),
                 properties,
+                ..Default::default()
             },
         });
         entity
@@ -2300,6 +2419,150 @@ return {
         let mut names = BTreeMap::new();
         names.insert("jump".to_string(), vec!["Banana".to_string()]);
         assert!(InputActions::from_names(&names).is_err());
+    }
+
+    const CSHARP_SCRIPT: &str = r#"
+using System.Runtime.InteropServices;
+
+namespace Game;
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct FabrApi
+{
+    public void* Context;
+    public delegate* unmanaged[Cdecl]<void*, byte*, void> Log;
+    public delegate* unmanaged[Cdecl]<void*, ulong, float, float, float, int> SetTranslation;
+    public delegate* unmanaged[Cdecl]<void*, ulong, float*, int> GetTranslation;
+}
+
+public static class Spin
+{
+    [UnmanagedCallersOnly]
+    public static unsafe void Start(FabrApi* api, ulong entity)
+    {
+        byte[] message = System.Text.Encoding.UTF8.GetBytes("csharp start\0");
+        fixed (byte* text = message) { api->Log(api->Context, text); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void Update(FabrApi* api, ulong entity, float dt)
+    {
+        float* position = stackalloc float[3];
+        if (api->GetTranslation(api->Context, entity, position) == 0) { return; }
+        api->SetTranslation(api->Context, entity, position[0], position[1] + dt, position[2]);
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void Stop(FabrApi* api, ulong entity)
+    {
+        byte[] message = System.Text.Encoding.UTF8.GetBytes("csharp stop\0");
+        fixed (byte* text = message) { api->Log(api->Context, text); }
+    }
+}
+"#;
+
+    fn dotnet_available() -> bool {
+        std::process::Command::new("dotnet")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }
+
+    fn build_csharp_script(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("Game.csproj"),
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("Script.cs"), CSHARP_SCRIPT).unwrap();
+        let status = std::process::Command::new("dotnet")
+            .current_dir(dir)
+            .args(["build", "-c", "Release", "-o", "out"])
+            .status()
+            .unwrap();
+        assert!(status.success(), "dotnet build failed");
+        dir.join("out")
+    }
+
+    fn csharp_scripted(world: &mut World, path: &str, class: &str) -> Entity {
+        let entity = world
+            .spawn((Name::new("Managed"), Transform::default()))
+            .id();
+        world.entity_mut(entity).insert(ScriptedObject {
+            object_id: 2,
+            script: ScriptRef {
+                path: path.to_owned(),
+                language: ScriptLanguage::CSharp,
+                class: Some(class.to_owned()),
+                ..Default::default()
+            },
+        });
+        entity
+    }
+
+    #[test]
+    fn csharp_and_lua_scripts_run_side_by_side() {
+        if !dotnet_available() {
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
+                "dotnet unavailable; skipping the C# scene test"
+            );
+            return;
+        }
+        let dir = scratch("csharp");
+        std::fs::create_dir_all(dir.join("scripts/managed")).unwrap();
+        std::fs::write(
+            dir.join("scripts/spin.lua"),
+            "return { on_update = function(self, dt) self:translate(2.0 * dt, 0, 0) end }",
+        )
+        .unwrap();
+        let out = build_csharp_script(&dir.join("project"));
+        for name in ["Game.dll", "Game.runtimeconfig.json"] {
+            std::fs::copy(out.join(name), dir.join("scripts/managed").join(name)).unwrap();
+        }
+
+        let mut world = world(&dir);
+        let lua = scripted(&mut world, "scripts/spin.lua", BTreeMap::new());
+        let managed = csharp_scripted(&mut world, "scripts/managed/Game.dll", "Game.Spin");
+        world.run_system_once(sync_scripts).unwrap();
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(0.5));
+        world.run_system_once(update_scripts).unwrap();
+        world.run_system_once(update_csharp_scripts).unwrap();
+
+        assert_eq!(world.get::<Transform>(lua).unwrap().translation.x, 1.0);
+        assert_eq!(world.get::<Transform>(managed).unwrap().translation.y, 0.5);
+        let lines = world.resource::<ScriptLog>().lines().to_vec();
+        assert!(lines.contains(&"csharp start".to_owned()), "{lines:?}");
+        assert!(!lines.iter().any(|line| line.contains("script scripts/managed")), "{lines:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn script_files_are_listed_per_language() {
+        let dir = scratch("list");
+        std::fs::create_dir_all(dir.join("scripts/managed")).unwrap();
+        std::fs::write(dir.join("scripts/spin.lua"), "return {}").unwrap();
+        std::fs::write(dir.join("scripts/managed/Game.dll"), b"dll").unwrap();
+        std::fs::write(dir.join("scripts/managed/Game.runtimeconfig.json"), b"{}").unwrap();
+        assert_eq!(script_files(&dir), ["scripts/spin.lua"]);
+        assert_eq!(
+            script_files_for(&dir, ScriptLanguage::CSharp),
+            ["scripts/managed/Game.dll"]
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

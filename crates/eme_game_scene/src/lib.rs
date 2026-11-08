@@ -296,17 +296,56 @@ impl ScriptValue {
     }
 }
 
+/// Language a scene script is written in.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptLanguage {
+    /// Lua module run by the embedded interpreter.
+    #[default]
+    Lua,
+    /// Compiled managed class hosted by the .NET runtime.
+    CSharp,
+}
+
+impl ScriptLanguage {
+    /// Short name used by the editor and by script pickers.
+    pub fn label(self) -> &'static str {
+        match self {
+            ScriptLanguage::Lua => "Lua",
+            ScriptLanguage::CSharp => "C#",
+        }
+    }
+
+    /// File extension of the script artifact.
+    pub fn extension(self) -> &'static str {
+        match self {
+            ScriptLanguage::Lua => "lua",
+            ScriptLanguage::CSharp => "dll",
+        }
+    }
+}
+
 /// Script attached to a scene object.
 ///
 /// The path is relative to the project's `assets/` folder. Properties are
-/// author overrides for the defaults declared in the script module.
+/// author overrides for the defaults declared in the script module. C# scripts
+/// point at a compiled assembly and name the class that implements the
+/// lifecycle entry points.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct ScriptRef {
-    /// Path below `assets/`, for example `scripts/spin.lua`.
+    /// Path below `assets/`, for example `scripts/spin.lua` or
+    /// `scripts/managed/Game.dll`.
     pub path: String,
     /// Author overrides of the script's declared properties.
     #[serde(default)]
     pub properties: BTreeMap<String, ScriptValue>,
+    /// Language the script is written in; older scenes are Lua.
+    #[serde(default)]
+    pub language: ScriptLanguage,
+    /// Assembly-qualified class name for C# scripts, for example
+    /// `"Game.Spin, Game"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 /// Authoring data for a simple physics body.
@@ -1351,6 +1390,7 @@ mod tests {
             Some(ScriptRef {
                 path: "scripts/spin.lua".into(),
                 properties,
+                ..Default::default()
             })
         ));
 
@@ -1479,6 +1519,7 @@ mod tests {
             Some(ScriptRef {
                 path: "scripts/spin.lua".into(),
                 properties: BTreeMap::new(),
+                ..Default::default()
             }),
         );
         assert!(doc.set_script_property(id, "speed", ScriptValue::Bool(true)));

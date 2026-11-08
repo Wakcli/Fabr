@@ -402,37 +402,53 @@ enum NavOp {
     Stop,
 }
 
-struct ApiState {
-    self_entity: Entity,
+/// Read-only world view shared by every script instance in a frame.
+///
+/// The scripting pass builds one of these per update and hands each instance an
+/// `Arc`; scripts never see a per-instance copy of the scene.
+#[derive(Default)]
+struct FrameState {
     transforms: HashMap<Entity, (Vec3, Quat)>,
     names: HashMap<String, Entity>,
-    ops: Vec<(Entity, Vec3, Quat)>,
-    log: Vec<String>,
     keys: HashSet<String>,
     keys_down: HashSet<String>,
     actions: HashMap<String, bool>,
     actions_down: HashMap<String, bool>,
     mouse: HashSet<u8>,
-    audio: Vec<AudioRequest>,
     velocities: HashMap<Entity, Vec3>,
     angular: HashMap<Entity, Vec3>,
     grounded: HashSet<Entity>,
+    anim_clips: HashMap<Entity, Vec<String>>,
+    nav: Option<Arc<NavGrid>>,
+    ui_clicks: Vec<u32>,
+    delta: f32,
+    elapsed: f32,
+}
+
+/// Writes a script makes to its own view before the frame ends.
+#[derive(Default)]
+struct LocalFrame {
+    transforms: HashMap<Entity, (Vec3, Quat)>,
+    velocities: HashMap<Entity, Vec3>,
+    grounded: HashMap<Entity, bool>,
+}
+
+struct ApiState {
+    self_entity: Entity,
+    frame: Arc<FrameState>,
+    local: LocalFrame,
+    ops: Vec<(Entity, Vec3, Quat)>,
+    log: Vec<String>,
+    audio: Vec<AudioRequest>,
     velocity_ops: Vec<(Entity, Vec3)>,
     angular_ops: Vec<(Entity, Vec3)>,
     spin_ops: Vec<(Entity, Vec3)>,
     joint_ops: Vec<(Entity, Entity, f32, f32, f32)>,
-    anim_clips: HashMap<Entity, Vec<String>>,
-    anim_selected: HashMap<Entity, Option<String>>,
-    anim_playing: HashSet<Entity>,
     animation_ops: Vec<(Entity, AnimationOp)>,
-    nav: Option<Arc<NavGrid>>,
     nav_ops: Vec<(Entity, NavOp)>,
     scene_ops: Vec<SceneOp>,
     ui: Vec<UiElement>,
-    ui_clicks: Vec<u32>,
     controller_ops: Vec<(Entity, ControllerOp)>,
-    delta: f32,
-    elapsed: f32,
     properties: BTreeMap<String, ScriptValue>,
 }
 
@@ -440,37 +456,75 @@ impl Default for ApiState {
     fn default() -> Self {
         Self {
             self_entity: Entity::PLACEHOLDER,
-            transforms: HashMap::new(),
-            names: HashMap::new(),
+            frame: Arc::new(FrameState::default()),
+            local: LocalFrame::default(),
             ops: Vec::new(),
             log: Vec::new(),
-            keys: HashSet::new(),
-            keys_down: HashSet::new(),
-            actions: HashMap::new(),
-            actions_down: HashMap::new(),
-            mouse: HashSet::new(),
             audio: Vec::new(),
-            velocities: HashMap::new(),
-            angular: HashMap::new(),
-            grounded: HashSet::new(),
             velocity_ops: Vec::new(),
             angular_ops: Vec::new(),
             spin_ops: Vec::new(),
             joint_ops: Vec::new(),
-            anim_clips: HashMap::new(),
-            anim_selected: HashMap::new(),
-            anim_playing: HashSet::new(),
             animation_ops: Vec::new(),
-            nav: None,
             nav_ops: Vec::new(),
             scene_ops: Vec::new(),
             ui: Vec::new(),
-            ui_clicks: Vec::new(),
             controller_ops: Vec::new(),
-            delta: 0.0,
-            elapsed: 0.0,
             properties: BTreeMap::new(),
         }
+    }
+}
+
+impl ApiState {
+    fn transform(&self, entity: Entity) -> (Vec3, Quat) {
+        self.local
+            .transforms
+            .get(&entity)
+            .copied()
+            .or_else(|| self.frame.transforms.get(&entity).copied())
+            .unwrap_or_default()
+    }
+
+    fn set_transform(&mut self, entity: Entity, translation: Vec3, rotation: Quat) {
+        self.local
+            .transforms
+            .insert(entity, (translation, rotation));
+    }
+
+    fn velocity(&self, entity: Entity) -> Vec3 {
+        self.local
+            .velocities
+            .get(&entity)
+            .copied()
+            .or_else(|| self.frame.velocities.get(&entity).copied())
+            .unwrap_or_default()
+    }
+
+    fn grounded(&self, entity: Entity) -> bool {
+        self.local
+            .grounded
+            .get(&entity)
+            .copied()
+            .unwrap_or_else(|| self.frame.grounded.contains(&entity))
+    }
+
+    fn reset_frame(&mut self, frame: Arc<FrameState>) {
+        self.frame = frame;
+        self.local.transforms.clear();
+        self.local.velocities.clear();
+        self.local.grounded.clear();
+        self.ops.clear();
+        self.log.clear();
+        self.audio.clear();
+        self.velocity_ops.clear();
+        self.angular_ops.clear();
+        self.spin_ops.clear();
+        self.joint_ops.clear();
+        self.animation_ops.clear();
+        self.nav_ops.clear();
+        self.scene_ops.clear();
+        self.ui.clear();
+        self.controller_ops.clear();
     }
 }
 
@@ -525,13 +579,9 @@ impl ScriptRuntime {
         entity: Entity,
         name: &str,
         properties: BTreeMap<String, ScriptValue>,
-        names: &HashMap<String, Entity>,
-        transforms: &HashMap<Entity, (Vec3, Quat)>,
     ) -> mlua::Result<(Arc<Mutex<ApiState>>, Table)> {
         let api = Arc::new(Mutex::new(ApiState {
             self_entity: entity,
-            transforms: transforms.clone(),
-            names: names.clone(),
             properties,
             ..Default::default()
         }));
@@ -543,15 +593,15 @@ impl ScriptRuntime {
         let api_get = api.clone();
         self_table.set("get_translation", lua.create_function(move |_, _self: Value| {
             let state = api_get.lock().unwrap();
-            let (t, _) = state.transforms.get(&state.self_entity).copied().unwrap_or_default();
+            let (t, _) = state.transform(state.self_entity);
             Ok((t.x, t.y, t.z))
         })?)?;
         let api_set = api.clone();
         self_table.set("set_translation", lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
             let mut state = api_set.lock().unwrap();
             let entity = state.self_entity;
-            let (_, r) = state.transforms.get(&entity).copied().unwrap_or_default();
-            state.transforms.insert(entity, (Vec3::new(x, y, z), r));
+            let (_, r) = state.transform(entity);
+            state.set_transform(entity, Vec3::new(x, y, z), r);
             state.ops.retain(|(e, _, _)| *e != entity);
             state.ops.push((entity, Vec3::new(x, y, z), r));
             Ok(())
@@ -560,9 +610,9 @@ impl ScriptRuntime {
         self_table.set("translate", lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
             let mut state = api_move.lock().unwrap();
             let entity = state.self_entity;
-            let (t, r) = state.transforms.get(&entity).copied().unwrap_or_default();
+            let (t, r) = state.transform(entity);
             let next = t + Vec3::new(x, y, z);
-            state.transforms.insert(entity, (next, r));
+            state.set_transform(entity, next, r);
             state.ops.retain(|(e, _, _)| *e != entity);
             state.ops.push((entity, next, r));
             Ok(())
@@ -571,9 +621,9 @@ impl ScriptRuntime {
         self_table.set("rotate_y", lua.create_function(move |_, (_self, radians): (Value, f32)| {
             let mut state = api_rotate.lock().unwrap();
             let entity = state.self_entity;
-            let (t, r) = state.transforms.get(&entity).copied().unwrap_or_default();
+            let (t, r) = state.transform(entity);
             let next = Quat::from_rotation_y(radians) * r;
-            state.transforms.insert(entity, (t, next));
+            state.set_transform(entity, t, next);
             state.ops.retain(|(e, _, _)| *e != entity);
             state.ops.push((entity, t, next));
             Ok(())
@@ -582,17 +632,13 @@ impl ScriptRuntime {
         let api_vel = api.clone();
         self_table.set("get_velocity", lua.create_function(move |_, _self: Value| {
             let state = api_vel.lock().unwrap();
-            let velocity = state
-                .velocities
-                .get(&state.self_entity)
-                .copied()
-                .unwrap_or_default();
+            let velocity = state.velocity(state.self_entity);
             Ok((velocity.x, velocity.y, velocity.z))
         })?)?;
         let api_grounded = api.clone();
         self_table.set("is_grounded", lua.create_function(move |_, _self: Value| {
             let state = api_grounded.lock().unwrap();
-            Ok(state.grounded.contains(&state.self_entity))
+            Ok(state.grounded(state.self_entity))
         })?)?;
         let api_set_vel = api.clone();
         self_table.set(
@@ -601,8 +647,8 @@ impl ScriptRuntime {
                 let mut state = api_set_vel.lock().unwrap();
                 let entity = state.self_entity;
                 let velocity = Vec3::new(x, y, z);
-                state.velocities.insert(entity, velocity);
-                state.grounded.remove(&entity);
+                state.local.velocities.insert(entity, velocity);
+                state.local.grounded.insert(entity, false);
                 state.velocity_ops.retain(|(target, _)| *target != entity);
                 state.velocity_ops.push((entity, velocity));
                 Ok(())
@@ -625,6 +671,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, _self: Value| {
                 let state = api_get_spin.lock().unwrap();
                 let spin = state
+                    .frame
                     .angular
                     .get(&state.self_entity)
                     .copied()
@@ -649,7 +696,7 @@ impl ScriptRuntime {
             lua.create_function(move |lua, _self: Value| {
                 let state = api_clips.lock().unwrap();
                 let table = lua.create_table()?;
-                if let Some(clips) = state.anim_clips.get(&state.self_entity) {
+                if let Some(clips) = state.frame.anim_clips.get(&state.self_entity) {
                     for (index, clip) in clips.iter().enumerate() {
                         table.set(index + 1, clip.clone())?;
                     }
@@ -663,17 +710,13 @@ impl ScriptRuntime {
             lua.create_function(move |_, (_self, name): (Value, String)| {
                 let mut state = api_play_anim.lock().unwrap();
                 let entity = state.self_entity;
-                let known = state
-                    .anim_clips
-                    .get(&entity)
+                let known = state.frame.anim_clips.get(&entity)
                     .is_some_and(|clips| clips.iter().any(|clip| clip == &name));
                 if !known {
                     state.log.push(format!("animation: missing clip {name}"));
                     return Ok(false);
                 }
-                state.anim_selected.insert(entity, Some(name.clone()));
-                state.anim_playing.insert(entity);
-                state
+                                state
                     .animation_ops
                     .push((entity, AnimationOp::Play(name)));
                 Ok(true)
@@ -685,8 +728,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, _self: Value| {
                 let mut state = api_stop_anim.lock().unwrap();
                 let entity = state.self_entity;
-                state.anim_playing.remove(&entity);
-                state.animation_ops.push((entity, AnimationOp::Stop));
+                                state.animation_ops.push((entity, AnimationOp::Stop));
                 Ok(())
             })?,
         )?;
@@ -739,9 +781,9 @@ impl ScriptRuntime {
         fabr.set("time", lua.create_table_with_capacity(0, 2)?)?;
         if let Ok(table) = fabr.get::<Table>("time") {
             let api = api_delta.clone();
-            table.set("delta", lua.create_function(move |_, ()| Ok(api.lock().unwrap().delta))?)?;
+            table.set("delta", lua.create_function(move |_, ()| Ok(api.lock().unwrap().frame.delta))?)?;
             let api = api_delta;
-            table.set("elapsed", lua.create_function(move |_, ()| Ok(api.lock().unwrap().elapsed))?)?;
+            table.set("elapsed", lua.create_function(move |_, ()| Ok(api.lock().unwrap().frame.elapsed))?)?;
         }
         let api_key = api.clone();
         let api_down = api.clone();
@@ -770,23 +812,24 @@ impl ScriptRuntime {
             )?,
         )?;
         input.set("key", lua.create_function(move |_, name: String| {
-            Ok(api_key.lock().unwrap().keys.contains(&normalize_key(&name)))
+            Ok(api_key.lock().unwrap().frame.keys.contains(&normalize_key(&name)))
         })?)?;
         input.set("key_down", lua.create_function(move |_, name: String| {
-            Ok(api_down.lock().unwrap().keys_down.contains(&normalize_key(&name)))
+            Ok(api_down.lock().unwrap().frame.keys_down.contains(&normalize_key(&name)))
         })?)?;
         input.set("mouse_pressed", lua.create_function(move |_, button: u8| {
-            Ok(api_mouse.lock().unwrap().mouse.contains(&button))
+            Ok(api_mouse.lock().unwrap().frame.mouse.contains(&button))
         })?)?;
         let api_action = api.clone();
         input.set("action", lua.create_function(move |_, name: String| {
-            Ok(api_action.lock().unwrap().actions.get(&name).copied().unwrap_or(false))
+            Ok(api_action.lock().unwrap().frame.actions.get(&name).copied().unwrap_or(false))
         })?)?;
         let api_action_down = api.clone();
         input.set("action_down", lua.create_function(move |_, name: String| {
             Ok(api_action_down
                 .lock()
                 .unwrap()
+                .frame
                 .actions_down
                 .get(&name)
                 .copied()
@@ -802,7 +845,7 @@ impl ScriptRuntime {
                 move |lua, (x1, y1, z1, x2, y2, z2): (f32, f32, f32, f32, f32, f32)| {
                     let state = api_nav.lock().unwrap();
                     let table = lua.create_table()?;
-                    let Some(grid) = &state.nav else {
+                    let Some(grid) = &state.frame.nav else {
                         return Ok(table);
                     };
                     let Some(path) = grid.find_path(
@@ -842,7 +885,7 @@ impl ScriptRuntime {
             Ok(())
         })?)?;
         let api_clicked = api.clone();
-        ui.set("clicked", lua.create_function(move |_, id: u32| Ok(api_clicked.lock().unwrap().ui_clicks.contains(&id)))?)?;
+        ui.set("clicked", lua.create_function(move |_, id: u32| Ok(api_clicked.lock().unwrap().frame.ui_clicks.contains(&id)))?)?;
         fabr.set("ui", ui)?;
         let api_walk = api.clone();
         self_table.set(
@@ -923,8 +966,8 @@ impl ScriptRuntime {
                 move |_, (a, b, rest, stiffness, damping): (String, String, f32, f32, f32)| {
                     let mut state = api_joint.lock().unwrap();
                     let (Some(first), Some(second)) = (
-                        state.names.get(&a).copied(),
-                        state.names.get(&b).copied(),
+                        state.frame.names.get(&a).copied(),
+                        state.frame.names.get(&b).copied(),
                     ) else {
                         return Ok(false);
                     };
@@ -936,11 +979,10 @@ impl ScriptRuntime {
         fabr.set("joint", joint)?;
 
         let api_find = api.clone();
-        let find_names = names.clone();
         fabr.set("entity", lua.create_table()?)?;
         if let Ok(table) = fabr.get::<Table>("entity") {
             table.set("find", lua.create_function(move |lua, name: String| {
-                let entity = find_names.get(&name).copied();
+                let entity = api_find.lock().unwrap().frame.names.get(&name).copied();
                 match entity {
                     Some(entity) => entity_handle(lua, api_find.clone(), entity, name),
                     None => Ok(Value::Nil),
@@ -959,14 +1001,14 @@ fn entity_handle(lua: &Lua, api: Arc<Mutex<ApiState>>, entity: Entity, name: Str
     let get = api.clone();
     table.set("get_translation", lua.create_function(move |_, _self: Value| {
         let state = get.lock().unwrap();
-        let (t, _) = state.transforms.get(&entity).copied().unwrap_or_default();
+        let (t, _) = state.transform(entity);
         Ok((t.x, t.y, t.z))
     })?)?;
     let set = api.clone();
     table.set("set_translation", lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
         let mut state = set.lock().unwrap();
-        let (_, r) = state.transforms.get(&entity).copied().unwrap_or_default();
-        state.transforms.insert(entity, (Vec3::new(x, y, z), r));
+        let (_, r) = state.transform(entity);
+        state.set_transform(entity, Vec3::new(x, y, z), r);
         state.ops.retain(|(e, _, _)| *e != entity);
         state.ops.push((entity, Vec3::new(x, y, z), r));
         Ok(())
@@ -974,9 +1016,9 @@ fn entity_handle(lua: &Lua, api: Arc<Mutex<ApiState>>, entity: Entity, name: Str
     let translate = api.clone();
     table.set("translate", lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
         let mut state = translate.lock().unwrap();
-        let (t, r) = state.transforms.get(&entity).copied().unwrap_or_default();
+        let (t, r) = state.transform(entity);
         let next = t + Vec3::new(x, y, z);
-        state.transforms.insert(entity, (next, r));
+        state.set_transform(entity, next, r);
         state.ops.retain(|(e, _, _)| *e != entity);
         state.ops.push((entity, next, r));
         Ok(())
@@ -984,9 +1026,9 @@ fn entity_handle(lua: &Lua, api: Arc<Mutex<ApiState>>, entity: Entity, name: Str
     let rotate = api;
     table.set("rotate_y", lua.create_function(move |_, (_self, radians): (Value, f32)| {
         let mut state = rotate.lock().unwrap();
-        let (t, r) = state.transforms.get(&entity).copied().unwrap_or_default();
+        let (t, r) = state.transform(entity);
         let next = Quat::from_rotation_y(radians) * r;
-        state.transforms.insert(entity, (t, next));
+        state.set_transform(entity, t, next);
         state.ops.retain(|(e, _, _)| *e != entity);
         state.ops.push((entity, t, next));
         Ok(())
@@ -1134,11 +1176,6 @@ fn stop_instance(lua: &Lua, instance: &mut Instance, log: &mut ScriptLog) {
     }
 }
 
-struct SceneContext<'a> {
-    names: &'a HashMap<String, Entity>,
-    transforms: &'a HashMap<Entity, (Vec3, Quat)>,
-}
-
 fn build_instance(
     lua: &Lua,
     entity: Entity,
@@ -1146,7 +1183,6 @@ fn build_instance(
     full: &Path,
     src: &str,
     name: &str,
-    scene: &SceneContext,
 ) -> Result<Instance, String> {
     let path = scripted.script.path.as_str();
     let preview =
@@ -1155,15 +1191,8 @@ fn build_instance(
     for (key, value) in &scripted.script.properties {
         properties.insert(key.clone(), value.clone());
     }
-    let (api, self_table) = ScriptRuntime::build_api(
-        lua,
-        entity,
-        name,
-        properties,
-        scene.names,
-        scene.transforms,
-    )
-    .map_err(|err| err.to_string())?;
+    let (api, self_table) =
+        ScriptRuntime::build_api(lua, entity, name, properties).map_err(|err| err.to_string())?;
     let fabr = self_table
         .get::<Table>("fabr")
         .map_err(|err| err.to_string())?;
@@ -1195,7 +1224,6 @@ pub fn sync_scripts(
     mut log: ResMut<ScriptLog>,
     mut csharp: ResMut<CSharpScripts>,
     scripted: Query<(Entity, &ScriptedObject)>,
-    transforms: Query<(Entity, &Transform)>,
     names: Query<(Entity, &Name)>,
 ) {
     let ScriptRuntime {
@@ -1252,20 +1280,10 @@ pub fn sync_scripts(
 
     let reloads: Vec<String> = std::mem::take(&mut reload.paths);
 
-    let mut scene_transforms = HashMap::new();
-    for (entity, transform) in &transforms {
-        scene_transforms.insert(entity, (transform.translation, transform.rotation));
-    }
-    let mut name_map = HashMap::new();
     let mut entity_names = HashMap::new();
     for (entity, name) in &names {
-        name_map.insert(name.as_str().to_owned(), entity);
         entity_names.insert(entity, name.as_str().to_owned());
     }
-    let scene = SceneContext {
-        names: &name_map,
-        transforms: &scene_transforms,
-    };
 
     for (entity, scripted) in &scripted {
         if scripted.script.language != ScriptLanguage::Lua {
@@ -1295,7 +1313,7 @@ pub fn sync_scripts(
         };
 
         let name = entity_names.get(&entity).map_or("", String::as_str);
-        match build_instance(lua, entity, scripted, &full, &src, name, &scene) {
+        match build_instance(lua, entity, scripted, &full, &src, name) {
             Ok(instance) => {
                 if let Some(mut old) = instances.remove(&entity) {
                     stop_instance(lua, &mut old, &mut log);
@@ -1396,53 +1414,45 @@ pub fn update_scripts(
         .collect();
     order.sort_unstable();
 
-    let mut scene_transforms = HashMap::new();
-    let mut name_map = HashMap::new();
+    let mut frame = FrameState::default();
     for (entity, transform, name) in &mut transforms {
-        scene_transforms.insert(entity, (transform.translation, transform.rotation));
+        frame
+            .transforms
+            .insert(entity, (transform.translation, transform.rotation));
         if let Some(name) = name {
-            name_map.insert(name.as_str().to_owned(), entity);
+            frame.names.insert(name.as_str().to_owned(), entity);
         }
     }
-    let mut velocities = HashMap::new();
-    let mut angular = HashMap::new();
-    let mut grounded = HashSet::new();
     for (entity, body) in &bodies {
-        velocities.insert(entity, body.velocity);
-        angular.insert(entity, body.angular_velocity);
+        frame.velocities.insert(entity, body.velocity);
+        frame.angular.insert(entity, body.angular_velocity);
         if body.grounded {
-            grounded.insert(entity);
+            frame.grounded.insert(entity);
         }
     }
-    let nav = Arc::new(grid.as_deref().cloned().unwrap_or_default());
-    let mut anim_clips = HashMap::new();
-    let mut anim_selected = HashMap::new();
-    let mut anim_playing = HashSet::new();
+    frame.nav = Some(Arc::new(grid.as_deref().cloned().unwrap_or_default()));
     for (entity, set) in &animations {
-        anim_clips.insert(entity, set.clips.clone());
-        anim_selected.insert(entity, set.selected.clone());
-        if set.playing {
-            anim_playing.insert(entity);
-        }
+        frame.anim_clips.insert(entity, set.clips.clone());
     }
-
-    let pressed: HashSet<String> = keys
+    frame.keys = keys
         .get_pressed()
         .map(|key| format!("{key:?}").to_ascii_lowercase())
         .map(|key| key.strip_prefix("key").map_or(key.clone(), str::to_owned))
         .collect();
-    let down: HashSet<String> = keys
+    frame.keys_down = keys
         .get_just_pressed()
         .map(|key| format!("{key:?}").to_ascii_lowercase())
         .map(|key| key.strip_prefix("key").map_or(key.clone(), str::to_owned))
         .collect();
-    let mut action_state = HashMap::new();
-    let mut action_down = HashMap::new();
     for (name, bindings) in &actions.map {
-        action_state.insert(name.clone(), bindings.iter().any(|key| keys.pressed(*key)));
-        action_down.insert(name.clone(), bindings.iter().any(|key| keys.just_pressed(*key)));
+        frame
+            .actions
+            .insert(name.clone(), bindings.iter().any(|key| keys.pressed(*key)));
+        frame
+            .actions_down
+            .insert(name.clone(), bindings.iter().any(|key| keys.just_pressed(*key)));
     }
-    let mouse_pressed: HashSet<u8> = [
+    frame.mouse = [
         (MouseButton::Left, 1u8),
         (MouseButton::Right, 2),
         (MouseButton::Middle, 3),
@@ -1451,6 +1461,10 @@ pub fn update_scripts(
     .filter(|(button, _)| mouse.pressed(*button))
     .map(|(_, id)| id)
     .collect();
+    frame.delta = time.delta_secs();
+    frame.elapsed = time.elapsed_secs();
+    frame.ui_clicks = std::mem::take(ui_clicks);
+    let frame = Arc::new(frame);
 
     for (_, entity) in order {
         let Some(instance) = instances.get_mut(&entity) else {
@@ -1465,36 +1479,11 @@ pub fn update_scripts(
         let Ok(self_table) = lua.registry_value::<Table>(&instance.self_table) else {
             continue;
         };
-        {
-            let mut api = instance.api.lock().unwrap();
-            api.transforms = scene_transforms.clone();
-            api.names = name_map.clone();
-            api.delta = time.delta_secs();
-            api.elapsed = time.elapsed_secs();
-            api.keys = pressed.clone();
-            api.keys_down = down.clone();
-            api.actions = action_state.clone();
-            api.actions_down = action_down.clone();
-            api.mouse = mouse_pressed.clone();
-            api.velocities = velocities.clone();
-            api.angular = angular.clone();
-            api.grounded = grounded.clone();
-            api.anim_clips = anim_clips.clone();
-            api.anim_selected = anim_selected.clone();
-            api.anim_playing = anim_playing.clone();
-            api.ops.clear();
-            api.velocity_ops.clear();
-            api.angular_ops.clear();
-            api.spin_ops.clear();
-            api.joint_ops.clear();
-            api.animation_ops.clear();
-            api.nav = Some(nav.clone());
-            api.nav_ops.clear();
-            api.ui.clear();
-            api.ui_clicks = std::mem::take(ui_clicks);
-            api.controller_ops.clear();
-            api.scene_ops.clear();
-        }
+        instance
+            .api
+            .lock()
+            .unwrap()
+            .reset_frame(Arc::clone(&frame));
 
         let mut result = Ok(());
         if !instance.started {
@@ -2637,6 +2626,58 @@ public sealed class Spin : FabrScript
         world
             .resource_mut::<Time>()
             .advance_by(core::time::Duration::from_secs_f32(seconds));
+    }
+
+    /// Times the per-frame scripting pass with many scripts and objects.
+    ///
+    /// Run with `cargo test -p eme_script --release --lib bench_script_updates -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_script_updates() {
+        use std::io::Write;
+        let scripts = 200usize;
+        let objects = 4000usize;
+        let frames = 300usize;
+        let dir = scratch("bench");
+        std::fs::write(
+            dir.join("move.lua"),
+            "return { on_update = function(self, dt) local x, y, z = self:get_translation() self:translate(dt, 0, 0) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        for id in 0..scripts as u64 {
+            let entity = world
+                .spawn((Name::new(format!("Script{id}")), Transform::default()))
+                .id();
+            world.entity_mut(entity).insert(ScriptedObject {
+                object_id: id + 1,
+                script: ScriptRef {
+                    path: "move.lua".into(),
+                    ..Default::default()
+                },
+            });
+        }
+        for id in 0..objects {
+            world.spawn((Name::new(format!("Object{id}")), Transform::default()));
+        }
+        world.run_system_once(sync_scripts).unwrap();
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(1.0 / 60.0));
+        world.run_system_once(update_scripts).unwrap();
+
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            world.run_system_once(update_scripts).unwrap();
+        }
+        let elapsed = start.elapsed();
+        let per_frame = elapsed.as_secs_f64() * 1000.0 / frames as f64;
+        let _ = writeln!(
+            std::io::stderr(),
+            "bench: {scripts} scripts, {objects} objects, {frames} frames ->              {per_frame:.3} ms/frame, {:.1} frames/s",
+            1000.0 / per_frame
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

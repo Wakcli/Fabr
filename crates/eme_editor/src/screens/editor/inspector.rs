@@ -12,10 +12,11 @@ use eme::text::{
     TextLayout,
 };
 use eme::ui_widgets::{Activate, Button, ScrollArea, TextInput};
+use eme_anim::AnimationSet;
 use eme_game_overrides::{ModelNodeCatalog, ModelOverrideStatus, OrphanReason};
 use eme_game_scene::{
-    Behaviour, BehaviourKind, NodeKey, ObjectTransform, OverrideOp, PhysicsBodySpec, ScriptRef,
-    ScriptValue, TransformDelta,
+    AnimationRef, Behaviour, BehaviourKind, NodeKey, ObjectTransform, OverrideOp, PhysicsBodySpec,
+    ScriptRef, ScriptValue, TransformDelta,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -123,6 +124,7 @@ pub enum Section {
     Visibility,
     Material,
     Physics,
+    Animation,
     Script,
     Node,
 }
@@ -136,6 +138,7 @@ impl Section {
             Section::Visibility => "Visibility",
             Section::Material => "Material",
             Section::Physics => "Physics",
+            Section::Animation => "Animation",
             Section::Script => "Script",
             Section::Node => "Model Node",
         }
@@ -150,6 +153,7 @@ pub struct InspectorSections {
     pub visibility: bool,
     pub material: bool,
     pub physics: bool,
+    pub animation: bool,
     pub script: bool,
     pub node: bool,
 }
@@ -162,6 +166,7 @@ impl Default for InspectorSections {
             visibility: true,
             material: true,
             physics: true,
+            animation: true,
             script: true,
             node: true,
         }
@@ -177,6 +182,7 @@ impl InspectorSections {
             Section::Visibility => self.visibility,
             Section::Material => self.material,
             Section::Physics => self.physics,
+            Section::Animation => self.animation,
             Section::Script => self.script,
             Section::Node => self.node,
         }
@@ -190,6 +196,7 @@ impl InspectorSections {
             Section::Visibility => self.visibility = open,
             Section::Material => self.material = open,
             Section::Physics => self.physics = open,
+            Section::Animation => self.animation = open,
             Section::Script => self.script = open,
             Section::Node => self.node = open,
         }
@@ -236,6 +243,8 @@ pub enum RowKind {
     Color,
     /// Physics body toggle row.
     Physics,
+    /// Animation clip row.
+    Animation,
     /// Script selector row.
     Script,
     /// Model node position.
@@ -255,6 +264,7 @@ impl RowKind {
             RowKind::Visible => Section::Visibility,
             RowKind::Color => Section::Material,
             RowKind::Physics => Section::Physics,
+            RowKind::Animation => Section::Animation,
             RowKind::Script => Section::Script,
             RowKind::NodePosition | RowKind::NodeRotation | RowKind::NodeScale => Section::Node,
         }
@@ -270,6 +280,7 @@ impl RowKind {
             RowKind::Visible => "Visible",
             RowKind::Color => "Color",
             RowKind::Physics => "Body",
+            RowKind::Animation => "Animation",
             RowKind::Script => "Script",
         }
     }
@@ -320,6 +331,18 @@ pub struct MaterialSwatch;
 /// Text showing whether the selected object has a physics body.
 #[derive(Component, Clone, Default)]
 pub struct PhysicsValue;
+
+/// Host for the dynamic animation clip rows.
+#[derive(Component, Clone, Copy, Default)]
+pub struct AnimationRows;
+
+/// One clip button in the Animation section.
+#[derive(Component, Clone, Default)]
+pub struct PlayClip(pub u64, pub String);
+
+/// Stop button in the Animation section.
+#[derive(Component, Clone, Copy, Default)]
+pub struct StopClip(pub u64);
 
 /// Text typed into the inspector filter.
 #[derive(Resource, Clone, Default)]
@@ -489,8 +512,9 @@ pub fn body() -> Part {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Stretch,
-            overflow: Overflow::clip(),
+            overflow: Overflow::scroll_y(),
         }
+        ScrollArea
         ThemeBackgroundColor(tokens::PANEL)
         Children [
             Node {
@@ -524,6 +548,8 @@ pub fn body() -> Part {
             {section(Section::Material, "Material", vec![color_row()])}
             --
             {section(Section::Physics, "Physics", vec![physics_row()])}
+            --
+            {animation_section()}
             --
             {script_section()}
             --
@@ -1755,6 +1781,187 @@ fn commit_color(state: &mut SceneState, undo: &mut Undo, seat: ColorValue, raw: 
     state.doc.set_color(id, Some(color));
     state.touch();
     true
+}
+
+fn animation_section() -> Part {
+    let host = Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: px(2),
+        }
+        AnimationRows
+    }) as Part;
+    section(Section::Animation, "Animation", vec![host])
+}
+
+/// Rebuilds the Animation section for the selected object.
+pub fn sync_animation_rows(
+    state: Res<SceneState>,
+    sets: Query<&AnimationSet>,
+    hosts: Query<Entity, With<AnimationRows>>,
+    mut commands: Commands,
+    mut shown: Local<Option<(Entity, u64, String)>>,
+) {
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    let selected = state.selected_object();
+    let set = selected
+        .and_then(|obj| state.entities.get(&obj.id))
+        .and_then(|entity| sets.get(*entity).ok());
+    let mut signature = format!("{}|{}", host.to_bits(), selected.map_or(0, |obj| obj.id));
+    if let Some(set) = set {
+        signature.push_str(&format!(
+            "|{:?}|{:?}|{}|{:?}",
+            set.clips, set.selected, set.playing, set.error
+        ));
+    }
+    if shown.as_ref() == Some(&(host, selected.map_or(0, |obj| obj.id), signature.clone())) {
+        return;
+    }
+    *shown = Some((host, selected.map_or(0, |obj| obj.id), signature));
+    commands.entity(host).despawn_children();
+    let Some(obj) = selected else {
+        let line = text("No selection", FONT_SIZE, tokens::TEXT_DIM);
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)) }
+            ChildOf(host)
+            Children [ {line} ]
+        });
+        return;
+    };
+    let Some(set) = set else {
+        let line = text("No animation clips", FONT_SIZE, tokens::TEXT_DIM);
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)) }
+            ChildOf(host)
+            Children [ {line} ]
+        });
+        return;
+    };
+    if set.clips.is_empty() {
+        let line = text(
+            set.error.clone().unwrap_or_else(|| "No animation clips".into()),
+            FONT_SIZE,
+            tokens::TEXT_DIM,
+        );
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)) }
+            ChildOf(host)
+            Children [ {line} ]
+        });
+        return;
+    }
+    for clip in &set.clips {
+        let active = set.selected.as_deref() == Some(clip.as_str()) && set.playing;
+        let (bg, fg) = if active {
+            (tokens::SELECT, tokens::SELECT_TEXT)
+        } else {
+            (tokens::CLEAR, tokens::TEXT)
+        };
+        let label = text(clip.clone(), FONT_SIZE, fg);
+        let id = obj.id;
+        let name = clip.clone();
+        commands
+            .spawn_scene(bsn! {
+                Node {
+                    height: px(22),
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(px(8)),
+                }
+                Button
+                FilterRow(RowKind::Animation)
+                ThemeBackgroundColor(bg)
+                PlayClip(id, name)
+                ChildOf(host)
+                Children [ {label} ]
+            })
+            .observe(play_animation_clip);
+    }
+    let stop = text("Stop", FONT_SIZE, tokens::TEXT);
+    let stop_id = obj.id;
+    commands
+        .spawn_scene(bsn! {
+            Node {
+                height: px(22),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(8)),
+            }
+            Button
+            FilterRow(RowKind::Animation)
+            StopClip(stop_id)
+            ChildOf(host)
+            Children [ {stop} ]
+        })
+        .observe(stop_animation);
+    if let Some(error) = &set.error {
+        let line = text(error.clone(), FONT_SIZE, tokens::TEXT_DIM);
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)) }
+            ChildOf(host)
+            Children [ {line} ]
+        });
+    }
+}
+
+fn play_animation_clip(
+    activate: On<Activate>,
+    clips: Query<&PlayClip>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut sets: Query<&mut AnimationSet>,
+) {
+    let Ok(row) = clips.get(activate.entity) else {
+        return;
+    };
+    let Some(entity) = state.entities.get(&row.0).copied() else {
+        return;
+    };
+    let Ok(mut set) = sets.get_mut(entity) else {
+        return;
+    };
+    undo.checkpoint(&state, "Play Animation");
+    if set.play(&row.1) {
+        state.doc.set_animation(
+            row.0,
+            Some(AnimationRef {
+                clip: Some(row.1.clone()),
+                autoplay: true,
+            }),
+        );
+        state.touch();
+    }
+}
+
+fn stop_animation(
+    activate: On<Activate>,
+    clips: Query<&StopClip>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut sets: Query<&mut AnimationSet>,
+) {
+    let Ok(row) = clips.get(activate.entity) else {
+        return;
+    };
+    let Some(entity) = state.entities.get(&row.0).copied() else {
+        return;
+    };
+    let Ok(mut set) = sets.get_mut(entity) else {
+        return;
+    };
+    undo.checkpoint(&state, "Stop Animation");
+    set.stop();
+    if let Some(mut animation) = state.doc.animation(row.0).cloned() {
+        animation.autoplay = false;
+        state.doc.set_animation(row.0, Some(animation));
+        state.touch();
+    }
 }
 
 fn physics_row() -> Part {

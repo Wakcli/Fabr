@@ -215,6 +215,7 @@ impl Plugin for EditorPlugin {
         viewport::plugins(app);
         dock::plugins(app);
         app.add_plugins(eme_script::ScriptPlugin);
+        app.add_plugins(eme_anim::AnimationRuntimePlugin);
         app.insert_resource(eme_script::ScriptRoot(crate::asset_root()));
         crate::settings::install(app);
         crate::mixer::install(app);
@@ -317,6 +318,7 @@ impl Plugin for EditorPlugin {
                     (
                         inspector::sync_inspector,
                         inspector::sync_color_swatch,
+                        inspector::sync_animation_rows,
                         inspector::sync_inspector_filter,
                         inspector::sync_inspector_filter_hint,
                         inspector::apply_inspector_filter,

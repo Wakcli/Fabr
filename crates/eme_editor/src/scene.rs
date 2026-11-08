@@ -17,6 +17,7 @@ use eme::window::{PrimaryWindow, Window};
 use eme_editor_core::Selection;
 use eme_game_overrides::ModelOverrides;
 use eme_script::ScriptedObject;
+use eme_anim::AnimationSource;
 use eme_game_runtime::{GuidIndex, ModelImport, NodeKey, PhysicsBody, SceneBehaviour};
 use eme_game_scene::{Behaviour, ObjectKind, ObjectTransform, SceneDoc, SceneObject};
 
@@ -590,6 +591,7 @@ pub fn reconcile_scene(
                     &obj.overrides,
                     obj.script.as_ref(),
                     obj.physics.as_ref(),
+                    obj.animation.as_ref(),
                 );
                 state.entities.insert(id, entity);
             }
@@ -612,6 +614,7 @@ pub fn reconcile_scene(
                     &obj.overrides,
                     obj.script.as_ref(),
                     obj.physics.as_ref(),
+                    obj.animation.as_ref(),
                 );
                 state.entities.insert(id, entity);
             }
@@ -860,6 +863,7 @@ fn spawn_entity(
     overrides: &[eme_game_scene::NodeOverride],
     script: Option<&eme_game_scene::ScriptRef>,
     physics: Option<&eme_game_scene::PhysicsBodySpec>,
+    animation: Option<&eme_game_scene::AnimationRef>,
 ) -> Entity {
     let trs = to_transform(transform);
     let behaviour = SceneBehaviour { spec, base: trs };
@@ -917,8 +921,13 @@ fn spawn_entity(
                         asset_server.load(GltfAssetLabel::Scene(0).from_asset(rel.clone()));
                     let guid = asset.map(|asset| asset.guid.clone()).unwrap_or_default();
                     let pivot = eme_game_runtime::pivot_transform(import);
-                    commands
-                        .spawn((trs, Visibility::Inherited))
+                    let mut spawned = commands.spawn((trs, Visibility::Inherited));
+                    spawned.insert(AnimationSource {
+                        gltf: asset_server.load(rel.clone()),
+                        selected: animation.and_then(|animation| animation.clip.clone()),
+                        autoplay: animation.is_some_and(|animation| animation.autoplay),
+                    });
+                    spawned
                         .with_children(|pivot_entity| {
                             pivot_entity
                                 .spawn((pivot, ImportPivot, Visibility::Inherited))

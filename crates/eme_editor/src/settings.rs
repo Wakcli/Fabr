@@ -549,8 +549,7 @@ mod tests {
     use eme::ui_widgets::TextInputPlugin;
     use eme::window::{Ime, PrimaryWindow, Window};
 
-    #[test]
-    fn a_focused_settings_field_receives_keyboard_input() {
+    fn key_app() -> (App, Entity) {
         let mut app = App::new();
         app.add_message::<Ime>()
             .add_message::<PointerRelease>()
@@ -567,6 +566,34 @@ mod tests {
             .world_mut()
             .spawn((Window::default(), PrimaryWindow))
             .id();
+        (app, window)
+    }
+
+    fn press(window: Entity, key_code: KeyCode, text: Option<&str>) -> KeyboardInput {
+        KeyboardInput {
+            key_code,
+            logical_key: Key::Character("".into()),
+            state: ButtonState::Pressed,
+            text: text.map(Into::into),
+            repeat: false,
+            window,
+        }
+    }
+
+    fn state() -> ProjectSettingsState {
+        ProjectSettingsState {
+            open: true,
+            settings: ProjectSettings::default(),
+            error: String::new(),
+            status: String::new(),
+            rev: 0,
+            root: std::env::temp_dir(),
+        }
+    }
+
+    #[test]
+    fn a_focused_settings_field_receives_keyboard_input() {
+        let (mut app, window) = key_app();
         let field = app
             .world_mut()
             .spawn((
@@ -576,14 +603,8 @@ mod tests {
             ))
             .id();
         app.insert_resource(InputFocus::from_entity(field));
-        app.world_mut().write_message(KeyboardInput {
-            key_code: KeyCode::KeyB,
-            logical_key: Key::Character("B".into()),
-            state: ButtonState::Pressed,
-            text: Some("B".into()),
-            repeat: false,
-            window,
-        });
+        app.world_mut()
+            .write_message(press(window, KeyCode::KeyB, Some("B")));
         app.update();
 
         let text = app
@@ -596,6 +617,64 @@ mod tests {
                 .any(|edit| matches!(edit, TextEdit::Insert(value) if value == "B")),
             "expected an insert edit, got {:?}",
             text.pending_edits
+        );
+    }
+
+    #[test]
+    fn enter_commits_the_typed_value_into_the_settings() {
+        let (mut app, window) = key_app();
+        app.insert_resource(state());
+        let field = app
+            .world_mut()
+            .spawn((
+                SettingsField(FieldKind::Title),
+                EditableText::new("New Title"),
+                TextInput,
+                SettingsFieldEdit,
+            ))
+            .id();
+        app.add_observer(field_key);
+        app.insert_resource(InputFocus::from_entity(field));
+        app.world_mut()
+            .write_message(press(window, KeyCode::Enter, None));
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<ProjectSettingsState>()
+                .settings
+                .player
+                .title,
+            "New Title"
+        );
+        assert!(app.world().resource::<InputFocus>().get().is_none());
+    }
+
+    #[test]
+    fn numeric_settings_are_validated_before_they_are_stored() {
+        let mut state = state();
+        commit(&mut state, &FieldKind::Width, "1920");
+        assert_eq!(state.settings.player.width, 1920);
+        commit(&mut state, &FieldKind::Width, "0");
+        assert_eq!(state.settings.player.width, 1920);
+        assert!(!state.error.is_empty());
+
+        commit(&mut state, &FieldKind::Msaa, "8");
+        assert_eq!(state.settings.graphics.msaa, 8);
+        commit(&mut state, &FieldKind::Msaa, "3");
+        assert_eq!(state.settings.graphics.msaa, 8);
+        assert!(!state.error.is_empty());
+
+        commit(&mut state, &FieldKind::MasterVolume, "0.25");
+        assert_eq!(state.settings.audio.master_volume, 0.25);
+        commit(&mut state, &FieldKind::MasterVolume, "9");
+        assert_eq!(state.settings.audio.master_volume, 0.25);
+        assert!(!state.error.is_empty());
+
+        commit(&mut state, &FieldKind::Action("jump".into()), "Space, W");
+        assert_eq!(
+            state.settings.input.actions.get("jump"),
+            Some(&vec!["Space".to_string(), "W".to_string()])
         );
     }
 }

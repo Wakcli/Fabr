@@ -244,6 +244,7 @@ impl Plugin for EditorPlugin {
         crate::extensions::install(app);
         crate::profile::install(app);
         crate::animation::install(app);
+        crate::console_cmd::install(app);
         crate::hud::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()

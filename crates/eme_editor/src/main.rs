@@ -17,6 +17,7 @@ mod app;
 mod build;
 mod clipboard;
 mod console;
+mod console_cmd;
 mod import;
 mod mixer;
 mod packages;

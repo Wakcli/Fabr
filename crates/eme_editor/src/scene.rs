@@ -19,6 +19,7 @@ use eme_game_overrides::ModelOverrides;
 use eme_script::ScriptedObject;
 use eme_anim::AnimationSource;
 use eme_game_runtime::{GuidIndex, ModelImport, NodeKey, PhysicsBody, SceneBehaviour};
+use eme_net::ReplicatedObject;
 use eme_game_scene::{Behaviour, ObjectKind, ObjectTransform, SceneDoc, SceneObject};
 
 use crate::console::ConsoleLog;
@@ -999,7 +1000,12 @@ fn spawn_entity(
     }
     commands
         .entity(entity)
-        .insert((Name::new(name), SceneLink { id, kind }, behaviour))
+        .insert((
+            Name::new(name),
+            SceneLink { id, kind },
+            behaviour,
+            ReplicatedObject(id),
+        ))
         .observe(click_object)
         .observe(drag_start)
         .observe(drag_object);

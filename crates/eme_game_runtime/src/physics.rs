@@ -2,6 +2,8 @@
 //! the runtime player. It is deliberately simple: bodies are axis-aligned boxes,
 //! static bodies are obstacles, and the ground is the `y = 0` plane.
 
+use std::collections::HashMap;
+
 use eme_ecs::prelude::*;
 use eme_game_scene::PhysicsBodySpec;
 use eme_math::prelude::*;
@@ -290,7 +292,7 @@ const CONTACT_SPIN_DAMPING: f32 = 0.55;
 pub fn step_physics(
     time: Res<Time>,
     settings: Res<PhysicsSettings>,
-    mut bodies: Query<(&mut Transform, &mut PhysicsBody)>,
+    mut bodies: Query<(Entity, &mut Transform, &mut PhysicsBody)>,
 ) {
     if !settings.enabled {
         return;
@@ -299,19 +301,130 @@ pub fn step_physics(
     if dt <= 0.0 {
         return;
     }
-    let statics: Vec<(Vec3, Vec3)> = bodies
-        .iter()
-        .filter(|(_, body)| !body.dynamic)
-        .map(|(transform, body)| {
-            (
+    let mut statics: Vec<(Vec3, Vec3)> = Vec::new();
+    let mut dynamics: Vec<Body> = Vec::new();
+    for (entity, transform, body) in &mut bodies {
+        if body.dynamic {
+            dynamics.push(Body {
+                entity,
+                transform: *transform,
+                body: *body,
+            });
+        } else {
+            statics.push((
                 transform.translation,
                 body.half_extents * transform.scale.abs(),
-            )
+            ));
+        }
+    }
+    for body in &mut dynamics {
+        integrate(&mut body.body, &mut body.transform, &settings, dt, &statics);
+    }
+    resolve_dynamic_pairs(&mut dynamics, &settings);
+    for body in dynamics {
+        let Ok((_, mut transform, mut current)) = bodies.get_mut(body.entity) else {
+            continue;
+        };
+        *transform = body.transform;
+        *current = body.body;
+    }
+}
+
+/// A dynamic body lifted out of the query so pairs can be resolved.
+struct Body {
+    entity: Entity,
+    transform: Transform,
+    body: PhysicsBody,
+}
+
+impl Body {
+    fn half(&self) -> Vec3 {
+        self.body.half_extents * self.transform.scale.abs()
+    }
+}
+
+fn cell_key(position: Vec3, size: f32) -> (i32, i32, i32) {
+    (
+        (position.x / size).floor() as i32,
+        (position.y / size).floor() as i32,
+        (position.z / size).floor() as i32,
+    )
+}
+
+/// Resolves overlapping dynamic boxes through a uniform grid broadphase.
+fn resolve_dynamic_pairs(bodies: &mut [Body], settings: &PhysicsSettings) {
+    let Some(cell) = bodies
+        .iter()
+        .map(|body| body.half().max_element() * 2.0)
+        .fold(None, |largest: Option<f32>, size| {
+            Some(largest.map_or(size, |largest| largest.max(size)))
         })
-        .collect();
-    for (mut transform, mut body) in &mut bodies {
-        if body.dynamic {
-            integrate(&mut body, &mut transform, &settings, dt, &statics);
+    else {
+        return;
+    };
+    let cell = cell.max(0.5);
+    let radius = 1i32;
+    let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+    for (index, body) in bodies.iter().enumerate() {
+        grid.entry(cell_key(body.transform.translation, cell))
+            .or_default()
+            .push(index);
+    }
+
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for (index, body) in bodies.iter().enumerate() {
+        if !body.body.dynamic {
+            continue;
+        }
+        let key = cell_key(body.transform.translation, cell);
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                for dz in -radius..=radius {
+                    let Some(cell_bodies) = grid.get(&(key.0 + dx, key.1 + dy, key.2 + dz)) else {
+                        continue;
+                    };
+                    for &other in cell_bodies {
+                        if other > index {
+                            pairs.push((index, other));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (first, second) in pairs {
+        let (left, right) = bodies.split_at_mut(second);
+        let a = &mut left[first];
+        let b = &mut right[0];
+        if !a.body.dynamic || !b.body.dynamic {
+            continue;
+        }
+        let delta = b.transform.translation - a.transform.translation;
+        let overlap = a.half() + b.half() - delta.abs();
+        if overlap.x <= 0.0 || overlap.y <= 0.0 || overlap.z <= 0.0 {
+            continue;
+        }
+        let (axis, depth) = if overlap.x <= overlap.y && overlap.x <= overlap.z {
+            (0usize, overlap.x)
+        } else if overlap.y <= overlap.z {
+            (1, overlap.y)
+        } else {
+            (2, overlap.z)
+        };
+        let sign = if delta[axis] >= 0.0 { 1.0 } else { -1.0 };
+        let push = depth * 0.5 * sign;
+        a.transform.translation[axis] -= push;
+        b.transform.translation[axis] += push;
+        if axis == 1 && sign > 0.0 {
+            b.body.grounded = true;
+        }
+        let relative = b.body.velocity[axis] - a.body.velocity[axis];
+        if relative * sign < 0.0 {
+            let restitution = settings.bounce.clamp(0.0, 1.0);
+            let impulse = -(1.0 + restitution) * relative * 0.5;
+            a.body.velocity[axis] -= impulse * sign;
+            b.body.velocity[axis] += impulse * sign;
         }
     }
 }
@@ -443,6 +556,7 @@ fn land(body: &mut PhysicsBody, settings: &PhysicsSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eme_ecs::system::RunSystemOnce;
 
     fn falling(y: f32) -> (Transform, PhysicsBody) {
         (
@@ -509,6 +623,66 @@ mod tests {
         }
         move_axis(transform, controller, half, &statics, Vec3::X, 0.35);
         move_axis(transform, controller, half, &statics, Vec3::Z, 0.35);
+    }
+
+    fn dynamic_world() -> World {
+        let mut world = World::new();
+        world.insert_resource(Time::<()>::default());
+        world.insert_resource(PhysicsSettings::default());
+        world
+    }
+
+    fn tick(world: &mut World) {
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(1.0 / 60.0));
+        world.run_system_once(step_physics).unwrap();
+    }
+
+    #[test]
+    fn overlapping_dynamic_boxes_push_apart() {
+        let mut world = dynamic_world();
+        let left = world
+            .spawn((
+                Transform::from_xyz(-0.4, 5.0, 0.0),
+                PhysicsBody::from_spec(&PhysicsBodySpec::default()),
+            ))
+            .id();
+        let right = world
+            .spawn((
+                Transform::from_xyz(0.4, 5.0, 0.0),
+                PhysicsBody::from_spec(&PhysicsBodySpec::default()),
+            ))
+            .id();
+        tick(&mut world);
+        let lx = world.get::<Transform>(left).unwrap().translation.x;
+        let rx = world.get::<Transform>(right).unwrap().translation.x;
+        assert!(rx - lx >= 1.0 - 1e-3, "left {lx}, right {rx}");
+    }
+
+    #[test]
+    fn a_falling_box_rests_on_the_box_below() {
+        let mut world = dynamic_world();
+        let bottom = world
+            .spawn((
+                Transform::from_xyz(0.0, 0.5, 0.0),
+                PhysicsBody::from_spec(&PhysicsBodySpec::default()),
+            ))
+            .id();
+        let top = world
+            .spawn((
+                Transform::from_xyz(0.0, 1.9, 0.0),
+                PhysicsBody::from_spec(&PhysicsBodySpec::default()),
+            ))
+            .id();
+        for _ in 0..180 {
+            tick(&mut world);
+        }
+        let bottom_y = world.get::<Transform>(bottom).unwrap().translation.y;
+        let top_y = world.get::<Transform>(top).unwrap().translation.y;
+        assert!(bottom_y > 0.45, "bottom sank: {bottom_y}");
+        assert!(top_y > 1.45, "top fell through: {top_y}");
+        assert!(top_y > bottom_y + 0.95, "boxes merged: {bottom_y}, {top_y}");
     }
 
     #[test]

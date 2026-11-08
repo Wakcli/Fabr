@@ -140,6 +140,57 @@ mod tests {
         assert_eq!(middle.rotation, base.rotation);
     }
 
+    /// Times the physics step with many dynamic and static bodies.
+    ///
+    /// Run with `cargo test -p eme_game_runtime --release --lib bench_physics_step -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_physics_step() {
+        use std::io::Write;
+        let dynamics = 1000usize;
+        let statics = 200usize;
+        let frames = 300usize;
+        let mut world = World::new();
+        world.insert_resource(Time::<()>::default());
+        world.insert_resource(PhysicsSettings::default());
+        for i in 0..statics {
+            world.spawn((
+                Transform::from_xyz((i % 20) as f32 * 3.0, -1.0, (i / 20) as f32 * 3.0),
+                PhysicsBody::from_spec(&eme_game_scene::PhysicsBodySpec {
+                    dynamic: false,
+                    ..Default::default()
+                }),
+            ));
+        }
+        for i in 0..dynamics {
+            world.spawn((
+                Transform::from_xyz((i % 20) as f32 * 3.0, 1.0 + (i / 20) as f32 * 1.5, 0.0),
+                PhysicsBody::from_spec(&eme_game_scene::PhysicsBodySpec {
+                    dynamic: true,
+                    half_extents: [0.5, 0.5, 0.5],
+                    ..Default::default()
+                }),
+            ));
+        }
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(1.0 / 60.0));
+        world.run_system_once(step_physics).unwrap();
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            world
+                .resource_mut::<Time>()
+                .advance_by(core::time::Duration::from_secs_f32(1.0 / 60.0));
+            world.run_system_once(step_physics).unwrap();
+        }
+        let elapsed = start.elapsed();
+        let per_frame = elapsed.as_secs_f64() * 1000.0 / frames as f64;
+        let _ = writeln!(
+            std::io::stderr(),
+            "physics bench: {dynamics} dynamic, {statics} static, {frames} frames ->              {per_frame:.3} ms/frame"
+        );
+    }
+
     #[test]
     fn none_returns_the_base_transform() {
         let base = base();

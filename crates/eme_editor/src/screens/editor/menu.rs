@@ -807,6 +807,10 @@ pub enum TopAction {
     AudioMixer,
     /// Open the package manager.
     PackageManager,
+    /// Save the current dock layout.
+    SaveLayout,
+    /// Restore the default dock layout.
+    ResetLayout,
     /// Today's build, in the console.
     About,
 }
@@ -879,6 +883,8 @@ pub fn sync_top_menu(
             ("Project Settings…", TopAction::ProjectSettings),
             ("Audio Mixer…", TopAction::AudioMixer),
             ("Package Manager…", TopAction::PackageManager),
+            ("Save Layout", TopAction::SaveLayout),
+            ("Reset Layout", TopAction::ResetLayout),
         ],
         TopKind::Help => &[("About Fabr", TopAction::About)],
     };
@@ -915,6 +921,7 @@ pub fn run_top_action(
     mut build: ResMut<crate::build::BuildState>,
     mut mixer: ResMut<crate::mixer::MixerState>,
     mut packages: ResMut<crate::packages::PackagesState>,
+    mut layout: ResMut<crate::LayoutRes>,
     mut reload: ResMut<eme_script::ScriptReload>,
     index: Res<scene::ModelIndex>,
 ) {
@@ -956,6 +963,11 @@ pub fn run_top_action(
         TopAction::Build => build.open(),
         TopAction::AudioMixer => crate::mixer::open(&mut mixer),
         TopAction::PackageManager => crate::packages::open(&mut packages),
+        TopAction::SaveLayout => crate::screens::editor::dock::save_layout(&layout),
+        TopAction::ResetLayout => {
+            layout.0 = eme_editor_core::Layout::default_editor();
+            crate::screens::editor::dock::save_layout(&layout);
+        }
         TopAction::About => log.push(format!(
             "Fabr {} — built on the Eme engine",
             env!("CARGO_PKG_VERSION")

@@ -67,6 +67,14 @@ pub const COMMANDS: &[Command] = &[
         action: TopAction::PackageManager,
     },
     Command {
+        label: "Save Layout",
+        action: TopAction::SaveLayout,
+    },
+    Command {
+        label: "Reset Layout",
+        action: TopAction::ResetLayout,
+    },
+    Command {
         label: "About Fabr",
         action: TopAction::About,
     },
@@ -491,6 +499,7 @@ mod tests {
             .insert_resource(BuildState::default())
             .insert_resource(crate::mixer::MixerState::load())
             .insert_resource(crate::packages::PackagesState::load())
+            .insert_resource(crate::LayoutRes(eme_editor_core::Layout::default_editor()))
             .insert_resource(ProjectSettingsState {
                 open: false,
                 settings: Default::default(),

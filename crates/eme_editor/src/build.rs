@@ -591,12 +591,38 @@ fn stage(
         }
         None => say(tx, Level::Step, "no assets/ folder to copy"),
     }
+    stage_packages(&workspace_dir(), out, tx)?;
 
     let settings = workspace_dir().join(eme_editor_project::SETTINGS_FILE);
     if settings.is_file() {
         std::fs::copy(&settings, out.join(eme_editor_project::SETTINGS_FILE))
             .map_err(|err| io(&settings, err))?;
         say(tx, Level::Step, "copied project settings");
+    }
+    Ok(())
+}
+
+/// Copies every installed package's assets into the staged game.
+fn stage_packages(root: &Path, out: &Path, tx: &Sender<Msg>) -> Result<(), String> {
+    let set = eme_editor_project::PackageSet::load(&root.join(eme_editor_project::PACKAGES_FILE))?;
+    if set.packages.is_empty() {
+        say(tx, Level::Step, "no packages to stage");
+        return Ok(());
+    }
+    for entry in &set.packages {
+        let manifest = eme_editor_project::PackageSet::manifest(root, entry)?;
+        let src = root.join(&entry.path).join(&manifest.assets);
+        if src.is_dir() {
+            copy_dir(&src, &out.join(ASSET_DIR))?;
+        }
+        say(
+            tx,
+            Level::Step,
+            format!(
+                "staged package {} {} from {}",
+                manifest.name, manifest.version, entry.path
+            ),
+        );
     }
     Ok(())
 }
@@ -834,6 +860,28 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o111, 0o111);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn package_assets_are_staged_into_the_game() {
+        let root = scratch("packages");
+        let package = root.join("packages/sky");
+        write(&package.join("fabr.package.ron"), b"(name: \"sky\", version: \"1.0.0\", assets: \"assets\")");
+        write(&package.join("assets/textures/sky.png"), b"png");
+        std::fs::write(
+            root.join(eme_editor_project::PACKAGES_FILE),
+            "(packages: [(path: \"packages/sky\")])",
+        )
+        .unwrap();
+        let out = root.join("build/linux");
+        std::fs::create_dir_all(&out).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        stage_packages(&root, &out, &tx).unwrap();
+        assert_eq!(
+            std::fs::read(out.join("assets/textures/sky.png")).unwrap(),
+            b"png"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

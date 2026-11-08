@@ -3,7 +3,7 @@
 use eme::input::keyboard::KeyboardInput;
 use eme::input_focus::{FocusCause, FocusedInput, InputFocus};
 use eme::prelude::*;
-use eme::text::EditableText;
+use eme::text::{EditableText, TextEdit};
 use eme_game_scene::ObjectKind;
 
 use crate::console::ConsoleLog;
@@ -54,6 +54,74 @@ impl CommandHistory {
         self.cursor = Some(index + 1);
         self.entries.get(index + 1).cloned()
     }
+}
+
+/// Command names offered by Tab completion.
+const COMMANDS: [&str; 8] = [
+    "help", "clear", "save", "reload", "delete", "spawn", "scene", "select",
+];
+
+/// Object kinds offered after `spawn`.
+const KINDS: [&str; 8] = [
+    "cube", "sphere", "cylinder", "plane", "empty", "sun", "pointlight", "camera",
+];
+
+/// Result of completing one console line.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Completion {
+    /// Replacement text when exactly one candidate matches.
+    pub text: Option<String>,
+    /// Candidates shown when the prefix is ambiguous.
+    pub options: Vec<&'static str>,
+}
+
+impl Completion {
+    fn unique(text: String) -> Self {
+        Self {
+            text: Some(text),
+            options: Vec::new(),
+        }
+    }
+
+    fn ambiguous(options: Vec<&'static str>) -> Self {
+        Self { text: None, options }
+    }
+}
+
+/// Completes the command or, after `spawn`, the object kind.
+pub fn complete(input: &str) -> Completion {
+    let trimmed = input.trim_start();
+    let (head, tail) = match trimmed.split_once(char::is_whitespace) {
+        Some((head, tail)) => (head, tail),
+        None => (trimmed, ""),
+    };
+    if !trimmed.contains(char::is_whitespace) {
+        let prefix = head.to_ascii_lowercase();
+        let matches: Vec<&'static str> = COMMANDS
+            .iter()
+            .copied()
+            .filter(|command| command.starts_with(&prefix))
+            .collect();
+        return match matches.as_slice() {
+            [only] => Completion::unique(format!("{only} ")),
+            [] => Completion::ambiguous(Vec::new()),
+            many => Completion::ambiguous(many.to_vec()),
+        };
+    }
+    if head.eq_ignore_ascii_case("spawn") {
+        let prefix = tail.trim().to_ascii_lowercase();
+        let matches: Vec<&'static str> = KINDS
+            .iter()
+            .copied()
+            .filter(|kind| kind.starts_with(&prefix))
+            .collect();
+        return match matches.as_slice() {
+            [only] => Completion::unique(format!("spawn {only}")),
+            [] => Completion::ambiguous(Vec::new()),
+            many => Completion::ambiguous(many.to_vec()),
+        };
+    }
+    Completion::ambiguous(Vec::new())
 }
 
 /// One parsed console command.
@@ -232,6 +300,18 @@ pub fn command_key(
                 field.editor.set_text(&line);
             }
         }
+        KeyCode::Tab => {
+            if let Ok(mut field) = fields.get_mut(entity) {
+                let line = field.value().to_string();
+                let completion = complete(&line);
+                if let Some(text) = completion.text {
+                    field.editor.set_text(&text);
+                    field.queue_edit(TextEdit::TextEnd(false));
+                } else if !completion.options.is_empty() {
+                    log.push(format!("completions: {}", completion.options.join(" ")));
+                }
+            }
+        }
         KeyCode::Enter => {
             let Ok(field) = fields.get_mut(entity) else {
                 return;
@@ -313,6 +393,28 @@ mod tests {
         assert!(log.lines().iter().any(|line| line.contains("spawn <kind>")));
         execute(Command::Clear, &mut state, &mut undo, &mut log, &mut reload, &index);
         assert!(log.lines().is_empty());
+    }
+
+    #[test]
+    fn tab_completion_fills_commands_and_kinds() {
+        assert_eq!(
+            complete("spa"),
+            Completion {
+                text: Some("spawn ".into()),
+                options: Vec::new()
+            }
+        );
+        assert_eq!(complete("spawn cu").text.as_deref(), Some("spawn cube"));
+        assert_eq!(complete("spawn ").options, KINDS.to_vec());
+        assert_eq!(
+            complete("s"),
+            Completion {
+                text: None,
+                options: vec!["save", "spawn", "scene", "select"]
+            }
+        );
+        assert!(complete("spawn x").options.is_empty());
+        assert!(complete("nope").text.is_none());
     }
 
     #[test]

@@ -1,0 +1,9 @@
+(
+    enabled: [
+        "animation",
+        "navigation",
+        "networking",
+        "physics",
+        "scripting",
+    ],
+)

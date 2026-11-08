@@ -18,7 +18,10 @@ use eme_transform::prelude::Transform;
 pub mod physics;
 /// Grid navigation, A* paths and path-following agents.
 pub mod nav;
+/// Optional engine extensions toggled by `fabr.plugins.ron`.
+pub mod extensions;
 
+pub use extensions::{load_for, Extension, ExtensionSet, PLUGINS_FILE};
 pub use nav::{
     NavAgent, NavGrid, NavGridSettings, NavPlugin, NavSet, refresh_nav_grid, step_nav_agents,
 };

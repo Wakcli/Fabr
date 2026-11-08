@@ -59,6 +59,15 @@ pub struct GameContext<'w> {
 }
 
 impl<'w> GameContext<'w> {
+    /// Finds the first named object, mirroring `fabr.entity.find` in Lua.
+    pub fn find(&mut self, name: &str) -> Option<Entity> {
+        let mut query = self.world.query::<(Entity, &Name)>();
+        query
+            .iter(self.world)
+            .find(|(_, candidate)| candidate.as_str() == name)
+            .map(|(entity, _)| entity)
+    }
+
     /// Reads an object's world translation.
     pub fn translation(&mut self, entity: Entity) -> Option<[f32; 3]> {
         let transform = self.world.get::<Transform>(entity)?;
@@ -263,6 +272,39 @@ mod tests {
         let missing = ctx.world.spawn_empty().id();
         ctx.world.despawn(missing);
         assert!(!ctx.set_translation(missing, [0.0; 3]));
+    }
+
+    #[test]
+    fn the_rust_contract_moves_a_cube_like_the_other_languages() {
+        #[derive(Default)]
+        struct Mover;
+        impl FabrGame for Mover {
+            fn on_update(&mut self, ctx: &mut GameContext, dt: f32) {
+                let Some(entity) = ctx.find("Cube") else {
+                    return;
+                };
+                let Some([x, y, z]) = ctx.translation(entity) else {
+                    return;
+                };
+                ctx.set_translation(entity, [x + 2.0 * dt, y, z]);
+            }
+        }
+
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default());
+        let cube = app
+            .world_mut()
+            .spawn((Name::new("Cube"), Transform::default()))
+            .id();
+        install::<Mover>(&mut app);
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(0.5));
+        app.world_mut().run_system_once(update_game).unwrap();
+        assert_eq!(
+            app.world().get::<Transform>(cube).unwrap().translation.x,
+            1.0
+        );
     }
 
     #[test]

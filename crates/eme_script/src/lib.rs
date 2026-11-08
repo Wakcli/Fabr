@@ -2567,7 +2567,7 @@ public sealed class Spin : FabrScript
         )
         .unwrap();
         let bindings = bindings();
-        let game = build_game_script(&dir.join("project"), &bindings, 1.0);
+        let game = build_game_script(&dir.join("project"), &bindings, 2.0);
         stage_managed(&dir, &game, &bindings);
 
         let mut world = world(&dir);
@@ -2580,8 +2580,9 @@ public sealed class Spin : FabrScript
         world.run_system_once(update_scripts).unwrap();
         world.run_system_once(update_csharp_scripts).unwrap();
 
+        // the same contract call at the same speed moves both languages equally
         assert_eq!(world.get::<Transform>(lua).unwrap().translation.x, 1.0);
-        assert_eq!(world.get::<Transform>(managed).unwrap().translation.x, 0.5);
+        assert_eq!(world.get::<Transform>(managed).unwrap().translation.x, 1.0);
         let lines = world.resource::<ScriptLog>().lines().to_vec();
         assert!(lines.contains(&"csharp start".to_owned()), "{lines:?}");
         assert!(!lines.iter().any(|line| line.contains("script scripts/managed")), "{lines:?}");

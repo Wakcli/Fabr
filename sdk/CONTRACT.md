@@ -35,6 +35,10 @@ language call returns (C# and Lua queue it; Rust writes through the world), and 
 read sees the frame's starting state plus the script's own writes from the same
 frame.
 
+The three implementations are held to the same numbers: a cube moved at
+2 units per second for 0.5 seconds ends at `x = 1.0` in Lua, C# and Rust, and
+the tests in `eme_script` and `fabr` assert exactly that.
+
 Lua additionally exposes input actions, physics bodies and controllers, animation,
 navigation, audio, HUD elements, scene loading and joints. Those are engine
 extras on top of the contract, not a second contract; the Rust and C# surfaces

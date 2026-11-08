@@ -109,11 +109,19 @@ impl Default for QualitySettings {
 pub struct AudioSettings {
     /// Master volume on a linear scale, 0.0 to 2.0.
     pub master_volume: f32,
+    /// Sound-effect bus volume, 0.0 to 2.0.
+    pub sfx_volume: f32,
+    /// Music bus volume, 0.0 to 2.0.
+    pub music_volume: f32,
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        Self { master_volume: 1.0 }
+        Self {
+            master_volume: 1.0,
+            sfx_volume: 1.0,
+            music_volume: 1.0,
+        }
     }
 }
 
@@ -174,6 +182,12 @@ impl ProjectSettings {
         if !(0.0..=2.0).contains(&self.audio.master_volume) {
             return Err("master volume must be between 0 and 2".into());
         }
+        if !(0.0..=2.0).contains(&self.audio.sfx_volume) {
+            return Err("SFX volume must be between 0 and 2".into());
+        }
+        if !(0.0..=2.0).contains(&self.audio.music_volume) {
+            return Err("music volume must be between 0 and 2".into());
+        }
         if !(0.0..=100.0).contains(&self.physics.gravity) {
             return Err("gravity must be between 0 and 100".into());
         }
@@ -233,7 +247,11 @@ mod tests {
         settings.audio.master_volume = 2.5;
         assert!(settings.validate().is_err());
         settings.audio.master_volume = 0.0;
+        settings.audio.sfx_volume = 0.5;
+        settings.audio.music_volume = 2.0;
         assert!(settings.validate().is_ok());
+        settings.audio.sfx_volume = 3.0;
+        assert!(settings.validate().is_err());
     }
 
     #[test]

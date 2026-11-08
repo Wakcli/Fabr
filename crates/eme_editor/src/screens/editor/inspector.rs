@@ -2462,9 +2462,18 @@ pub fn sync_inspector(
         (Entity, &ColorValue, &mut EditableText, Option<&ColorEdit>),
         Without<AxisValue>,
     >,
-    mut titles: Query<&mut Text, (With<ObjectTitle>, Without<BehaviourValue>)>,
-    mut physics_values: Query<&mut Text, With<PhysicsValue>>,
-    mut behaviours: Query<&mut Text, (With<BehaviourValue>, Without<ObjectTitle>)>,
+    mut titles: Query<
+        &mut Text,
+        (With<ObjectTitle>, Without<BehaviourValue>, Without<PhysicsValue>),
+    >,
+    mut physics_values: Query<
+        &mut Text,
+        (With<PhysicsValue>, Without<ObjectTitle>, Without<BehaviourValue>),
+    >,
+    mut behaviours: Query<
+        &mut Text,
+        (With<BehaviourValue>, Without<ObjectTitle>, Without<PhysicsValue>),
+    >,
     mut slots: Query<
         (&mut Node, Option<&SectionBody>, Option<&SectionCaret>),
         Or<(With<SectionBody>, With<SectionCaret>)>,

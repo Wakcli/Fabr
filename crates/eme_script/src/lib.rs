@@ -17,6 +17,7 @@ use eme_app::{App, Plugin, Update};
 use eme_asset::{AssetServer, Handle};
 use eme_audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use eme_ecs::prelude::*;
+use eme_game_runtime::PhysicsBody;
 use eme_game_scene::{ScriptRef, ScriptValue};
 use eme_input::prelude::*;
 use eme_math::prelude::*;
@@ -207,6 +208,9 @@ struct ApiState {
     actions_down: HashMap<String, bool>,
     mouse: HashSet<u8>,
     audio: Vec<AudioRequest>,
+    velocities: HashMap<Entity, Vec3>,
+    grounded: HashSet<Entity>,
+    velocity_ops: Vec<(Entity, Vec3)>,
     delta: f32,
     elapsed: f32,
     properties: BTreeMap<String, ScriptValue>,
@@ -226,6 +230,9 @@ impl Default for ApiState {
             actions_down: HashMap::new(),
             mouse: HashSet::new(),
             audio: Vec::new(),
+            velocities: HashMap::new(),
+            grounded: HashSet::new(),
+            velocity_ops: Vec::new(),
             delta: 0.0,
             elapsed: 0.0,
             properties: BTreeMap::new(),
@@ -328,6 +335,36 @@ impl ScriptRuntime {
             state.ops.push((entity, t, next));
             Ok(())
         })?)?;
+
+        let api_vel = api.clone();
+        self_table.set("get_velocity", lua.create_function(move |_, _self: Value| {
+            let state = api_vel.lock().unwrap();
+            let velocity = state
+                .velocities
+                .get(&state.self_entity)
+                .copied()
+                .unwrap_or_default();
+            Ok((velocity.x, velocity.y, velocity.z))
+        })?)?;
+        let api_grounded = api.clone();
+        self_table.set("is_grounded", lua.create_function(move |_, _self: Value| {
+            let state = api_grounded.lock().unwrap();
+            Ok(state.grounded.contains(&state.self_entity))
+        })?)?;
+        let api_set_vel = api.clone();
+        self_table.set(
+            "set_velocity",
+            lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
+                let mut state = api_set_vel.lock().unwrap();
+                let entity = state.self_entity;
+                let velocity = Vec3::new(x, y, z);
+                state.velocities.insert(entity, velocity);
+                state.grounded.remove(&entity);
+                state.velocity_ops.retain(|(target, _)| *target != entity);
+                state.velocity_ops.push((entity, velocity));
+                Ok(())
+            })?,
+        )?;
 
         let fabr = lua.create_table()?;
         let api_log = api.clone();
@@ -740,6 +777,7 @@ pub fn update_scripts(
     mut runtime: ResMut<ScriptRuntime>,
     mut log: ResMut<ScriptLog>,
     mut transforms: Query<(Entity, &mut Transform)>,
+    mut bodies: Query<(Entity, &mut PhysicsBody)>,
     names: Query<(Entity, &Name)>,
 ) {
     if !active.0 {
@@ -762,6 +800,14 @@ pub fn update_scripts(
     }
     for (entity, name) in &names {
         name_map.insert(name.as_str().to_owned(), entity);
+    }
+    let mut velocities = HashMap::new();
+    let mut grounded = HashSet::new();
+    for (entity, body) in &bodies {
+        velocities.insert(entity, body.velocity);
+        if body.grounded {
+            grounded.insert(entity);
+        }
     }
 
     let pressed: HashSet<String> = keys
@@ -814,7 +860,10 @@ pub fn update_scripts(
             api.actions = action_state.clone();
             api.actions_down = action_down.clone();
             api.mouse = mouse_pressed.clone();
+            api.velocities = velocities.clone();
+            api.grounded = grounded.clone();
             api.ops.clear();
+            api.velocity_ops.clear();
         }
 
         let mut result = Ok(());
@@ -838,6 +887,14 @@ pub fn update_scripts(
         let mut api = instance.api.lock().unwrap();
         for line in api.log.drain(..) {
             log.push(line);
+        }
+        for (target, velocity) in api.velocity_ops.drain(..) {
+            if let Ok((_, mut body)) = bodies.get_mut(target) {
+                body.velocity = velocity;
+                if velocity.y > 0.0 {
+                    body.grounded = false;
+                }
+            }
         }
         for request in api.audio.drain(..) {
             if root.0.join(&request.path).is_file() {
@@ -1181,6 +1238,61 @@ return {
         })
         .add_systems(Update, (spawn, check).chain());
         app.update();
+    }
+
+    #[test]
+    fn a_script_reads_physics_state() {
+        let dir = scratch("physics-read");
+        std::fs::write(
+            dir.join("probe.lua"),
+            r#"
+return {
+    on_start = function(self)
+        local _, vy, _ = self:get_velocity()
+        fabr.log("vy=" .. tostring(vy) .. " grounded=" .. tostring(self:is_grounded()))
+    end,
+}
+"#,
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "probe.lua", BTreeMap::new());
+        world.entity_mut(entity).insert(PhysicsBody {
+            dynamic: true,
+            half_extents: Vec3::splat(0.5),
+            velocity: Vec3::new(0.0, -3.0, 0.0),
+            grounded: true,
+        });
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("vy=-3"), "{log}");
+        assert!(log.contains("grounded=true"), "{log}");
+    }
+
+    #[test]
+    fn a_script_sets_body_velocity() {
+        let dir = scratch("physics-write");
+        std::fs::write(
+            dir.join("launch.lua"),
+            "return { on_start = function(self) self:set_velocity(0, 5, 0) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "launch.lua", BTreeMap::new());
+        world.entity_mut(entity).insert(PhysicsBody {
+            dynamic: true,
+            half_extents: Vec3::splat(0.5),
+            velocity: Vec3::ZERO,
+            grounded: true,
+        });
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let body = world
+            .get::<PhysicsBody>(entity)
+            .expect("body survives the script");
+        assert_eq!(body.velocity, Vec3::new(0.0, 5.0, 0.0));
+        assert!(!body.grounded);
     }
 
     #[test]

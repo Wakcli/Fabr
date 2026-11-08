@@ -13,6 +13,7 @@
 "eme-settings" = 7
 "eme_a11y" = 6
 "eme_android" = 1
+"eme_anim" = 15
 "eme_animation" = 10
 "eme_animation_macros" = 2
 "eme_anti_alias" = 15
@@ -44,16 +45,14 @@
 "eme_extract" = 12
 "eme_extract_macros" = 2
 "eme_feathers" = 17
-"eme_game_runtime" = 7
 "eme_game_overrides" = 12
+"eme_game_runtime" = 7
 "eme_game_scene" = 1
 "eme_gilrs" = 7
 "eme_gizmos" = 12
 "eme_gizmos_macros" = 2
 "eme_gizmos_render" = 16
 "eme_gltf" = 14
-"eme_anim" = 15
-"eme_net" = 16
 "eme_image" = 9
 "eme_input" = 6
 "eme_input_focus" = 13
@@ -66,10 +65,11 @@
 "eme_math" = 4
 "eme_mesh" = 9
 "eme_mobile_example" = 22
+"eme_net" = 7
 "eme_pbr" = 15
 "eme_picking" = 12
 "eme_platform" = 1
-"eme_player" = 22
+"eme_player" = 23
 "eme_plugin" = 1
 "eme_post_process" = 15
 "eme_ptr" = 1
@@ -80,10 +80,9 @@
 "eme_render" = 13
 "eme_render_macros" = 3
 "eme_scene" = 9
+"eme_scene_macros" = 3
 "eme_script" = 16
 "eme_script_csharp" = 1
-"eme_test_plugin" = 22
-"eme_scene_macros" = 3
 "eme_shader" = 9
 "eme_shape" = 5
 "eme_solari" = 16
@@ -92,6 +91,7 @@
 "eme_state" = 6
 "eme_state_macros" = 2
 "eme_tasks" = 2
+"eme_test_plugin" = 22
 "eme_text" = 11
 "eme_time" = 6
 "eme_transform" = 6
@@ -102,10 +102,11 @@
 "eme_window" = 10
 "eme_winit" = 14
 "eme_world_serialization" = 12
-"fabr" = 20
 "errors" = 22
 "example-showcase" = 1
 "export-content" = 1
+"fabr" = 22
+"fabr_sample_game" = 23
 "mipmap_generator" = 22
 "no_std_library" = 22
 

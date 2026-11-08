@@ -1,0 +1,17 @@
+[package]
+name = "fabr_sample_game"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Example Rust gameplay library built with the Fabr SDK"
+license = "MIT OR Apache-2.0"
+rust-version = "1.96.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+fabr = { path = "../fabr", version = "0.20.0-dev", features = ["dynamic_linking"] }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+
+[lints]
+workspace = true

@@ -9,7 +9,15 @@ license = "MIT OR Apache-2.0"
 keywords = ["fabr", "game-engine", "sdk", "scripting"]
 rust-version = "1.96.0"
 
+[features]
+default = []
+# Games load as cdylibs against the host's engine dylib.
+dynamic_linking = ["eme/dynamic_linking"]
+
 [dependencies]
+eme = { path = "../..", version = "0.20.0-dev", default-features = false, features = ["eme_log"] }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_plugin = { path = "../eme_plugin", version = "0.20.0-dev" }
 eme_editor_project = { path = "../eme_editor_project", version = "0.20.0-dev" }
 eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }
 eme_script = { path = "../eme_script", version = "0.20.0-dev" }

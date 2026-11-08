@@ -1,9 +1,13 @@
+#![expect(unsafe_code, reason = "the gameplay entry point casts the host App pointer")]
+
 //! Public Fabr game SDK.
 //!
 //! Game code should depend on this crate rather than the engine internals. It
 //! exposes the stable authoring/runtime surface: scene documents, Lua scripts,
 //! input actions and project settings. The editor and player use the same
 //! underlying crates; this facade keeps their names and versions in one place.
+
+pub use eme::prelude::App;
 
 pub use eme_editor_project::{InputSettings, PlayerSettings, ProjectSettings, SETTINGS_FILE};
 pub use eme_game_scene::{
@@ -18,6 +22,57 @@ pub use eme_script::{
 };
 
 use std::path::Path;
+
+/// Plugin ABI the generated game entry points speak.
+pub const PLUGIN_ABI_VERSION: u32 = eme_plugin::ABI_VERSION;
+
+/// A Rust game: the typed gameplay entry point of the SDK.
+///
+/// Implementations configure the app with systems and resources through the
+/// re-exported engine surface; [`game_plugin!`](crate::game_plugin) turns them
+/// into a loadable gameplay library.
+pub trait FabrGame {
+    /// Installs the game's systems, resources and plugins.
+    fn build(&self, app: &mut App);
+}
+
+/// Builds a game into a live host app.
+///
+/// # Safety
+/// `app` must point at the host's live [`App`], built against the same engine
+/// dylib and plugin ABI as the gameplay library.
+pub unsafe fn register_game<G: FabrGame + Default>(app: *mut core::ffi::c_void) {
+    // SAFETY: the caller guarantees the pointer is the host's App.
+    let app = unsafe { &mut *app.cast::<App>() };
+    G::default().build(app);
+}
+
+/// Exports the plugin ABI for a [`FabrGame`] implementation.
+///
+/// ```ignore
+/// fabr::game_plugin!(MyGame);
+/// ```
+#[macro_export]
+macro_rules! game_plugin {
+    ($game:ty) => {
+        /// Reports the plugin ABI this gameplay library implements.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn fabr_plugin_abi() -> u32 {
+            $crate::PLUGIN_ABI_VERSION
+        }
+
+        /// Registers the game into the host app.
+        ///
+        /// # Safety
+        /// `app` must be the host's live App pointer.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn fabr_plugin_register(app: *mut core::ffi::c_void) {
+            // SAFETY: the host passes its live App pointer and the library was
+            // built against the same engine dylib.
+            unsafe { $crate::register_game::<$game>(app) }
+        }
+    };
+}
 
 /// Version of the Fabr SDK surface.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -60,17 +115,39 @@ impl FabrConfig {
 
 /// Everything a Fabr game or tool normally imports.
 pub mod prelude {
+    pub use eme::prelude::*;
+
     pub use crate::{
         key_binding, script_files, script_property_defaults, FabrConfig, InputActions, InputSettings,
         NodeKey, ObjectKind, ObjectTransform, PlayerSettings, ProjectSettings, SceneDoc, SceneObject,
         ScriptLog, ScriptPlugin, ScriptRef, ScriptRoot, ScriptValue, ScriptedObject, ScriptsActive,
-        SETTINGS_FILE, VERSION,
+        FabrGame, SETTINGS_FILE, VERSION,
     };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prelude::*;
+
+    #[derive(Resource, Default)]
+    struct GameMarker;
+
+    struct TestGame;
+
+    impl FabrGame for TestGame {
+        fn build(&self, app: &mut App) {
+            app.insert_resource(GameMarker);
+            app.add_systems(Startup, || {});
+        }
+    }
+
+    #[test]
+    fn a_game_registers_resources_and_systems() {
+        let mut app = App::new();
+        TestGame.build(&mut app);
+        assert!(app.world().contains_resource::<GameMarker>());
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("fabr-sdk-{}-{name}", std::process::id()));

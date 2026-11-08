@@ -296,6 +296,7 @@ impl Plugin for EditorPlugin {
                             files::close_import_menu,
                         ),
                         crate::play::poll,
+                        scene_transitions_in_player,
                         crate::play::sync_button,
                         crate::play::autoplay,
                         eme_game_runtime::run_behaviours.run_if(crate::play::behaviours_active),
@@ -381,6 +382,21 @@ impl Plugin for EditorPlugin {
             .add_systems(Startup, crate::selection_outline::init_outline_material)
             .add_systems(PostUpdate, scene::reconcile_scene)
             .add_systems(Last, scene::purge_stale);
+    }
+}
+
+fn scene_transitions_in_player(
+    mut requests: ResMut<eme_script::SceneRequests>,
+    mut log: ResMut<crate::console::ConsoleLog>,
+) {
+    if let Some(path) = requests.load.take() {
+        log.push(format!(
+            "scene: load {path} ignored in the editor; run the player"
+        ));
+    }
+    if requests.reload {
+        requests.reload = false;
+        log.push("scene: reload ignored in the editor; run the player".to_string());
     }
 }
 

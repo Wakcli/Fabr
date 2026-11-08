@@ -326,6 +326,8 @@ impl Plugin for EditorPlugin {
                             .after(eme_script::update_scripts)
                             .run_if(crate::play::behaviours_active)
                             .run_if(extension_physics),
+                        eme_game_runtime::step_joints
+                            .before(eme_game_runtime::step_physics),
                         eme_game_runtime::step_physics
                             .after(eme_script::update_scripts)
                             .run_if(crate::play::behaviours_active)

@@ -185,6 +185,7 @@ fn main() {
                 eme_game_runtime::run_behaviours.run_if(is_not_client),
                 eme_game_overrides::sync_model_nodes,
                 log_script_lines,
+                eme_game_runtime::step_joints.before(eme_game_runtime::step_physics),
                 eme_game_runtime::step_physics.after(fabr::update_scripts),
                 eme_game_runtime::step_controllers.after(fabr::update_scripts),
                 scene::materialize_replicated,

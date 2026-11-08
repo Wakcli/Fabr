@@ -239,6 +239,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::script_watch::ScriptWatcher>()
             .init_resource::<inspector::ReattachState>()
             .init_resource::<inspector::ScriptPicker>()
+            .init_resource::<inspector::InspectorFilter>()
             .init_resource::<docks::EditorStats>()
             .init_resource::<docks::SceneFilter>()
             .init_resource::<files::ImportMenu>()
@@ -302,6 +303,9 @@ impl Plugin for EditorPlugin {
                     ),
                     (
                         inspector::sync_inspector,
+                        inspector::sync_inspector_filter,
+                        inspector::sync_inspector_filter_hint,
+                        inspector::apply_inspector_filter,
                         inspector::sync_script_rows,
                         inspector::sync_script_picker,
                         inspector::sync_node_inspector,

@@ -17,6 +17,7 @@ use eme_game_scene::{
     Behaviour, BehaviourKind, NodeKey, ObjectTransform, OverrideOp, ScriptRef, ScriptValue,
     TransformDelta,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::chrome::*;
@@ -30,8 +31,9 @@ use crate::undo::Undo;
 const MIN_SCALE: f32 = 0.01;
 
 /// Which transform row an inspector field reflects.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Prop {
+    #[default]
     Position,
     Rotation,
     Scale,
@@ -113,7 +115,7 @@ impl ReattachState {
 pub struct BehaviourValue;
 
 /// An inspector section whose body can be collapsed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Section {
     #[default]
     Transform,
@@ -121,6 +123,19 @@ pub enum Section {
     Visibility,
     Script,
     Node,
+}
+
+impl Section {
+    /// Header text shown for this section.
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Transform => "Transform",
+            Section::Behaviour => "Behaviour",
+            Section::Visibility => "Visibility",
+            Section::Script => "Script",
+            Section::Node => "Model Node",
+        }
+    }
 }
 
 /// Which inspector sections are open. All sections start open.
@@ -187,6 +202,246 @@ pub struct SectionBody(pub Section);
 #[derive(Component, Clone, Copy, Default)]
 pub struct SectionCaret(pub Section, pub bool);
 
+/// Wrapper around a section header and body, hidden when the filter excludes it.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SearchableSection(pub Section);
+
+/// Kind of fixed inspector row the filter can match.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum RowKind {
+    /// Transform position.
+    #[default]
+    Position,
+    /// Transform rotation.
+    Rotation,
+    /// Transform scale.
+    Scale,
+    /// Behaviour row.
+    Play,
+    /// Visibility row.
+    Visible,
+    /// Script selector row.
+    Script,
+    /// Model node position.
+    NodePosition,
+    /// Model node rotation.
+    NodeRotation,
+    /// Model node scale.
+    NodeScale,
+}
+
+impl RowKind {
+    /// Section this row belongs to.
+    pub fn section(self) -> Section {
+        match self {
+            RowKind::Position | RowKind::Rotation | RowKind::Scale => Section::Transform,
+            RowKind::Play => Section::Behaviour,
+            RowKind::Visible => Section::Visibility,
+            RowKind::Script => Section::Script,
+            RowKind::NodePosition | RowKind::NodeRotation | RowKind::NodeScale => Section::Node,
+        }
+    }
+
+    /// Text the filter compares against.
+    pub fn label(self) -> &'static str {
+        match self {
+            RowKind::Position | RowKind::NodePosition => "Position",
+            RowKind::Rotation | RowKind::NodeRotation => "Rotation",
+            RowKind::Scale | RowKind::NodeScale => "Scale",
+            RowKind::Play => "Play",
+            RowKind::Visible => "Visible",
+            RowKind::Script => "Script",
+        }
+    }
+}
+
+impl Prop {
+    /// Row kind for this transform property.
+    fn row_kind(self) -> RowKind {
+        match self {
+            Prop::Position => RowKind::Position,
+            Prop::Rotation => RowKind::Rotation,
+            Prop::Scale => RowKind::Scale,
+        }
+    }
+
+    /// Row kind for this model-node property.
+    fn node_row_kind(self) -> RowKind {
+        match self {
+            Prop::Position => RowKind::NodePosition,
+            Prop::Rotation => RowKind::NodeRotation,
+            Prop::Scale => RowKind::NodeScale,
+        }
+    }
+}
+
+/// Fixed inspector row the filter can match.
+#[derive(Component, Clone, Copy, Default)]
+pub struct FilterRow(pub RowKind);
+
+/// Script-declared property row the filter can match.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct FilterScriptRow(pub String);
+
+/// Text typed into the inspector filter.
+#[derive(Resource, Clone, Default)]
+pub struct InspectorFilter {
+    /// Case-insensitive substring matched against section and row labels.
+    pub query: String,
+    /// Bumped whenever [`query`](Self::query) changes.
+    pub rev: u64,
+}
+
+impl InspectorFilter {
+    /// Whether a filter is currently narrowing the inspector.
+    pub fn active(&self) -> bool {
+        !self.query.trim().is_empty()
+    }
+
+    /// Whether `text` contains the filter query, case-insensitively.
+    pub fn matches(&self, text: &str) -> bool {
+        let query = self.query.trim().to_lowercase();
+        query.is_empty() || text.to_lowercase().contains(&query)
+    }
+}
+
+/// The inspector filter's text input.
+#[derive(Component, Clone, Copy, Default)]
+pub struct InspectorFilterInput;
+
+/// Placeholder shown while the inspector filter is empty.
+#[derive(Component, Clone, Copy, Default)]
+pub struct InspectorFilterHint;
+
+/// Copies the filter field's text into [`InspectorFilter`].
+pub fn sync_inspector_filter(
+    mut filter: ResMut<InspectorFilter>,
+    inputs: Query<&EditableText, With<InspectorFilterInput>>,
+) {
+    let Ok(input) = inputs.single() else {
+        return;
+    };
+    let value = input.value().to_string();
+    if value == filter.query {
+        return;
+    }
+    filter.query = value;
+    filter.rev = filter.rev.wrapping_add(1);
+}
+
+/// Hides the placeholder once the filter has text.
+pub fn sync_inspector_filter_hint(
+    filter: Res<InspectorFilter>,
+    mut hints: Query<&mut Node, With<InspectorFilterHint>>,
+) {
+    let want = if filter.query.is_empty() {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut hints {
+        if node.display != want {
+            node.display = want;
+        }
+    }
+}
+
+/// Gives the filter field input focus when it is pressed.
+fn focus_inspector_filter(
+    press: On<PointerPress>,
+    inputs: Query<(), With<InspectorFilterInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if press.button != PointerButton::Primary || !inputs.contains(press.entity) {
+        return;
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
+
+/// Shows sections and rows the filter matches, and shortens partially matching sections.
+pub fn apply_inspector_filter(
+    filter: Res<InspectorFilter>,
+    mut sections: Query<
+        (&SearchableSection, &mut Node),
+        (Without<FilterRow>, Without<FilterScriptRow>),
+    >,
+    mut rows: Query<
+        (&FilterRow, &mut Node),
+        (Without<SearchableSection>, Without<FilterScriptRow>),
+    >,
+    mut script_rows: Query<
+        (&FilterScriptRow, &mut Node),
+        (Without<SearchableSection>, Without<FilterRow>),
+    >,
+) {
+    if !filter.active() {
+        for (_, mut node) in &mut sections {
+            if node.display != Display::Flex {
+                node.display = Display::Flex;
+            }
+        }
+        for (_, mut node) in &mut rows {
+            if node.display != Display::Flex {
+                node.display = Display::Flex;
+            }
+        }
+        for (_, mut node) in &mut script_rows {
+            if node.display != Display::Flex {
+                node.display = Display::Flex;
+            }
+        }
+        return;
+    }
+
+    let mut visible: HashSet<Section> = HashSet::new();
+    for (row, _) in &rows {
+        if filter.matches(row.0.label()) {
+            visible.insert(row.0.section());
+        }
+    }
+    for (row, _) in &script_rows {
+        if filter.matches(&row.0) {
+            visible.insert(Section::Script);
+        }
+    }
+    for (section, _) in &sections {
+        if filter.matches(section.0.label()) {
+            visible.insert(section.0);
+        }
+    }
+
+    for (section, mut node) in &mut sections {
+        let want = if visible.contains(&section.0) {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+    }
+    for (row, mut node) in &mut rows {
+        let want = if filter.matches(row.0.section().label()) || filter.matches(row.0.label()) {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+    }
+    for (row, mut node) in &mut script_rows {
+        let want = if filter.matches(Section::Script.label()) || filter.matches(&row.0) {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+    }
+}
+
 /// Inspector panel body: the object header and the property sections.
 pub fn body() -> Part {
     Box::new(bsn! {
@@ -216,6 +471,8 @@ pub fn body() -> Part {
             --
             {object_row()}
             --
+            {inspector_filter_field()}
+            --
             {node_section()}
             --
             {override_rows()}
@@ -231,6 +488,60 @@ pub fn body() -> Part {
             {spacer()}
         ]
     })
+}
+
+fn inspector_filter_field() -> Part {
+    let input = Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            height: px(20),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
+        }
+        EditableText::new("")
+        TextInput
+        TabIndex(0)
+        InspectorFilterInput
+        TextLayout { linebreak: LineBreak::NoWrap }
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        on(focus_inspector_filter)
+    });
+    let hint = Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(24),
+            top: px(0),
+            height: px(FIELD_H - 2.0),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+        }
+        InspectorFilterHint
+        Pickable::IGNORE
+        Children [ {text("Filter properties", FONT_SIZE, tokens::TEXT_DIM)} ]
+    });
+    Box::new(bsn! {
+        Node { padding: UiRect { left: px(3), right: px(3), bottom: px(4) } }
+        Button
+        Children [ {field(vec![icons::search_dim(), input, hint], FIELD_H)} ]
+        on(focus_inspector_filter_row)
+    })
+}
+
+fn focus_inspector_filter_row(
+    _: On<Activate>,
+    inputs: Query<Entity, With<InspectorFilterInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if let Ok(input) = inputs.single() {
+        focus.set(input, FocusCause::Pressed);
+    }
 }
 
 fn object_row() -> Part {
@@ -753,7 +1064,15 @@ fn section(id: Section, title: &str, rows: Vec<Part>) -> Part {
         Children [ {rows} ]
     }) as Part;
 
-    col(0.0, vec![section_header(id, title), body])
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+        }
+        SearchableSection(id)
+        Children [ {section_header(id, title)} -- {body} ]
+    })
 }
 
 fn section_header(id: Section, title: &str) -> Part {
@@ -928,6 +1247,7 @@ fn node_title_text() -> Part {
 }
 
 fn node_property(label: &str, prop: Prop, axes: [(&str, ThemeToken, ThemeToken, &str); 3]) -> Part {
+    let kind = prop.node_row_kind();
     let mut fields = Vec::new();
     for (i, (letter, line, letter_tint, value)) in axes.into_iter().enumerate() {
         fields.push(node_axis_field(
@@ -952,6 +1272,7 @@ fn node_property(label: &str, prop: Prop, axes: [(&str, ThemeToken, ThemeToken, 
             },
             column_gap: px(6),
         }
+        FilterRow(kind)
         Children [
             {label_cell(label)}
             --
@@ -1047,6 +1368,7 @@ fn node_visible_row() -> Part {
             padding: UiRect::horizontal(px(10)),
             column_gap: px(6),
         }
+        FilterRow(RowKind::Visible)
         Children [
             {label_cell("Visible")}
             --
@@ -1078,6 +1400,7 @@ fn label_cell(label: &str) -> Part {
 }
 
 fn property(label: &str, prop: Prop, axes: [(&str, ThemeToken, ThemeToken, &str); 3]) -> Part {
+    let kind = prop.row_kind();
     let mut fields = Vec::new();
     for (i, (letter, line, letter_tint, value)) in axes.into_iter().enumerate() {
         fields.push(axis_field(
@@ -1102,6 +1425,7 @@ fn property(label: &str, prop: Prop, axes: [(&str, ThemeToken, ThemeToken, &str)
             },
             column_gap: px(6),
         }
+        FilterRow(kind)
         Children [
             {label_cell(label)}
             --
@@ -1169,6 +1493,7 @@ fn behaviour_row() -> Part {
             column_gap: px(6),
         }
         Button
+        FilterRow(RowKind::Play)
         Children [
             {label_cell("Play")}
             --
@@ -1260,7 +1585,15 @@ fn script_section() -> Part {
         SectionBody(Section::Script)
         Children [ {host} ]
     }) as Part;
-    col(0.0, vec![section_header(Section::Script, "Script"), body])
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+        }
+        SearchableSection(Section::Script)
+        Children [ {section_header(Section::Script, "Script")} -- {body} ]
+    })
 }
 
 /// Rebuilds the Script section rows for the selected object.
@@ -1348,6 +1681,9 @@ pub fn sync_script_rows(
         Children [ {label} -- {spacer()} -- {value} ]
     }).id();
     commands
+        .entity(row)
+        .insert(FilterRow(RowKind::Script));
+    commands
         .spawn_scene(bsn! {
             Node {
                 height: px(22),
@@ -1414,6 +1750,9 @@ pub fn sync_script_rows(
             ChildOf(host)
             Children [ {label} -- {spacer()} ]
         }).id();
+        commands
+            .entity(row)
+            .insert(FilterScriptRow(key.clone()));
         let shown = match &current {
             ScriptValue::Bool(value) => value.to_string(),
             ScriptValue::Number(value) => fmt_num(*value as f32),
@@ -1761,6 +2100,7 @@ fn selection_title(count: usize, name: Option<&str>) -> String {
 pub fn sync_inspector(
     state: Res<SceneState>,
     undo: Res<Undo>,
+    filter: Res<InspectorFilter>,
     hosts: Query<Entity, With<docks::HistoryRows>>,
     mut commands: Commands,
     sections: Option<ResMut<InspectorSections>>,
@@ -1783,10 +2123,17 @@ pub fn sync_inspector(
         }
     };
 
+    let filtering = filter.active();
     for (mut node, body, caret) in &mut slots {
         let want = match (body, caret) {
-            (Some(body), _) => open.is_open(body.0),
-            (_, Some(caret)) => caret.1 == open.is_open(caret.0),
+            (Some(body), _) => filtering || open.is_open(body.0),
+            (_, Some(caret)) => {
+                if filtering {
+                    caret.1
+                } else {
+                    caret.1 == open.is_open(caret.0)
+                }
+            }
             _ => continue,
         };
         let display = if want { Display::Flex } else { Display::None };
@@ -2156,6 +2503,83 @@ pub fn typing_guard(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inspector_filter_matching_is_case_insensitive() {
+        let filter = InspectorFilter {
+            query: "  ROT  ".into(),
+            rev: 0,
+        };
+        assert!(filter.active());
+        assert!(filter.matches("Rotation"));
+        assert!(!filter.matches("Scale"));
+        let empty = InspectorFilter::default();
+        assert!(!empty.active());
+        assert!(empty.matches("anything"));
+    }
+
+    #[test]
+    fn the_inspector_filter_hides_non_matching_sections_and_rows() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(InspectorFilter {
+            query: "pos".into(),
+            rev: 1,
+        });
+        let transform = world
+            .spawn((SearchableSection(Section::Transform), Node::default()))
+            .id();
+        let position = world
+            .spawn((FilterRow(RowKind::Position), Node::default()))
+            .id();
+        let rotation = world
+            .spawn((FilterRow(RowKind::Rotation), Node::default()))
+            .id();
+        let script = world
+            .spawn((SearchableSection(Section::Script), Node::default()))
+            .id();
+        let speed = world
+            .spawn((FilterScriptRow("speed".into()), Node::default()))
+            .id();
+
+        world.run_system_once(apply_inspector_filter).unwrap();
+        assert_eq!(
+            world.get::<Node>(transform).unwrap().display,
+            Display::Flex
+        );
+        assert_eq!(world.get::<Node>(position).unwrap().display, Display::Flex);
+        assert_eq!(world.get::<Node>(rotation).unwrap().display, Display::None);
+        assert_eq!(world.get::<Node>(script).unwrap().display, Display::None);
+        assert_eq!(world.get::<Node>(speed).unwrap().display, Display::None);
+
+        world.resource_mut::<InspectorFilter>().query = "speed".into();
+        world.run_system_once(apply_inspector_filter).unwrap();
+        assert_eq!(world.get::<Node>(transform).unwrap().display, Display::None);
+        assert_eq!(world.get::<Node>(script).unwrap().display, Display::Flex);
+        assert_eq!(world.get::<Node>(speed).unwrap().display, Display::Flex);
+
+        world.resource_mut::<InspectorFilter>().query.clear();
+        world.run_system_once(apply_inspector_filter).unwrap();
+        assert_eq!(
+            world.get::<Node>(transform).unwrap().display,
+            Display::Flex
+        );
+        assert_eq!(world.get::<Node>(rotation).unwrap().display, Display::Flex);
+    }
+
+    #[test]
+    fn the_inspector_filter_field_updates_the_resource() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(InspectorFilter::default());
+        world.spawn((EditableText::new("position"), InspectorFilterInput));
+        world.run_system_once(sync_inspector_filter).unwrap();
+        let filter = world.resource::<InspectorFilter>();
+        assert_eq!(filter.query, "position");
+        assert_eq!(filter.rev, 1);
+    }
+
 
     #[test]
     fn script_property_edits_are_committed_with_undo() {

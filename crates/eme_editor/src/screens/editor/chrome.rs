@@ -68,18 +68,6 @@ pub fn text_mono(value: impl Into<String>, size: f32, token: ThemeToken) -> Part
     })
 }
 
-pub fn col(gap: f32, kids: Vec<Part>) -> Part {
-    Box::new(bsn! {
-        Node {
-            display: Display::Flex,
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Stretch,
-            row_gap: px(gap),
-        }
-        Children [ {kids} ]
-    })
-}
-
 pub fn spacer() -> Part {
     Box::new(bsn! { Node { flex_grow: 1.0 } })
 }

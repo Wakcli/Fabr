@@ -33,6 +33,7 @@ struct Args {
     host: Option<u16>,
     connect: Option<String>,
     interp: Option<f32>,
+    token: Option<String>,
     write_demo: bool,
     help: bool,
 }
@@ -57,6 +58,9 @@ impl Args {
                 "--interp" => {
                     let value = args.next().ok_or("--interp needs seconds")?;
                     out.interp = Some(value.parse().map_err(|_| "invalid --interp value")?);
+                }
+                "--token" => {
+                    out.token = Some(args.next().ok_or("--token needs a value")?);
                 }
                 "--write-demo" => out.write_demo = true,
                 "--help" | "-h" => out.help = true,
@@ -264,6 +268,7 @@ fn network_config(args: &Args) -> eme_net::NetworkConfig {
     eme_net::NetworkConfig {
         role,
         interpolation_delay: args.interp.unwrap_or(0.1),
+        auth_token: args.token.clone(),
     }
 }
 
@@ -290,6 +295,7 @@ usage: eme_player [--scene <path>]
   --host <port>   host a local replication server
   --connect <a>   connect to host:port and apply replicated transforms
   --interp <s>    client interpolation delay in seconds (default 0.1)
+  --token <val>   session token: required by a server, presented by a client
   --write-demo    write a demo scene to scenes/player-demo.ember and exit
   -h, --help      show this text
 
@@ -404,6 +410,15 @@ mod tests {
         );
         assert!(!a.write_demo);
         assert!(!a.help);
+    }
+
+    #[test]
+    fn the_token_flag_reaches_the_network_config() {
+        let parsed = args(&["--connect", "127.0.0.1:1", "--token", "s3cret"]).unwrap();
+        let config = network_config(&parsed);
+        assert_eq!(config.auth_token.as_deref(), Some("s3cret"));
+        assert!(matches!(config.role, eme_net::NetworkRole::Client { .. }));
+        assert!(args(&["--token"]).is_err());
     }
 
     #[test]

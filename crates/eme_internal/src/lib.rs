@@ -43,6 +43,7 @@ pub use eme_curve as curve;
 pub use eme_dev_tools as dev_tools;
 pub use eme_diagnostic as diagnostic;
 pub use eme_ecs as ecs;
+pub use eme_editor_api as editor;
 #[cfg(feature = "eme_extract")]
 pub use eme_extract as extract;
 #[cfg(feature = "eme_feathers")]

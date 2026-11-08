@@ -27,6 +27,9 @@ const STATUS: &str = "Status";
 /// Panel name that renders the undo history content.
 const HISTORY: &str = "History";
 
+/// Panel name of the plugin extension panels.
+pub(crate) const EXTENSIONS: &str = "Extensions";
+
 /// Pointer travel, in logical pixels, before a press on a tab becomes a drag.
 const DRAG_SLOP: f32 = 4.0;
 
@@ -1089,6 +1092,57 @@ pub fn save_layout(layout: &Layout) {
     }
 }
 
+/// Adds one Extensions tab to the Console dock, without hiding the Console.
+///
+/// Returns false when the tab is already present or the layout has no dock.
+pub(crate) fn ensure_extensions_tab(layout: &mut Layout) -> bool {
+    let panels = layout.panels();
+    if panels
+        .iter()
+        .any(|(_, kind)| matches!(kind, PanelKind::Custom(name) if name == EXTENSIONS))
+    {
+        return false;
+    }
+    let dock = dock_holding(layout, &PanelKind::Console).or_else(|| first_dock(layout));
+    let Some(dock) = dock else {
+        return false;
+    };
+    let visible = layout.active_tab(dock).map(|tab| tab.id);
+    let tab = PanelTab {
+        id: layout.next_id(),
+        kind: PanelKind::Custom(EXTENSIONS.into()),
+    };
+    if !layout.drop_as_tab(dock, tab) {
+        return false;
+    }
+    if let Some(visible) = visible
+        && let Some(index) = layout
+            .tabs(dock)
+            .and_then(|tabs| tabs.iter().position(|tab| tab.id == visible))
+    {
+        layout.set_active(dock, index);
+    }
+    true
+}
+
+/// Id of the dock whose tabs contain `want`.
+fn dock_holding(layout: &Layout, want: &PanelKind) -> Option<PanelId> {
+    match layout {
+        Layout::Panel { id, tabs, .. } => tabs.iter().any(|tab| &tab.kind == want).then_some(*id),
+        Layout::Split { first, second, .. } => {
+            dock_holding(first, want).or_else(|| dock_holding(second, want))
+        }
+    }
+}
+
+/// Id of the first dock in tree order.
+fn first_dock(layout: &Layout) -> Option<PanelId> {
+    match layout {
+        Layout::Panel { id, .. } => Some(*id),
+        Layout::Split { first, second, .. } => first_dock(first).or_else(|| first_dock(second)),
+    }
+}
+
 fn tail(kind: &PanelKind) -> Vec<Part> {
     let menu = chrome::icon_button(icons::dock_menu(), 20.0);
     match kind {
@@ -1107,6 +1161,7 @@ fn body(kind: &PanelKind) -> Part {
         PanelKind::Custom(name) if name == HISTORY => docks::history(),
         PanelKind::Custom(name) if name == "Stats" => docks::stats(),
         PanelKind::Custom(name) if name == "Outline" => docks::outline(),
+        PanelKind::Custom(name) if name == EXTENSIONS => super::extensions::panel(),
         PanelKind::Custom(_) => placeholder(),
     }
 }

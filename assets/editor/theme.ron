@@ -37,6 +37,8 @@
         "editor.select": "#4A2A1A",
         "editor.scrim": "#00000099",
         "editor.clear": "#00000000",
+        "editor.ok": "#67D08A",
+        "editor.warn": "#E8B45A",
         "editor.field": "#111111",
         "editor.field.line": "#333333",
         "editor.label.strip": "#222222",

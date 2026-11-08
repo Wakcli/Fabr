@@ -7,6 +7,7 @@
 //! input actions and project settings. The editor and player use the same
 //! underlying crates; this facade keeps their names and versions in one place.
 
+pub use eme::editor;
 pub use eme::prelude::App;
 
 pub use eme_editor_project::{InputSettings, PlayerSettings, ProjectSettings, SETTINGS_FILE};

@@ -1,0 +1,19 @@
+[package]
+name = "eme_editor_api"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Editor extension surface shared by the Fabr editor and native plugins"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["fabr", "editor", "plugins", "extensions"]
+rust-version = "1.96.0"
+
+[dependencies]
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev", default-features = false }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

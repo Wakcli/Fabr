@@ -38,6 +38,7 @@
 "eme_ecs_macro_logic" = 2
 "eme_ecs_macros" = 3
 "eme_editor" = 22
+"eme_editor_api" = 5
 "eme_editor_core" = 1
 "eme_editor_doc" = 13
 "eme_editor_project" = 2
@@ -106,6 +107,7 @@
 "example-showcase" = 1
 "export-content" = 1
 "fabr" = 22
+"fabr_editor_sample" = 23
 "fabr_sample_game" = 23
 "mipmap_generator" = 22
 "no_std_library" = 22

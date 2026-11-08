@@ -508,6 +508,7 @@ eme_app = { path = "../eme_app", version = "0.20.0-dev", default-features = fals
 ] }
 eme_derive = { path = "../eme_derive", version = "0.20.0-dev", default-features = false }
 eme_diagnostic = { path = "../eme_diagnostic", version = "0.20.0-dev", default-features = false }
+eme_editor_api = { path = "../eme_editor_api", version = "0.20.0-dev" }
 eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev", default-features = false, features = [
   "eme_reflect",
 ] }

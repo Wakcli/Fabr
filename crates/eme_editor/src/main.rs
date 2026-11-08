@@ -135,6 +135,7 @@ fn main() {
     .insert_resource(load_theme())
     .insert_resource(HubRes(sample_hub()))
     .insert_resource(LayoutRes(load_layout()))
+    .init_resource::<eme::editor::EditorExtensions>()
     .add_plugins((
         app::EditorShellPlugin,
         screens::editor::EditorPlugin,
@@ -268,11 +269,28 @@ fn run_with_plugins(mut app: App) {
         info!("plugin: loaded {}", plugin.name);
     }
     let _plugins = plugins;
+    install_extensions_tab(&mut app);
     app.run();
 }
 
+/// Gives plugins that registered a panel their own dock tab.
+fn install_extensions_tab(app: &mut App) {
+    let has_panels = app
+        .world()
+        .get_resource::<eme::editor::EditorExtensions>()
+        .is_some_and(|extensions| !extensions.panels().is_empty());
+    if !has_panels {
+        return;
+    }
+    let mut layout = app.world_mut().resource_mut::<LayoutRes>();
+    if screens::editor::dock::ensure_extensions_tab(&mut layout.0) {
+        info!("plugin: added the Extensions dock tab");
+    }
+}
+
 #[cfg(not(feature = "plugins"))]
-fn run_with_plugins(app: App) {
+fn run_with_plugins(mut app: App) {
+    install_extensions_tab(&mut app);
     app.run();
 }
 

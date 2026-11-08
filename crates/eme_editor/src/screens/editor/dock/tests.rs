@@ -333,3 +333,32 @@ fn self_merges_are_rejected_and_self_splits_need_a_second_tab() {
         DropZone::Split(Edge::Left)
     ));
 }
+
+#[test]
+fn the_extensions_tab_lands_once_in_the_console_dock() {
+    let mut layout = Layout::default_editor();
+    let console = dock_holding(&layout, &PanelKind::Console)
+        .expect("the default layout keeps a console dock");
+    let before = layout.tabs(console).unwrap().len();
+    let visible = layout.active_tab(console).map(|tab| tab.id);
+
+    assert!(ensure_extensions_tab(&mut layout));
+    let tabs = layout.tabs(console).unwrap();
+    assert_eq!(tabs.len(), before + 1);
+    assert!(tabs.iter().any(
+        |tab| matches!(&tab.kind, PanelKind::Custom(name) if name == EXTENSIONS)
+    ));
+    assert_eq!(
+        layout.active_tab(console).map(|tab| tab.id),
+        visible,
+        "adding the tab must not switch away from the console"
+    );
+
+    assert!(!ensure_extensions_tab(&mut layout), "a second run is a no-op");
+    let count = layout
+        .panels()
+        .iter()
+        .filter(|(_, kind)| matches!(kind, PanelKind::Custom(name) if name == EXTENSIONS))
+        .count();
+    assert_eq!(count, 1);
+}

@@ -3,8 +3,10 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use alloc::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use eme::editor::{EditorExtensions, ImporterExtension};
 use eme::feathers::constants::fonts;
 use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColor, ThemeToken};
 use eme::input_focus::tab_navigation::TabIndex;
@@ -24,7 +26,7 @@ use crate::console::ConsoleLog;
 use crate::import::{ImportRequest, ImportService, OptionsPanel};
 use crate::persist;
 use crate::play::PlayState;
-use crate::scene::SceneState;
+use crate::scene::{ModelIndex, SceneState};
 use crate::tokens;
 use crate::undo::Undo;
 
@@ -55,6 +57,33 @@ fn kind(name: &str, is_dir: bool) -> Kind {
         Some(ext) if ext.eq_ignore_ascii_case("ember") => Kind::Scene,
         _ => Kind::File,
     }
+}
+
+/// The registered importer that claims `name`, if one does.
+fn importer_for(
+    extensions: Option<&EditorExtensions>,
+    name: &str,
+) -> Option<Arc<dyn ImporterExtension>> {
+    let extension = Path::new(name).extension()?.to_str()?;
+    extensions?.importer_for(extension)
+}
+
+/// A small accent pill marking a row some plugin can import.
+fn import_marker() -> Part {
+    Box::new(bsn! {
+        Node {
+            height: px(14),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(4)),
+            border: UiRect { left: px(1) },
+            border_radius: px(2),
+        }
+        ThemeBackgroundColor(tokens::DROP)
+        ThemeBorderColor(tokens::ACCENT)
+        Pickable::IGNORE
+        Children [ {text("import", 9.0, tokens::ACCENT)} ]
+    })
 }
 
 /// The `FileSystem` dock's tree state: the last scan, the open folders, and the
@@ -634,6 +663,7 @@ pub fn sync_file_rows(
     mut commands: Commands,
     hosts: Query<Entity, With<FileRows>>,
     filter: Res<FileFilter>,
+    extensions: Option<Res<EditorExtensions>>,
     tree: Option<ResMut<FileTree>>,
 ) {
     let Some(mut tree) = tree else {
@@ -672,7 +702,7 @@ pub fn sync_file_rows(
         display.push(Row::NoMatches);
     }
     for row in display {
-        spawn_row(&mut commands, host, &tree, row);
+        spawn_row(&mut commands, host, &tree, extensions.as_deref(), row);
     }
 }
 
@@ -698,20 +728,26 @@ fn matching_rows(index: &[IndexEntry], query: &str) -> Vec<Row> {
         .collect()
 }
 
-fn spawn_row(commands: &mut Commands, host: Entity, tree: &FileTree, row: Row) {
+fn spawn_row(
+    commands: &mut Commands,
+    host: Entity,
+    tree: &FileTree,
+    extensions: Option<&EditorExtensions>,
+    row: Row,
+) {
     match row {
         Row::Entry {
             name,
             rel,
             is_dir,
             depth,
-        } => spawn_entry(commands, host, tree, name, rel, is_dir, depth),
+        } => spawn_entry(commands, host, tree, extensions, name, rel, is_dir, depth),
         Row::More { count, depth } => {
             spawn_muted(commands, host, format!("… {count} more"), depth);
         }
         Row::Empty { depth } => spawn_muted(commands, host, "empty".into(), depth),
         Row::Match { name, rel, is_dir } => {
-            spawn_match(commands, host, tree, name, rel, is_dir);
+            spawn_match(commands, host, tree, extensions, name, rel, is_dir);
         }
         Row::NoMatches => {
             spawn_muted(commands, host, "No matching assets".into(), 0);
@@ -726,6 +762,7 @@ fn spawn_entry(
     commands: &mut Commands,
     host: Entity,
     tree: &FileTree,
+    extensions: Option<&EditorExtensions>,
     name: String,
     rel: String,
     is_dir: bool,
@@ -761,7 +798,11 @@ fn spawn_entry(
         }));
     }
     kids.push(glyph);
-    kids.push(text(name, FONT_SIZE, fg));
+    kids.push(text(name.clone(), FONT_SIZE, fg));
+    if importer_for(extensions, &name).is_some() {
+        kids.push(spacer());
+        kids.push(import_marker());
+    }
 
     let row = bsn! {
         Node {
@@ -791,6 +832,7 @@ fn spawn_match(
     commands: &mut Commands,
     host: Entity,
     tree: &FileTree,
+    extensions: Option<&EditorExtensions>,
     name: String,
     rel: String,
     is_dir: bool,
@@ -801,6 +843,19 @@ fn spawn_match(
         Kind::Dir => icons::folder(),
         Kind::Scene => icons::badge(icons::SCENE),
         Kind::File => icons::file(),
+    };
+    let marked = importer_for(extensions, &name).is_some();
+    let label = text(name, FONT_SIZE, fg);
+    let marker = if marked {
+        Box::new(bsn! {
+            Node { flex_grow: 1.0, display: Display::Flex, justify_content: JustifyContent::FlexEnd }
+            Pickable::IGNORE
+            Children [ {import_marker()} ]
+        }) as Part
+    } else {
+        Box::new(bsn! {
+            Node { display: Display::None }
+        }) as Part
     };
     let row = bsn! {
         Node {
@@ -815,7 +870,7 @@ fn spawn_match(
         Button
         FileRow { rel, is_dir }
         ChildOf(host)
-        Children [ {glyph} -- {text(name, FONT_SIZE, fg)} ]
+        Children [ {glyph} -- {label} -- {marker} ]
         on(click_file)
         on(open_folder_menu)
         on(start_asset_drag)
@@ -849,15 +904,19 @@ fn row_colors(selected: bool) -> (ThemeToken, ThemeToken) {
     }
 }
 
-/// Opens folders, loads `.ember` scenes, and selects every other file.
+/// Opens folders, imports plugin files, loads `.ember` scenes, and selects the rest.
 fn click_file(
     click: On<Activate>,
     rows: Query<&FileRow>,
     mut tree: ResMut<FileTree>,
     mut state: ResMut<SceneState>,
     mut undo: ResMut<Undo>,
+    mut node: ResMut<crate::scene::NodeSelection>,
     mut tabs: ResMut<crate::screens::editor::tabs::Tabs>,
     play: Res<PlayState>,
+    extensions: Option<Res<EditorExtensions>>,
+    index: Res<ModelIndex>,
+    mut log: ResMut<ConsoleLog>,
 ) {
     let Ok(row) = rows.get(click.entity) else {
         return;
@@ -865,6 +924,21 @@ fn click_file(
     let rel = row.rel.clone();
     if row.is_dir {
         tree.toggle(&rel);
+        return;
+    }
+    if let Some(importer) = importer_for(extensions.as_deref(), &rel) {
+        import_file(
+            importer.as_ref(),
+            &rel,
+            &mut tree,
+            &mut state,
+            &mut undo,
+            &mut node,
+            &mut tabs,
+            &index,
+            &mut log,
+            play.running(),
+        );
         return;
     }
     if kind(&rel, false) != Kind::Scene {
@@ -889,6 +963,63 @@ fn click_file(
         }
         Ok(None) => warn!("no scene at {rel}"),
         Err(err) => error!("could not open {rel}: {err}"),
+    }
+}
+
+fn import_file(
+    importer: &dyn ImporterExtension,
+    rel: &str,
+    tree: &mut FileTree,
+    state: &mut SceneState,
+    undo: &mut Undo,
+    node: &mut crate::scene::NodeSelection,
+    tabs: &mut crate::screens::editor::tabs::Tabs,
+    index: &ModelIndex,
+    log: &mut ConsoleLog,
+    playing: bool,
+) {
+    let project = build::workspace_dir();
+    let source = tree.root_path().join(rel);
+    let artifact = match importer.import(
+        &source.to_string_lossy(),
+        &project.to_string_lossy(),
+    ) {
+        Ok(artifact) => PathBuf::from(artifact),
+        Err(err) => {
+            log.push(format!("import failed: {err}"));
+            return;
+        }
+    };
+
+    let artifact_rel = artifact.to_string_lossy().replace('\\', "/");
+    log.push(format!(
+        "imported {artifact_rel} with {}",
+        importer.id()
+    ));
+    tree.rescan();
+    tree.select(artifact_rel.clone());
+
+    if !artifact_rel.to_ascii_lowercase().ends_with(".ember") {
+        return;
+    }
+    if playing {
+        log.push(format!(
+            "not opening {artifact_rel}: a play session is running"
+        ));
+        return;
+    }
+
+    let path = if artifact.is_absolute() {
+        artifact
+    } else {
+        project.join(artifact)
+    };
+    persist::open_path_into(state, &path.to_string_lossy(), index, log);
+    state.select(None);
+    node.clear();
+    undo.clear();
+    if let Some(name) = path.file_name() {
+        tabs.set_scene_label(name.to_string_lossy().into_owned());
     }
 }
 
@@ -1111,6 +1242,39 @@ mod tests {
         let scan = scan(&tmp.0.join("absent"), &HashSet::new());
         assert!(scan.missing);
         assert_eq!(rows(&scan, &HashSet::new()), [Row::MissingRoot]);
+    }
+
+    struct CubeFiles;
+
+    impl ImporterExtension for CubeFiles {
+        fn id(&self) -> &str {
+            "test.cube"
+        }
+
+        fn extensions(&self) -> &[&str] {
+            &["cube"]
+        }
+
+        fn import(&self, source: &str, project: &str) -> Result<String, String> {
+            let name = source.rsplit('/').next().unwrap_or(source);
+            Ok(format!("{project}/{name}"))
+        }
+    }
+
+    #[test]
+    fn importer_dispatch_matches_only_claimed_extensions() {
+        let mut extensions = EditorExtensions::default();
+        assert!(extensions.add_importer(Arc::new(CubeFiles)));
+
+        assert_eq!(
+            importer_for(Some(&extensions), "blocks.cube").map(|importer| importer.id().to_owned()),
+            Some("test.cube".to_owned())
+        );
+        assert!(importer_for(Some(&extensions), "BLOCKS.CUBE").is_some());
+        assert!(importer_for(Some(&extensions), "notes.txt").is_none());
+        assert!(importer_for(Some(&extensions), "scenes/main.ember").is_none());
+        assert!(importer_for(Some(&extensions), "noextension").is_none());
+        assert!(importer_for(None, "blocks.cube").is_none());
     }
 }
 

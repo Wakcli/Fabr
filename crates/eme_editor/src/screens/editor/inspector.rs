@@ -14,6 +14,7 @@ use eme::text::{
 };
 use eme::ui_widgets::{Activate, Button, ScrollArea, TextInput};
 use eme_anim::AnimationSet;
+use eme::editor::{EditorExtensions, InspectorField};
 use eme_game_overrides::{ModelNodeCatalog, ModelOverrideStatus, OrphanReason};
 use eme_game_scene::{
     AnimationRef, Behaviour, BehaviourKind, NodeKey, ObjectKind, ObjectTransform, OverrideOp,
@@ -25,6 +26,7 @@ use std::path::{Path, PathBuf};
 use super::chrome::*;
 use super::docks;
 use super::icons;
+use crate::console::ConsoleLog;
 use crate::scene::{self, ModelInstance, ModelOwner, NodeSelection, SceneState};
 use crate::tokens;
 use crate::undo::Undo;
@@ -128,6 +130,7 @@ pub enum Section {
     Physics,
     Animation,
     Script,
+    Extensions,
     Node,
 }
 
@@ -143,6 +146,7 @@ impl Section {
             Section::Physics => "Physics",
             Section::Animation => "Animation",
             Section::Script => "Script",
+            Section::Extensions => "Extensions",
             Section::Node => "Model Node",
         }
     }
@@ -159,6 +163,7 @@ pub struct InspectorSections {
     pub physics: bool,
     pub animation: bool,
     pub script: bool,
+    pub extensions: bool,
     pub node: bool,
 }
 
@@ -173,6 +178,7 @@ impl Default for InspectorSections {
             physics: true,
             animation: true,
             script: true,
+            extensions: true,
             node: true,
         }
     }
@@ -190,6 +196,7 @@ impl InspectorSections {
             Section::Physics => self.physics,
             Section::Animation => self.animation,
             Section::Script => self.script,
+            Section::Extensions => self.extensions,
             Section::Node => self.node,
         }
     }
@@ -205,6 +212,7 @@ impl InspectorSections {
             Section::Physics => self.physics = open,
             Section::Animation => self.animation = open,
             Section::Script => self.script = open,
+            Section::Extensions => self.extensions = open,
             Section::Node => self.node = open,
         }
     }
@@ -368,6 +376,66 @@ pub struct PlayClip(pub u64, pub String);
 /// Stop button in the Animation section.
 #[derive(Component, Clone, Copy, Default)]
 pub struct StopClip(pub u64);
+
+/// Host for the plugin Inspector field rows.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ExtensionFieldsRows;
+
+/// Wrapper around the plugin field status line.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ExtensionStatusRow;
+
+/// Status text under the plugin fields.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ExtensionStatusText;
+
+/// One editable value contributed by an editor plugin.
+#[derive(Component, Clone, Default)]
+pub struct ExtensionValue {
+    /// Stable field id in [`EditorExtensions`].
+    pub field: String,
+    /// Scene object the value belongs to.
+    pub object: u64,
+}
+
+/// Remembers a focused plugin field so its text can be committed.
+#[derive(Component, Clone, Default)]
+pub struct ExtensionEdit {
+    /// Stable field id in [`EditorExtensions`].
+    pub field: String,
+    /// Scene object the value was opened on.
+    pub object: u64,
+}
+
+/// A plugin field edit waiting for the exclusive apply system.
+#[derive(Resource, Default)]
+pub struct PendingFieldEdits(Vec<(String, u64, String)>);
+
+/// One line the plugin field section shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtensionRow {
+    /// Stable field id.
+    pub field: String,
+    /// Label shown before the value.
+    pub label: String,
+    /// Value read from the plugin.
+    pub value: String,
+}
+
+/// What the plugin field section currently shows.
+#[derive(Resource, Default)]
+pub struct ExtensionsView {
+    object: Option<u64>,
+    rows: Vec<ExtensionRow>,
+}
+
+/// Result of the last plugin field apply.
+#[derive(Resource, Default)]
+pub struct ExtensionStatus {
+    message: String,
+    error: bool,
+    rev: u64,
+}
 
 /// Text typed into the inspector filter.
 #[derive(Resource, Clone, Default)]
@@ -579,6 +647,8 @@ pub fn body() -> Part {
             {animation_section()}
             --
             {script_section()}
+            --
+            {extensions_section()}
             --
             {spacer()}
         ]
@@ -2401,6 +2471,378 @@ fn script_section() -> Part {
         SearchableSection(Section::Script)
         Children [ {section_header(Section::Script, "Script")} -- {body} ]
     })
+}
+
+/// The plugin field section: a host rebuilt from [`ExtensionsView`].
+fn extensions_section() -> Part {
+    let host = Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: px(2),
+        }
+        ExtensionFieldsRows
+    }) as Part;
+    let status = Box::new(bsn! {
+        Node {
+            display: Display::None,
+            padding: UiRect::horizontal(px(8)),
+        }
+        ExtensionStatusRow
+        Children [ {extension_status_text()} ]
+    }) as Part;
+    let body = Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: px(2),
+        }
+        SectionBody(Section::Extensions)
+        Children [ {host} -- {status} ]
+    }) as Part;
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+        }
+        SearchableSection(Section::Extensions)
+        Children [ {section_header(Section::Extensions, "Extensions")} -- {body} ]
+    })
+}
+
+fn extension_status_text() -> Part {
+    Box::new(bsn! {
+        Text("")
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT_DIM)
+        ExtensionStatusText
+    })
+}
+
+/// Fields that claim `object` of `kind`.
+fn applicable_fields<'a>(
+    extensions: &'a EditorExtensions,
+    object: u64,
+    kind: &str,
+) -> Vec<&'a dyn InspectorField> {
+    extensions
+        .fields()
+        .iter()
+        .filter(|field| field.applies(object, kind))
+        .map(AsRef::as_ref)
+        .collect()
+}
+
+/// Applies queued edits, then reads every applicable plugin value.
+///
+/// Reading a plugin value takes `&mut World`, so this is exclusive.
+pub fn evaluate_extension_fields(world: &mut World) {
+    let queued: Vec<(String, u64, String)> = world
+        .get_resource_mut::<PendingFieldEdits>()
+        .map(|mut pending| core::mem::take(&mut pending.0))
+        .unwrap_or_default();
+
+    if !queued.is_empty() {
+        world.try_resource_scope::<EditorExtensions, _>(|world, extensions| {
+            for (id, object, text) in queued {
+                let Some(field) = extensions.fields().iter().find(|field| field.id() == id) else {
+                    continue;
+                };
+                match field.apply(world, object, &text) {
+                    Ok(message) => {
+                        let line = format!("{}: {message}", field.label());
+                        world.resource_mut::<ConsoleLog>().push(line.as_str());
+                        set_extension_status(world, line, false);
+                    }
+                    Err(err) => {
+                        let line = format!("{} failed: {err}", field.label());
+                        world.resource_mut::<ConsoleLog>().push(line.as_str());
+                        set_extension_status(world, line, true);
+                    }
+                }
+            }
+        });
+    }
+
+    let selected = world
+        .resource::<SceneState>()
+        .selected_object()
+        .map(|object| (object.id, object.kind.label().to_owned()));
+
+    let rows = world
+        .try_resource_scope::<EditorExtensions, _>(|world, extensions| {
+            let Some((object, kind)) = &selected else {
+                return Vec::new();
+            };
+            applicable_fields(&extensions, *object, kind)
+                .iter()
+                .map(|field| ExtensionRow {
+                    field: field.id().to_owned(),
+                    label: field.label().to_owned(),
+                    value: field.value(world, *object).unwrap_or_default(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let object = selected.as_ref().map(|(id, _)| *id);
+    if let Some(mut view) = world.get_resource_mut::<ExtensionsView>() {
+        view.object = object;
+        view.rows = rows.clone();
+    }
+
+    let focused = world.resource::<InputFocus>().get();
+    let entries = {
+        let mut query = world.query_filtered::<(Entity, &ExtensionValue), Without<ExtensionEdit>>();
+        query
+            .iter(world)
+            .map(|(entity, value)| (entity, value.field.clone(), value.object))
+            .collect::<Vec<_>>()
+    };
+    for (entity, field, owner) in entries {
+        if focused == Some(entity) || Some(owner) != object {
+            continue;
+        }
+        let Some(row) = rows.iter().find(|row| row.field == field) else {
+            continue;
+        };
+        let Some(mut text) = world.get_mut::<EditableText>(entity) else {
+            continue;
+        };
+        if text.value().to_string() != row.value {
+            text.editor.set_text(&row.value);
+        }
+    }
+}
+
+fn set_extension_status(world: &mut World, message: String, error: bool) {
+    let mut status = world.resource_mut::<ExtensionStatus>();
+    status.message = message;
+    status.error = error;
+    status.rev = status.rev.wrapping_add(1);
+}
+
+/// Rebuilds the plugin field rows when the selection or their shape changes.
+pub fn sync_extension_fields(
+    state: Res<SceneState>,
+    view: Res<ExtensionsView>,
+    mut commands: Commands,
+    hosts: Query<Entity, With<ExtensionFieldsRows>>,
+    focus: Res<InputFocus>,
+    values: Query<(), With<ExtensionValue>>,
+    mut shown: Local<Option<(Entity, Option<u64>, u64, Vec<(String, String)>)>>,
+) {
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    if focus.get().is_some_and(|entity| values.contains(entity)) {
+        return;
+    }
+    let shape = (
+        host,
+        view.object,
+        state.rev,
+        view.rows
+            .iter()
+            .map(|row| (row.field.clone(), row.label.clone()))
+            .collect::<Vec<_>>(),
+    );
+    if shown.as_ref() == Some(&shape) {
+        return;
+    }
+    *shown = Some(shape);
+    despawn_children(&mut commands, host);
+
+    if view.object.is_none() {
+        spawn_extension_hint(&mut commands, host, "No selection");
+        return;
+    }
+    if view.rows.is_empty() {
+        spawn_extension_hint(&mut commands, host, "No plugin fields for this object.");
+        return;
+    }
+    let object = view.object.unwrap_or_default();
+    for row in &view.rows {
+        spawn_extension_row(&mut commands, host, object, row);
+    }
+}
+
+fn spawn_extension_hint(commands: &mut Commands, host: Entity, message: &str) {
+    commands.spawn_scene(bsn! {
+        Node { padding: UiRect::horizontal(px(8)) }
+        ChildOf(host)
+        Children [ {text(message, FONT_SIZE, tokens::TEXT_DIM)} ]
+    });
+}
+
+fn spawn_extension_row(commands: &mut Commands, host: Entity, object: u64, row: &ExtensionRow) {
+    let label_text = row.label.clone();
+    let value_text = row.value.clone();
+    let field_id = row.field.clone();
+    let label = Box::new(bsn! {
+        Node { width: px(96), display: Display::Flex, align_items: AlignItems::Center }
+        Children [ {text_clipped(label_text, FONT_SIZE, tokens::PROP_TEXT)} ]
+    }) as Part;
+    let input = Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            min_width: px(0),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
+        }
+        EditableText::new(value_text)
+        TextInput
+        TabIndex(0)
+        TextLayout { linebreak: LineBreak::NoWrap }
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        ExtensionValue { field: {field_id.clone()}, object: {object} }
+        on(focus_extension_field)
+        on(blur_extension_field)
+        on(extension_field_key)
+    }) as Part;
+    commands.spawn_scene(bsn! {
+        Node {
+            min_height: px(PROPERTY_ROW_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(10)),
+            column_gap: px(6),
+        }
+        ChildOf(host)
+        Children [
+            {label}
+            --
+            {field(vec![input], FIELD_H)}
+        ]
+    });
+}
+
+fn focus_extension_field(
+    press: On<PointerPress>,
+    values: Query<&ExtensionValue>,
+    mut texts: Query<&mut EditableText>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    if press.button != PointerButton::Primary {
+        return;
+    }
+    let Ok(value) = values.get(press.entity) else {
+        return;
+    };
+    commands.entity(press.entity).insert(ExtensionEdit {
+        field: value.field.clone(),
+        object: value.object,
+    });
+    if let Ok(mut text) = texts.get_mut(press.entity) {
+        text.queue_edit(TextEdit::SelectAll);
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
+
+fn extension_field_key(
+    key: On<FocusedInput<KeyboardInput>>,
+    inputs: Query<(&ExtensionValue, &EditableText)>,
+    edits: Query<&ExtensionEdit>,
+    mut pending: ResMut<PendingFieldEdits>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    let input = &key.input;
+    if !input.state.is_pressed() || input.repeat {
+        return;
+    }
+    let entity = key.focused_entity;
+    if input.key_code == KeyCode::Escape {
+        commands.entity(entity).remove::<ExtensionEdit>();
+        return;
+    }
+    if input.key_code != KeyCode::Enter {
+        return;
+    }
+    let Ok((_, text)) = inputs.get(entity) else {
+        return;
+    };
+    let Ok(edit) = edits.get(entity) else {
+        return;
+    };
+    pending
+        .0
+        .push((edit.field.clone(), edit.object, text.value().to_string()));
+    commands.entity(entity).remove::<ExtensionEdit>();
+    focus.clear();
+}
+
+fn blur_extension_field(
+    lost: On<FocusLost>,
+    edits: Query<&ExtensionEdit>,
+    inputs: Query<&EditableText>,
+    state: Res<SceneState>,
+    mut pending: ResMut<PendingFieldEdits>,
+    mut commands: Commands,
+) {
+    let entity = lost.event_target();
+    let Ok(edit) = edits.get(entity) else {
+        return;
+    };
+    commands.entity(entity).remove::<ExtensionEdit>();
+    if state.primary() != Some(edit.object) {
+        return;
+    }
+    let Ok(text) = inputs.get(entity) else {
+        return;
+    };
+    pending
+        .0
+        .push((edit.field.clone(), edit.object, text.value().to_string()));
+}
+
+/// Moves the status line between dim and the warning tone.
+pub fn sync_extension_status(
+    status: Res<ExtensionStatus>,
+    mut commands: Commands,
+    mut rows: Query<&mut Node, With<ExtensionStatusRow>>,
+    mut labels: Query<(Entity, &mut Text, Option<&ThemeTextColor>), With<ExtensionStatusText>>,
+) {
+    let want = if status.message.is_empty() {
+        Display::None
+    } else {
+        Display::Flex
+    };
+    for mut node in &mut rows {
+        if node.display != want {
+            node.display = want;
+        }
+    }
+    let tint = if status.error {
+        tokens::WARN
+    } else {
+        tokens::TEXT_DIM
+    };
+    for (entity, mut text, current) in &mut labels {
+        if text.0 != status.message {
+            text.0 = status.message.clone();
+        }
+        if current.map(|current| current.0 == tint).unwrap_or(false) {
+            continue;
+        }
+        commands.entity(entity).insert(ThemeTextColor(tint.clone()));
+    }
 }
 
 /// Paints the material preview from the selected object's authored color.
@@ -4238,6 +4680,136 @@ mod tests {
             Color::linear_rgba(0.2, 0.4, 0.6, 1.0)
         );
     }
+
+    struct CubeOnly;
+
+    impl InspectorField for CubeOnly {
+        fn id(&self) -> &str {
+            "cube.only"
+        }
+
+        fn label(&self) -> &str {
+            "Cube only"
+        }
+
+        fn applies(&self, _object: u64, kind: &str) -> bool {
+            kind == "Cube"
+        }
+
+        fn value(&self, _world: &mut World, _object: u64) -> Option<String> {
+            None
+        }
+
+        fn apply(&self, _world: &mut World, _object: u64, _text: &str) -> Result<String, String> {
+            Ok("ok".into())
+        }
+    }
+
+    struct EveryObject;
+
+    impl InspectorField for EveryObject {
+        fn id(&self) -> &str {
+            "every"
+        }
+
+        fn label(&self) -> &str {
+            "Every"
+        }
+
+        fn applies(&self, _object: u64, _kind: &str) -> bool {
+            true
+        }
+
+        fn value(&self, _world: &mut World, _object: u64) -> Option<String> {
+            None
+        }
+
+        fn apply(&self, _world: &mut World, _object: u64, _text: &str) -> Result<String, String> {
+            Ok("ok".into())
+        }
+    }
+
+    #[test]
+    fn plugin_fields_are_filtered_by_applies() {
+        use alloc::sync::Arc;
+
+        let mut extensions = EditorExtensions::default();
+        extensions.add_field(Arc::new(CubeOnly));
+        extensions.add_field(Arc::new(EveryObject));
+
+        let ids = |fields: Vec<&dyn InspectorField>| {
+            fields
+                .iter()
+                .map(|field| field.id().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(applicable_fields(&extensions, 1, "Cube")),
+            ["cube.only", "every"]
+        );
+        assert_eq!(
+            ids(applicable_fields(&extensions, 1, "Sun")),
+            ["every"]
+        );
+    }
+
+    struct AlwaysFails;
+
+    impl InspectorField for AlwaysFails {
+        fn id(&self) -> &str {
+            "always.fails"
+        }
+
+        fn label(&self) -> &str {
+            "Failing"
+        }
+
+        fn applies(&self, _object: u64, _kind: &str) -> bool {
+            true
+        }
+
+        fn value(&self, _world: &mut World, _object: u64) -> Option<String> {
+            None
+        }
+
+        fn apply(&self, _world: &mut World, _object: u64, _text: &str) -> Result<String, String> {
+            Err("not allowed".into())
+        }
+    }
+
+    #[test]
+    fn a_failed_plugin_apply_sets_the_error_state_and_logs() {
+        use alloc::sync::Arc;
+        use eme::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(SceneState::default());
+        let mut extensions = EditorExtensions::default();
+        extensions.add_field(Arc::new(AlwaysFails));
+        world.insert_resource(extensions);
+        world.insert_resource(PendingFieldEdits(vec![(
+            "always.fails".into(),
+            1,
+            "x".into(),
+        )]));
+        world.insert_resource(ExtensionsView::default());
+        world.insert_resource(ExtensionStatus::default());
+        world.insert_resource(ConsoleLog::default());
+        world.insert_resource(InputFocus::default());
+
+        world.run_system_once(evaluate_extension_fields).unwrap();
+
+        let status = world.resource::<ExtensionStatus>();
+        assert!(status.error);
+        assert!(status.message.contains("not allowed"));
+        assert!(
+            world
+                .resource::<ConsoleLog>()
+                .lines()
+                .iter()
+                .any(|line| line.contains("failed") && line.contains("not allowed"))
+        );
+    }
 }
 
 /// Host for the imported-model report above the object sections.
@@ -4369,7 +4941,7 @@ fn reimport(
     activate: On<Activate>,
     buttons: Query<&Reimport>,
     mut service: ResMut<crate::import::ImportService>,
-    mut log: ResMut<crate::console::ConsoleLog>,
+    mut log: ResMut<ConsoleLog>,
 ) {
     let Ok(button) = buttons.get(activate.entity) else {
         return;

@@ -44,6 +44,11 @@ pub const SCRIM: ThemeToken = ThemeToken::new_static("editor.scrim");
 /// Fully transparent, for rows that only paint when selected.
 pub const CLEAR: ThemeToken = ThemeToken::new_static("editor.clear");
 
+/// A healthy value or a completed action.
+pub const OK: ThemeToken = ThemeToken::new_static("editor.ok");
+/// A value or action that needs attention.
+pub const WARN: ThemeToken = ThemeToken::new_static("editor.warn");
+
 /// Number field and line edit background.
 pub const FIELD: ThemeToken = ThemeToken::new_static("editor.field");
 /// Two pixel underline under fields.
@@ -116,6 +121,8 @@ pub const ALL: &[(&str, ThemeToken)] = &[
     ("editor.select", SELECT),
     ("editor.scrim", SCRIM),
     ("editor.clear", CLEAR),
+    ("editor.ok", OK),
+    ("editor.warn", WARN),
     ("editor.field", FIELD),
     ("editor.field.line", FIELD_LINE),
     ("editor.label.strip", LABEL_STRIP),

@@ -13,6 +13,7 @@ mod build_dialog;
 pub(crate) mod chrome;
 pub(crate) mod dock;
 pub(crate) mod docks;
+pub(crate) mod extensions;
 pub(crate) mod files;
 mod gizmo;
 pub(crate) mod icons;
@@ -244,6 +245,7 @@ impl Plugin for EditorPlugin {
         crate::packages::install(app);
         crate::shortcuts::install(app);
         crate::extensions::install(app);
+        extensions::install(app);
         crate::profile::install(app);
         crate::animation::install(app);
         crate::console_cmd::install(app);
@@ -277,6 +279,9 @@ impl Plugin for EditorPlugin {
             .init_resource::<inspector::ReattachState>()
             .init_resource::<inspector::ScriptPicker>()
             .init_resource::<inspector::InspectorFilter>()
+            .init_resource::<inspector::PendingFieldEdits>()
+            .init_resource::<inspector::ExtensionsView>()
+            .init_resource::<inspector::ExtensionStatus>()
             .init_resource::<palette::Palette>()
             .init_resource::<docks::EditorStats>()
             .init_resource::<docks::SceneFilter>()
@@ -366,6 +371,12 @@ impl Plugin for EditorPlugin {
                         inspector::sync_override_panel,
                         inspector::sync_import_report,
                         inspector::typing_guard.before(scene::keyboard_edit),
+                        (
+                            inspector::evaluate_extension_fields,
+                            inspector::sync_extension_fields,
+                        )
+                            .chain(),
+                        inspector::sync_extension_status,
                     ),
                 ),
             )

@@ -537,3 +537,65 @@ pub fn open(state: &mut ProjectSettingsState) {
     state.rev = state.rev.wrapping_add(1);
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eme::input::keyboard::{Key, KeyCode, KeyboardInput};
+    use eme::input::{ButtonState, InputPlugin};
+    use eme::input_focus::{InputDispatchPlugin, InputFocus, InputFocusPlugin};
+    use eme::picking::events::PointerRelease;
+    use eme::text::TextEdit;
+    use eme::ui_widgets::TextInputPlugin;
+    use eme::window::{Ime, PrimaryWindow, Window};
+
+    #[test]
+    fn a_focused_settings_field_receives_keyboard_input() {
+        let mut app = App::new();
+        app.add_message::<Ime>()
+            .add_message::<PointerRelease>()
+            .init_resource::<eme::ui::UiScale>()
+            .init_resource::<eme::time::Time<eme::time::Real>>()
+            .init_resource::<eme::picking::events::PointerState>()
+            .add_plugins((
+                InputPlugin,
+                InputFocusPlugin,
+                InputDispatchPlugin,
+                TextInputPlugin,
+            ));
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        let field = app
+            .world_mut()
+            .spawn((
+                SettingsField(FieldKind::Title),
+                EditableText::new("old"),
+                TextInput,
+            ))
+            .id();
+        app.insert_resource(InputFocus::from_entity(field));
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::KeyB,
+            logical_key: Key::Character("B".into()),
+            state: ButtonState::Pressed,
+            text: Some("B".into()),
+            repeat: false,
+            window,
+        });
+        app.update();
+
+        let text = app
+            .world()
+            .get::<EditableText>(field)
+            .expect("field keeps its editable text");
+        assert!(
+            text.pending_edits
+                .iter()
+                .any(|edit| matches!(edit, TextEdit::Insert(value) if value == "B")),
+            "expected an insert edit, got {:?}",
+            text.pending_edits
+        );
+    }
+}

@@ -239,6 +239,7 @@ impl Plugin for EditorPlugin {
         crate::packages::install(app);
         crate::shortcuts::install(app);
         crate::extensions::install(app);
+        crate::profile::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()
@@ -322,7 +323,7 @@ impl Plugin for EditorPlugin {
                     orbit::fly_move.before(orbit::apply_camera),
                     orbit::apply_camera,
                     orbit::reset_orbit,
-                    docks::rebuild_scene_rows,
+                    docks::rebuild_scene_rows.in_set(crate::profile::UiProfileSet),
                     (
                         files::sync_file_rows,
                         files::sync_file_filter,
@@ -375,13 +376,23 @@ impl Plugin for EditorPlugin {
                 (
                     menu::sync_top_menu,
                     menu::close_top_menu,
+                    (
+                        crate::profile::begin_scripts.before(eme_script::update_scripts),
+                        crate::profile::end_scripts.after(eme_script::update_scripts),
+                        crate::profile::begin_physics.before(eme_game_runtime::step_physics),
+                        crate::profile::end_physics.after(eme_game_runtime::step_physics),
+                        crate::profile::begin_nav.before(eme_game_runtime::NavSet),
+                        crate::profile::end_nav.after(eme_game_runtime::NavSet),
+                        crate::profile::begin_ui.before(crate::profile::UiProfileSet),
+                        crate::profile::end_ui.after(crate::profile::UiProfileSet),
+                    ),
                     (palette::keys, palette::sync).chain(),
                     menu::seed_rename,
                     menu::rename_keys,
                     menu::sync_menu,
                     menu::style_menu_rows,
                     menu::close_on_teardown,
-                    dock::sync,
+                    dock::sync.in_set(crate::profile::UiProfileSet),
                     persist::edit_shortcuts,
                     build::poll_build,
                     build_dialog::sync_modal,

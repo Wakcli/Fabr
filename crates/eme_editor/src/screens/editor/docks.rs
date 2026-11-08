@@ -1237,6 +1237,10 @@ pub struct EditorStats {
     pub avg_ms: f32,
     /// Slowest frame in the history window.
     pub max_ms: f32,
+    /// Last duration of each profiled phase, in milliseconds.
+    pub phases: [f32; 4],
+    /// Smoothed duration of each profiled phase, in milliseconds.
+    pub phase_avg: [f32; 4],
     /// Bumped after each sample.
     pub rev: u64,
 }
@@ -1257,6 +1261,19 @@ impl EditorStats {
         self.avg_ms = self.history.iter().sum::<f32>() / self.history.len() as f32;
         self.rev = self.rev.wrapping_add(1);
     }
+
+    /// Records one phase duration and folds it into the smoothed average.
+    pub fn sample_phase(&mut self, index: usize, ms: f32) {
+        if index >= self.phases.len() {
+            return;
+        }
+        self.phases[index] = ms;
+        self.phase_avg[index] = if self.phase_avg[index] == 0.0 {
+            ms
+        } else {
+            self.phase_avg[index] * 0.8 + ms * 0.2
+        };
+    }
 }
 
 /// Host for the Stats rows.
@@ -1267,6 +1284,7 @@ pub struct StatsRows;
 pub fn update_stats(
     time: Res<Time>,
     entities: &Entities,
+    profile: Res<crate::profile::FrameProfile>,
     mut stats: ResMut<EditorStats>,
     mut elapsed: Local<f32>,
 ) {
@@ -1276,6 +1294,9 @@ pub fn update_stats(
     }
     *elapsed = 0.0;
     let delta = time.delta_secs().max(0.000_001);
+    for (index, ms) in profile.ms.iter().enumerate() {
+        stats.sample_phase(index, *ms);
+    }
     stats.sample(delta * 1000.0, entities.len());
 }
 
@@ -1319,11 +1340,18 @@ pub fn sync_stats(
     }
     *shown = Some((host, stats.rev));
     despawn_children(&mut commands, host);
-    for (label, value) in [
-        ("FPS", format!("{}", stats.fps)),
-        ("Frame", format!("{:.2} ms", stats.frame_ms)),
-        ("Entities", format!("{}", stats.entities)),
-    ] {
+    let mut rows = vec![
+        ("FPS".to_string(), format!("{}", stats.fps)),
+        ("Frame".to_string(), format!("{:.2} ms", stats.frame_ms)),
+        ("Entities".to_string(), format!("{}", stats.entities)),
+    ];
+    for phase in crate::profile::Phase::ALL {
+        rows.push((
+            phase.label().to_string(),
+            format!("{:.2} ms", stats.phase_avg[phase.index()]),
+        ));
+    }
+    for (label, value) in rows {
         let label = text(label, FONT_SIZE, tokens::TEXT_DIM);
         let value = text(value, FONT_SIZE, tokens::TEXT);
         commands.spawn_scene(bsn! {
@@ -1544,6 +1572,18 @@ fn select_outline_row(
 mod tests {
     use super::*;
     use eme_game_scene::ObjectTransform;
+
+    #[test]
+    fn phase_samples_track_a_smoothed_average() {
+        let mut stats = EditorStats::default();
+        stats.sample_phase(0, 4.0);
+        assert_eq!(stats.phases[0], 4.0);
+        assert_eq!(stats.phase_avg[0], 4.0);
+        stats.sample_phase(0, 9.0);
+        assert!((stats.phase_avg[0] - 5.0).abs() < 1e-6);
+        stats.sample_phase(99, 1.0);
+        assert_eq!(stats.phases.len(), 4);
+    }
 
     #[test]
     fn stats_history_keeps_the_last_window_and_summarises_it() {

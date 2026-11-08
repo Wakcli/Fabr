@@ -7,10 +7,12 @@ use eme::color::LinearRgba;
 use eme::feathers::theme::UiTheme;
 use eme::gizmos::transform_gizmo::TransformGizmoState;
 use eme::gltf::GltfAssetLabel;
+use eme::input_focus::InputFocus;
 use eme::math::{ops, Rect};
 use eme::prelude::*;
 use eme::render::render_resource::Face;
 use eme::ui::widget::ViewportNode;
+use eme::ui_widgets::TextInput;
 use eme::window::{PrimaryWindow, Window};
 use eme_editor_core::Selection;
 use eme_game_overrides::ModelOverrides;
@@ -1077,10 +1079,18 @@ pub fn draw_camera_frusta(
 /// Arrow keys nudge every selected object on X/Z; Delete and Backspace remove them.
 pub fn keyboard_edit(
     keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
+    text_inputs: Query<(), With<TextInput>>,
     mut state: ResMut<SceneState>,
     mut undo: ResMut<Undo>,
     mut objects: Query<&mut Transform>,
 ) {
+    if focus
+        .get()
+        .is_some_and(|entity| text_inputs.contains(entity))
+    {
+        return;
+    }
     let ids: Vec<u64> = state.selected_ids().collect();
     if ids.is_empty() {
         return;
@@ -1851,5 +1861,32 @@ mod tests {
         tagged.sort();
         assert_eq!(tagged, imported);
         assert_eq!(imported.len(), 2);
+    }
+
+    #[test]
+    fn scene_shortcuts_ignore_keys_typed_into_a_text_field() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        let mut state = SceneState::default();
+        let id = state.spawn(ObjectKind::Cube);
+        state.select_only(id);
+        world.insert_resource(state);
+        world.insert_resource(Undo::default());
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::Backspace);
+        world.insert_resource(keys);
+        let field = world.spawn(TextInput).id();
+        world.insert_resource(InputFocus::from_entity(field));
+
+        world.run_system_once(keyboard_edit).unwrap();
+        assert_eq!(world.resource::<SceneState>().doc.len(), 1);
+
+        world.insert_resource(InputFocus::default());
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::Backspace);
+        world.insert_resource(keys);
+        world.run_system_once(keyboard_edit).unwrap();
+        assert_eq!(world.resource::<SceneState>().doc.len(), 0);
     }
 }

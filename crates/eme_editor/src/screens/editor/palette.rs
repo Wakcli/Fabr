@@ -75,6 +75,10 @@ pub const COMMANDS: &[Command] = &[
         action: TopAction::ResetLayout,
     },
     Command {
+        label: "Keyboard Shortcuts",
+        action: TopAction::Shortcuts,
+    },
+    Command {
         label: "About Fabr",
         action: TopAction::About,
     },
@@ -250,6 +254,29 @@ pub fn overlay() -> Part {
     })
 }
 
+impl Palette {
+    /// Opens or closes the palette and moves focus to its search field.
+    pub fn toggle(
+        &mut self,
+        focus: &mut InputFocus,
+        inputs: &mut Query<(Entity, &mut EditableText), With<PaletteInput>>,
+    ) {
+        let open = !self.open;
+        self.open = open;
+        self.query.clear();
+        self.selected = 0;
+        self.rev = self.rev.wrapping_add(1);
+        if let Ok((entity, mut input)) = inputs.single_mut() {
+            input.editor.set_text("");
+            if open {
+                focus.set(entity, FocusCause::Pressed);
+            } else if focus.get() == Some(entity) {
+                focus.clear();
+            }
+        }
+    }
+}
+
 /// Closes the palette when the scrim is clicked.
 fn dismiss(_: On<Activate>, mut palette: ResMut<Palette>, mut focus: ResMut<InputFocus>) {
     palette.open = false;
@@ -293,23 +320,6 @@ pub fn keys(
     mut inputs: Query<(Entity, &mut EditableText), With<PaletteInput>>,
     mut commands: Commands,
 ) {
-    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    if ctrl && keys.just_pressed(KeyCode::KeyP) {
-        let open = !palette.open;
-        palette.open = open;
-        palette.query.clear();
-        palette.selected = 0;
-        palette.rev = palette.rev.wrapping_add(1);
-        if let Ok((entity, mut input)) = inputs.single_mut() {
-            input.editor.set_text("");
-            if open {
-                focus.set(entity, FocusCause::Pressed);
-            } else if focus.get() == Some(entity) {
-                focus.clear();
-            }
-        }
-        return;
-    }
     if !palette.open {
         return;
     }
@@ -500,6 +510,8 @@ mod tests {
             .insert_resource(crate::mixer::MixerState::load())
             .insert_resource(crate::packages::PackagesState::load())
             .insert_resource(crate::LayoutRes(eme_editor_core::Layout::default_editor()))
+            .insert_resource(crate::shortcuts::ShortcutsState::load())
+            .init_resource::<crate::shortcuts::ShortcutConfig>()
             .insert_resource(ProjectSettingsState {
                 open: false,
                 settings: Default::default(),

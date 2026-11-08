@@ -607,6 +607,17 @@ impl SceneDoc {
         }
     }
 
+    /// Replaces an object's authored material color; false when the id is unknown.
+    pub fn set_color(&mut self, id: u64, color: Option<[f32; 4]>) -> bool {
+        match self.get_mut(id) {
+            Some(obj) => {
+                obj.color = color;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Replaces an object's runtime behaviour; false when the id is unknown.
     pub fn set_behaviour(&mut self, id: u64, behaviour: Behaviour) -> bool {
         match self.get_mut(id) {
@@ -1211,6 +1222,19 @@ mod tests {
             Some(&ScriptValue::Text("spin".into()))
         );
         assert!(text.contains("script: Some"));
+    }
+
+    #[test]
+    fn an_authored_material_color_round_trips() {
+        let mut doc = SceneDoc::new();
+        let id = doc.add(
+            ObjectKind::Cube,
+            "Red",
+            ObjectTransform::from_translation([0.0; 3]),
+        );
+        assert!(doc.set_color(id, Some([0.8, 0.1, 0.2, 1.0])));
+        let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
+        assert_eq!(back.get(id).unwrap().color, Some([0.8, 0.1, 0.2, 1.0]));
     }
 
     #[test]

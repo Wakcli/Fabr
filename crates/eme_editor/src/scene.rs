@@ -957,6 +957,9 @@ fn spawn_entity(
             let mut material = StandardMaterial::from(base);
             material.perceptual_roughness = 0.55;
             material.metallic = 0.0;
+            if color.is_some_and(|color| color[3] < 1.0) {
+                material.alpha_mode = AlphaMode::Blend;
+            }
             commands
                 .spawn((Mesh3d(mesh), MeshMaterial3d(materials.add(material)), trs))
                 .id()
@@ -1005,6 +1008,14 @@ pub fn tint_selection(
             .map_or(base, |[r, g, b, a]| Color::linear_rgba(r, g, b, a));
         if material.base_color != color {
             material.base_color = color;
+        }
+        let alpha_mode = if obj.color.is_some_and(|color| color[3] < 1.0) {
+            AlphaMode::Blend
+        } else {
+            AlphaMode::Opaque
+        };
+        if material.alpha_mode != alpha_mode {
+            material.alpha_mode = alpha_mode;
         }
         if material.emissive != LinearRgba::BLACK {
             material.emissive = LinearRgba::BLACK;

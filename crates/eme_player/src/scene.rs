@@ -293,6 +293,11 @@ pub fn spawn_scene(
                 let mut material = StandardMaterial::from(base);
                 material.perceptual_roughness = ROUGHNESS;
                 material.metallic = 0.0;
+                material.alpha_mode = if obj.color.is_some_and(|color| color[3] < 1.0) {
+                    AlphaMode::Blend
+                } else {
+                    AlphaMode::Opaque
+                };
                 let mut spawned = commands.spawn((
                     Mesh3d(mesh),
                     MeshMaterial3d(materials.add(material)),

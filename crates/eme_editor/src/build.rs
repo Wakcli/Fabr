@@ -609,8 +609,20 @@ fn stage_packages(root: &Path, out: &Path, tx: &Sender<Msg>) -> Result<(), Strin
         say(tx, Level::Step, "no packages to stage");
         return Ok(());
     }
-    for entry in &set.packages {
-        let manifest = eme_editor_project::PackageSet::manifest(root, entry)?;
+    let lock = set.resolve(root)?;
+    lock.save(&root.join(eme_editor_project::LOCK_FILE))?;
+    say(
+        tx,
+        Level::Step,
+        format!("resolved {} packages", lock.packages.len()),
+    );
+    for entry in &lock.packages {
+        let manifest = eme_editor_project::PackageSet::manifest(
+            root,
+            &eme_editor_project::PackageEntry {
+                path: entry.path.clone(),
+            },
+        )?;
         let src = root.join(&entry.path).join(&manifest.assets);
         if src.is_dir() {
             copy_dir(&src, &out.join(ASSET_DIR))?;
@@ -620,7 +632,7 @@ fn stage_packages(root: &Path, out: &Path, tx: &Sender<Msg>) -> Result<(), Strin
             Level::Step,
             format!(
                 "staged package {} {} from {}",
-                manifest.name, manifest.version, entry.path
+                manifest.name, entry.version, entry.path
             ),
         );
     }
@@ -881,6 +893,34 @@ mod tests {
             std::fs::read(out.join("assets/textures/sky.png")).unwrap(),
             b"png"
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn transitive_dependencies_are_staged_and_locked() {
+        let root = scratch("transitive");
+        let base = root.join("packages/base");
+        write(&base.join("fabr.package.ron"), b"(name: \"base\", version: \"1.0.0\", assets: \"assets\")");
+        write(&base.join("assets/base.txt"), b"base");
+        let art = root.join("packages/art");
+        write(
+            &art.join("fabr.package.ron"),
+            b"(name: \"art\", version: \"1.2.0\", assets: \"assets\", dependencies: [(name: \"base\", version: \"^1.0.0\")])",
+        );
+        write(&art.join("assets/art.txt"), b"art");
+        std::fs::write(
+            root.join(eme_editor_project::PACKAGES_FILE),
+            "(packages: [(path: \"packages/art\")])",
+        )
+        .unwrap();
+        let out = root.join("build/linux");
+        std::fs::create_dir_all(&out).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        stage_packages(&root, &out, &tx).unwrap();
+        assert_eq!(std::fs::read(out.join("assets/art.txt")).unwrap(), b"art");
+        assert_eq!(std::fs::read(out.join("assets/base.txt")).unwrap(), b"base");
+        let lock = eme_editor_project::Lockfile::load(&root.join(eme_editor_project::LOCK_FILE)).unwrap();
+        assert_eq!(lock.names(), ["art", "base"]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

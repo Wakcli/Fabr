@@ -93,12 +93,28 @@ impl PackagesState {
         removed
     }
 
-    /// Writes `fabr.packages.ron`.
+    /// Resolves dependencies, then writes `fabr.packages.ron` and `fabr.lock`.
     pub fn save(&mut self) -> bool {
         let path = self.file();
-        match self.set.save(&path) {
+        let lock = match self.set.resolve(&self.root) {
+            Ok(lock) => lock,
+            Err(err) => {
+                self.error = err;
+                self.rev = self.rev.wrapping_add(1);
+                return false;
+            }
+        };
+        let result = self
+            .set
+            .save(&path)
+            .and_then(|()| lock.save(&self.root.join(eme_editor_project::LOCK_FILE)));
+        match result {
             Ok(()) => {
-                self.status = format!("saved {}", path.display());
+                self.status = format!(
+                    "saved {} packages to {}",
+                    lock.packages.len(),
+                    path.display()
+                );
                 self.error.clear();
                 self.rev = self.rev.wrapping_add(1);
                 true

@@ -538,6 +538,58 @@ fn stop_instance(lua: &Lua, instance: &mut Instance, log: &mut ScriptLog) {
     }
 }
 
+struct SceneContext<'a> {
+    names: &'a HashMap<String, Entity>,
+    transforms: &'a HashMap<Entity, (Vec3, Quat)>,
+}
+
+fn build_instance(
+    lua: &Lua,
+    entity: Entity,
+    scripted: &ScriptedObject,
+    full: &Path,
+    src: &str,
+    name: &str,
+    scene: &SceneContext,
+) -> Result<Instance, String> {
+    let path = scripted.script.path.as_str();
+    let preview =
+        ScriptRuntime::eval_script(lua, full, src, None).map_err(|err| err.to_string())?;
+    let mut properties = properties_from(&preview).map_err(|err| err.to_string())?;
+    for (key, value) in &scripted.script.properties {
+        properties.insert(key.clone(), value.clone());
+    }
+    let (api, self_table) = ScriptRuntime::build_api(
+        lua,
+        entity,
+        name,
+        properties,
+        scene.names,
+        scene.transforms,
+    )
+    .map_err(|err| err.to_string())?;
+    let fabr = self_table
+        .get::<Table>("fabr")
+        .map_err(|err| err.to_string())?;
+    let module = ScriptRuntime::eval_script(lua, full, src, Some(fabr))
+        .map_err(|err| err.to_string())?;
+    let module_key = lua
+        .create_registry_value(module)
+        .map_err(|err| err.to_string())?;
+    let self_key = lua
+        .create_registry_value(self_table)
+        .map_err(|err| err.to_string())?;
+    Ok(Instance {
+        object_id: scripted.object_id,
+        path: path.to_owned(),
+        module: module_key,
+        self_table: self_key,
+        api,
+        started: false,
+        failed: false,
+    })
+}
+
 /// Starts and stops instances to follow the active flag and attached components.
 pub fn sync_scripts(
     active: Res<ScriptsActive>,
@@ -573,122 +625,66 @@ pub fn sync_scripts(
     }
 
     let reloads: Vec<String> = std::mem::take(&mut reload.paths);
-    for path in &reloads {
-        let targets: Vec<Entity> = instances
-            .iter()
-            .filter(|(_, instance)| &instance.path == path)
-            .map(|(entity, _)| *entity)
-            .collect();
-        for entity in targets {
-            if let Some(mut instance) = instances.remove(&entity) {
-                stop_instance(lua, &mut instance, &mut log);
-                log.push(format!("script {}: reloaded", path));
-            }
-        }
+
+    let mut scene_transforms = HashMap::new();
+    for (entity, transform) in &transforms {
+        scene_transforms.insert(entity, (transform.translation, transform.rotation));
     }
+    let mut name_map = HashMap::new();
+    let mut entity_names = HashMap::new();
+    for (entity, name) in &names {
+        name_map.insert(name.as_str().to_owned(), entity);
+        entity_names.insert(entity, name.as_str().to_owned());
+    }
+    let scene = SceneContext {
+        names: &name_map,
+        transforms: &scene_transforms,
+    };
 
     for (entity, scripted) in &scripted {
         let path = &scripted.script.path;
-        let needs_load = instances
-            .get(&entity)
+        let existing = instances.get(&entity);
+        let same_path = existing.is_some_and(|instance| &instance.path == path);
+        let needs_load = existing
             .is_none_or(|instance| &instance.path != path || reloads.contains(path));
         if !needs_load {
             continue;
         }
-        if let Some(mut instance) = instances.remove(&entity) {
-            stop_instance(lua, &mut instance, &mut log);
-        }
+
         let full = root.0.join(path);
         let src = match std::fs::read_to_string(&full) {
             Ok(src) => src,
             Err(err) => {
                 log.push(format!("script {}: {}: {err}", path, full.display()));
+                if same_path && reloads.contains(path) {
+                    log.push(format!("script {path}: reload failed; keeping the previous version"));
+                } else if let Some(mut old) = instances.remove(&entity) {
+                    stop_instance(lua, &mut old, &mut log);
+                }
                 continue;
             }
         };
-        let preview = match ScriptRuntime::eval_script(lua, &full, &src, None) {
-            Ok(module) => module,
+
+        let name = entity_names.get(&entity).map_or("", String::as_str);
+        match build_instance(lua, entity, scripted, &full, &src, name, &scene) {
+            Ok(instance) => {
+                if let Some(mut old) = instances.remove(&entity) {
+                    stop_instance(lua, &mut old, &mut log);
+                    if same_path {
+                        log.push(format!("script {path}: reloaded"));
+                    }
+                }
+                instances.insert(entity, instance);
+            }
             Err(err) => {
                 log.push(format!("script {path}: {err}"));
-                continue;
+                if same_path && reloads.contains(path) {
+                    log.push(format!("script {path}: reload failed; keeping the previous version"));
+                } else if let Some(mut old) = instances.remove(&entity) {
+                    stop_instance(lua, &mut old, &mut log);
+                }
             }
-        };
-        let defaults = match properties_from(&preview) {
-            Ok(defaults) => defaults,
-            Err(err) => {
-                log.push(format!("script {path}: {err}"));
-                continue;
-            }
-        };
-        let mut properties = defaults;
-        for (key, value) in &scripted.script.properties {
-            properties.insert(key.clone(), value.clone());
         }
-        let name = names
-            .get(entity)
-            .map_or_else(|_| String::new(), |(_, name)| name.as_str().to_owned());
-        let mut scene_transforms = HashMap::new();
-        for (entity, transform) in &transforms {
-            scene_transforms.insert(entity, (transform.translation, transform.rotation));
-        }
-        let mut name_map = HashMap::new();
-        for (entity, name) in &names {
-            name_map.insert(name.as_str().to_owned(), entity);
-        }
-        let (api, self_table) = match ScriptRuntime::build_api(
-            lua,
-            entity,
-            &name,
-            properties,
-            &name_map,
-            &scene_transforms,
-        ) {
-            Ok(built) => built,
-            Err(err) => {
-                log.push(format!("script {}: {err}", path));
-                continue;
-            }
-        };
-        let fabr = match self_table.get::<Table>("fabr") {
-            Ok(fabr) => fabr,
-            Err(err) => {
-                log.push(format!("script {path}: {err}"));
-                continue;
-            }
-        };
-        let module = match ScriptRuntime::eval_script(lua, &full, &src, Some(fabr)) {
-            Ok(module) => module,
-            Err(err) => {
-                log.push(format!("script {path}: {err}"));
-                continue;
-            }
-        };
-        let module_key = match lua.create_registry_value(module) {
-            Ok(key) => key,
-            Err(err) => {
-                log.push(format!("script {path}: {err}"));
-                continue;
-            }
-        };
-        let self_key = match lua.create_registry_value(self_table) {
-            Ok(key) => key,
-            Err(err) => {
-                log.push(format!("script {path}: {err}"));
-                continue;
-            }
-        };
-        instances.insert(
-            entity,
-            Instance {
-                object_id: scripted.object_id,
-                path: path.clone(),
-                module: module_key,
-                self_table: self_key,
-                api,
-                started: false,
-                failed: false,
-            },
-        );
     }
 }
 
@@ -959,6 +955,69 @@ mod tests {
         world.resource_mut::<ScriptReload>().request("spin.lua");
         world.run_system_once(sync_scripts).unwrap();
         world.resource_mut::<Time>().advance_by(core::time::Duration::from_secs_f32(0.5));
+        world.run_system_once(update_scripts).unwrap();
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 2.0);
+    }
+
+    #[test]
+    fn a_broken_reload_keeps_the_previous_version_running() {
+        let dir = scratch("broken-reload");
+        std::fs::write(
+            dir.join("spin.lua"),
+            "return { on_update = function(self, dt) self:translate(1.0 * dt, 0, 0) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "spin.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(0.5));
+        world.run_system_once(update_scripts).unwrap();
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 0.5);
+
+        std::fs::write(dir.join("spin.lua"), "return { on_update = function(self, dt) ").unwrap();
+        world.resource_mut::<ScriptReload>().request("spin.lua");
+        world.run_system_once(sync_scripts).unwrap();
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("keeping the previous version"), "{log}");
+
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(0.5));
+        world.run_system_once(update_scripts).unwrap();
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 1.0);
+    }
+
+    #[test]
+    fn hot_reload_preserves_property_overrides() {
+        let dir = scratch("reload-props");
+        std::fs::write(
+            dir.join("move.lua"),
+            "return { properties = { speed = 1.0 }, on_update = function(self, dt) self:translate(self.properties.speed * dt, 0, 0) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let mut props = BTreeMap::new();
+        props.insert("speed".to_string(), ScriptValue::Number(2.0));
+        let entity = scripted(&mut world, "move.lua", props);
+        world.run_system_once(sync_scripts).unwrap();
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(0.5));
+        world.run_system_once(update_scripts).unwrap();
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 1.0);
+
+        std::fs::write(
+            dir.join("move.lua"),
+            "return { properties = { speed = 9.0 }, on_update = function(self, dt) self:translate(self.properties.speed * dt, 0, 0) end }",
+        )
+        .unwrap();
+        world.resource_mut::<ScriptReload>().request("move.lua");
+        world.run_system_once(sync_scripts).unwrap();
+        world
+            .resource_mut::<Time>()
+            .advance_by(core::time::Duration::from_secs_f32(0.5));
         world.run_system_once(update_scripts).unwrap();
         assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 2.0);
     }

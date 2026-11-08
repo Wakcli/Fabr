@@ -14,8 +14,8 @@ use eme::text::{
 use eme::ui_widgets::{Activate, Button, ScrollArea, TextInput};
 use eme_game_overrides::{ModelNodeCatalog, ModelOverrideStatus, OrphanReason};
 use eme_game_scene::{
-    Behaviour, BehaviourKind, NodeKey, ObjectTransform, OverrideOp, ScriptRef, ScriptValue,
-    TransformDelta,
+    Behaviour, BehaviourKind, NodeKey, ObjectTransform, OverrideOp, PhysicsBodySpec, ScriptRef,
+    ScriptValue, TransformDelta,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -122,6 +122,7 @@ pub enum Section {
     Behaviour,
     Visibility,
     Material,
+    Physics,
     Script,
     Node,
 }
@@ -134,6 +135,7 @@ impl Section {
             Section::Behaviour => "Behaviour",
             Section::Visibility => "Visibility",
             Section::Material => "Material",
+            Section::Physics => "Physics",
             Section::Script => "Script",
             Section::Node => "Model Node",
         }
@@ -147,6 +149,7 @@ pub struct InspectorSections {
     pub behaviour: bool,
     pub visibility: bool,
     pub material: bool,
+    pub physics: bool,
     pub script: bool,
     pub node: bool,
 }
@@ -158,6 +161,7 @@ impl Default for InspectorSections {
             behaviour: true,
             visibility: true,
             material: true,
+            physics: true,
             script: true,
             node: true,
         }
@@ -172,6 +176,7 @@ impl InspectorSections {
             Section::Behaviour => self.behaviour,
             Section::Visibility => self.visibility,
             Section::Material => self.material,
+            Section::Physics => self.physics,
             Section::Script => self.script,
             Section::Node => self.node,
         }
@@ -184,6 +189,7 @@ impl InspectorSections {
             Section::Behaviour => self.behaviour = open,
             Section::Visibility => self.visibility = open,
             Section::Material => self.material = open,
+            Section::Physics => self.physics = open,
             Section::Script => self.script = open,
             Section::Node => self.node = open,
         }
@@ -228,6 +234,8 @@ pub enum RowKind {
     Visible,
     /// Material color row.
     Color,
+    /// Physics body toggle row.
+    Physics,
     /// Script selector row.
     Script,
     /// Model node position.
@@ -246,6 +254,7 @@ impl RowKind {
             RowKind::Play => Section::Behaviour,
             RowKind::Visible => Section::Visibility,
             RowKind::Color => Section::Material,
+            RowKind::Physics => Section::Physics,
             RowKind::Script => Section::Script,
             RowKind::NodePosition | RowKind::NodeRotation | RowKind::NodeScale => Section::Node,
         }
@@ -260,6 +269,7 @@ impl RowKind {
             RowKind::Play => "Play",
             RowKind::Visible => "Visible",
             RowKind::Color => "Color",
+            RowKind::Physics => "Body",
             RowKind::Script => "Script",
         }
     }
@@ -306,6 +316,10 @@ pub struct ColorEdit {
 /// Preview square that mirrors the authored material color.
 #[derive(Component, Clone, Copy, Default)]
 pub struct MaterialSwatch;
+
+/// Text showing whether the selected object has a physics body.
+#[derive(Component, Clone, Default)]
+pub struct PhysicsValue;
 
 /// Text typed into the inspector filter.
 #[derive(Resource, Clone, Default)]
@@ -508,6 +522,8 @@ pub fn body() -> Part {
             {section(Section::Visibility, "Visibility", vec![visibility_row()])}
             --
             {section(Section::Material, "Material", vec![color_row()])}
+            --
+            {section(Section::Physics, "Physics", vec![physics_row()])}
             --
             {script_section()}
             --
@@ -1741,6 +1757,64 @@ fn commit_color(state: &mut SceneState, undo: &mut Undo, seat: ColorValue, raw: 
     true
 }
 
+fn physics_row() -> Part {
+    Box::new(bsn! {
+        Node {
+            height: px(PROPERTY_ROW_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(px(10)),
+            column_gap: px(6),
+        }
+        Button
+        FilterRow(RowKind::Physics)
+        Children [
+            {label_cell("Body")}
+            --
+            {spacer()}
+            --
+            {physics_value()}
+        ]
+        on(toggle_physics)
+    })
+}
+
+fn physics_value() -> Part {
+    Box::new(bsn! {
+        Text("off")
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::ACCENT)
+        PhysicsValue
+    })
+}
+
+/// Adds or removes a dynamic body on the primary object, with one checkpoint.
+fn toggle_physics(
+    _: On<Activate>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+) {
+    let Some(id) = state.primary() else {
+        return;
+    };
+    let Some(obj) = state.doc.get(id) else {
+        return;
+    };
+    let next = if obj.physics.is_some() {
+        None
+    } else {
+        Some(PhysicsBodySpec::default())
+    };
+    undo.checkpoint(&state, "Physics Body");
+    state.doc.set_physics(id, next);
+    state.touch();
+}
+
 fn behaviour_row() -> Part {
     Box::new(bsn! {
         Node {
@@ -2389,6 +2463,7 @@ pub fn sync_inspector(
         Without<AxisValue>,
     >,
     mut titles: Query<&mut Text, (With<ObjectTitle>, Without<BehaviourValue>)>,
+    mut physics_values: Query<&mut Text, With<PhysicsValue>>,
     mut behaviours: Query<&mut Text, (With<BehaviourValue>, Without<ObjectTitle>)>,
     mut slots: Query<
         (&mut Node, Option<&SectionBody>, Option<&SectionCaret>),
@@ -2488,6 +2563,20 @@ pub fn sync_inspector(
     for mut text in &mut behaviours {
         if text.0 != behaviour {
             text.0 = behaviour.clone();
+        }
+    }
+
+    let physics = selected.map_or_else(
+        || "off".to_string(),
+        |obj| match &obj.physics {
+            Some(spec) if spec.dynamic => "dynamic".to_string(),
+            Some(_) => "static".to_string(),
+            None => "off".to_string(),
+        },
+    );
+    for mut text in &mut physics_values {
+        if text.0 != physics {
+            text.0 = physics.clone();
         }
     }
 }

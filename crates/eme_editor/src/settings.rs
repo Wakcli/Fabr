@@ -33,6 +33,10 @@ pub enum FieldKind {
     Msaa,
     /// Master audio volume.
     MasterVolume,
+    /// Downward gravity.
+    Gravity,
+    /// Vertical restitution.
+    Bounce,
     /// One input action, keys comma-separated.
     Action(String),
 }
@@ -78,11 +82,21 @@ impl ProjectSettingsState {
 }
 
 /// Installs the settings resource, input actions and UI systems.
+fn runtime_physics(settings: &eme_editor_project::PhysicsSettings) -> eme_game_runtime::PhysicsSettings {
+    eme_game_runtime::PhysicsSettings {
+        gravity: settings.gravity,
+        bounce: settings.bounce,
+        enabled: settings.enabled,
+    }
+}
+
 pub fn install(app: &mut App) {
     let state = ProjectSettingsState::load();
     let actions = eme_script::InputActions::from_names(&state.settings.input.actions)
         .unwrap_or_default();
+    let physics = runtime_physics(&state.settings.physics);
     app.insert_resource(actions)
+        .insert_resource(physics)
         .insert_resource(state)
         .add_systems(Update, sync);
 }
@@ -111,6 +125,8 @@ pub enum ToggleKind {
     Vsync,
     /// Sun shadows.
     Shadows,
+    /// Physics simulation.
+    Physics,
 }
 
 /// A boolean settings toggle.
@@ -268,6 +284,29 @@ pub fn sync(
         "Master volume",
         &state.settings.audio.master_volume.to_string(),
         FieldKind::MasterVolume,
+    );
+
+    section(host, &mut commands, "Physics");
+    toggle_row(
+        host,
+        &mut commands,
+        "Enabled",
+        state.settings.physics.enabled,
+        ToggleKind::Physics,
+    );
+    field_row(
+        host,
+        &mut commands,
+        "Gravity",
+        &state.settings.physics.gravity.to_string(),
+        FieldKind::Gravity,
+    );
+    field_row(
+        host,
+        &mut commands,
+        "Bounce",
+        &state.settings.physics.bounce.to_string(),
+        FieldKind::Bounce,
     );
 
     section(host, &mut commands, "Input Actions");
@@ -509,6 +548,18 @@ fn commit(state: &mut ProjectSettingsState, kind: &FieldKind, raw: &str) {
             }
             _ => state.error = "master volume must be between 0 and 2".into(),
         },
+        FieldKind::Gravity => match raw.trim().parse::<f32>() {
+            Ok(value) if (0.0..=100.0).contains(&value) => {
+                state.settings.physics.gravity = value;
+            }
+            _ => state.error = "gravity must be between 0 and 100".into(),
+        },
+        FieldKind::Bounce => match raw.trim().parse::<f32>() {
+            Ok(value) if (0.0..=1.0).contains(&value) => {
+                state.settings.physics.bounce = value;
+            }
+            _ => state.error = "bounce must be between 0 and 1".into(),
+        },
         FieldKind::Action(action) => {
             let keys: Vec<String> = raw
                 .split(',')
@@ -532,6 +583,7 @@ fn toggle_setting(
     match toggle.0 {
         ToggleKind::Vsync => state.settings.player.vsync = !state.settings.player.vsync,
         ToggleKind::Shadows => state.settings.quality.shadows = !state.settings.quality.shadows,
+        ToggleKind::Physics => state.settings.physics.enabled = !state.settings.physics.enabled,
     }
     state.rev = state.rev.wrapping_add(1);
 }
@@ -540,6 +592,7 @@ fn save_settings(
     _: On<Activate>,
     mut state: ResMut<ProjectSettingsState>,
     mut actions: ResMut<eme_script::InputActions>,
+    mut physics: ResMut<eme_game_runtime::PhysicsSettings>,
     mut log: ResMut<ConsoleLog>,
 ) {
     let path = state.path();
@@ -548,6 +601,7 @@ fn save_settings(
             match eme_script::InputActions::from_names(&state.settings.input.actions) {
                 Ok(next) => {
                     *actions = next;
+                    *physics = runtime_physics(&state.settings.physics);
                     state.status = format!("saved {}", path.display());
                     state.error.clear();
                 }
@@ -738,6 +792,16 @@ mod tests {
         commit(&mut state, &FieldKind::MasterVolume, "9");
         assert_eq!(state.settings.audio.master_volume, 0.25);
         assert!(!state.error.is_empty());
+
+        commit(&mut state, &FieldKind::Gravity, "20");
+        assert_eq!(state.settings.physics.gravity, 20.0);
+        commit(&mut state, &FieldKind::Gravity, "101");
+        assert_eq!(state.settings.physics.gravity, 20.0);
+        assert!(!state.error.is_empty());
+        commit(&mut state, &FieldKind::Bounce, "0.4");
+        assert_eq!(state.settings.physics.bounce, 0.4);
+        commit(&mut state, &FieldKind::Bounce, "2");
+        assert_eq!(state.settings.physics.bounce, 0.4);
 
         commit(&mut state, &FieldKind::Action("jump".into()), "Space, W");
         assert_eq!(

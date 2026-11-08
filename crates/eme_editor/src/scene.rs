@@ -17,7 +17,7 @@ use eme::window::{PrimaryWindow, Window};
 use eme_editor_core::Selection;
 use eme_game_overrides::ModelOverrides;
 use eme_script::ScriptedObject;
-use eme_game_runtime::{GuidIndex, ModelImport, NodeKey, SceneBehaviour};
+use eme_game_runtime::{GuidIndex, ModelImport, NodeKey, PhysicsBody, SceneBehaviour};
 use eme_game_scene::{Behaviour, ObjectKind, ObjectTransform, SceneDoc, SceneObject};
 
 use crate::console::ConsoleLog;
@@ -555,6 +555,14 @@ pub fn reconcile_scene(
                         entity.remove::<ScriptedObject>();
                     }
                 }
+                match obj.physics.as_ref() {
+                    Some(spec) => {
+                        entity.insert(PhysicsBody::from_spec(spec));
+                    }
+                    None => {
+                        entity.remove::<PhysicsBody>();
+                    }
+                }
                 // the behaviour system owns the transform during an embedded
                 // session, so the document must not overwrite it here
                 if !playing {
@@ -581,6 +589,7 @@ pub fn reconcile_scene(
                     obj.asset.as_ref(),
                     &obj.overrides,
                     obj.script.as_ref(),
+                    obj.physics.as_ref(),
                 );
                 state.entities.insert(id, entity);
             }
@@ -602,6 +611,7 @@ pub fn reconcile_scene(
                     obj.asset.as_ref(),
                     &obj.overrides,
                     obj.script.as_ref(),
+                    obj.physics.as_ref(),
                 );
                 state.entities.insert(id, entity);
             }
@@ -849,6 +859,7 @@ fn spawn_entity(
     asset: Option<&eme_game_scene::AssetRef>,
     overrides: &[eme_game_scene::NodeOverride],
     script: Option<&eme_game_scene::ScriptRef>,
+    physics: Option<&eme_game_scene::PhysicsBodySpec>,
 ) -> Entity {
     let trs = to_transform(transform);
     let behaviour = SceneBehaviour { spec, base: trs };
@@ -971,6 +982,11 @@ fn spawn_entity(
             object_id: id,
             script: script.clone(),
         });
+    }
+    if let Some(physics) = physics {
+        commands
+            .entity(entity)
+            .insert(PhysicsBody::from_spec(physics));
     }
     commands
         .entity(entity)

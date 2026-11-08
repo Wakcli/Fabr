@@ -287,6 +287,9 @@ impl Plugin for EditorPlugin {
                         crate::play::sync_button,
                         crate::play::autoplay,
                         eme_game_runtime::run_behaviours.run_if(crate::play::behaviours_active),
+                        eme_game_runtime::step_physics
+                            .after(eme_script::update_scripts)
+                            .run_if(crate::play::behaviours_active),
                         (crate::play::sync_flyout, crate::play::place_flyout),
                     ),
                     orbit::toggle_mode,

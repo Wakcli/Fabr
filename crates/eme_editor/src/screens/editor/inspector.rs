@@ -121,6 +121,7 @@ pub enum Section {
     Transform,
     Behaviour,
     Visibility,
+    Material,
     Script,
     Node,
 }
@@ -132,6 +133,7 @@ impl Section {
             Section::Transform => "Transform",
             Section::Behaviour => "Behaviour",
             Section::Visibility => "Visibility",
+            Section::Material => "Material",
             Section::Script => "Script",
             Section::Node => "Model Node",
         }
@@ -144,6 +146,7 @@ pub struct InspectorSections {
     pub transform: bool,
     pub behaviour: bool,
     pub visibility: bool,
+    pub material: bool,
     pub script: bool,
     pub node: bool,
 }
@@ -154,6 +157,7 @@ impl Default for InspectorSections {
             transform: true,
             behaviour: true,
             visibility: true,
+            material: true,
             script: true,
             node: true,
         }
@@ -167,6 +171,7 @@ impl InspectorSections {
             Section::Transform => self.transform,
             Section::Behaviour => self.behaviour,
             Section::Visibility => self.visibility,
+            Section::Material => self.material,
             Section::Script => self.script,
             Section::Node => self.node,
         }
@@ -178,6 +183,7 @@ impl InspectorSections {
             Section::Transform => self.transform = open,
             Section::Behaviour => self.behaviour = open,
             Section::Visibility => self.visibility = open,
+            Section::Material => self.material = open,
             Section::Script => self.script = open,
             Section::Node => self.node = open,
         }
@@ -220,6 +226,8 @@ pub enum RowKind {
     Play,
     /// Visibility row.
     Visible,
+    /// Material color row.
+    Color,
     /// Script selector row.
     Script,
     /// Model node position.
@@ -237,6 +245,7 @@ impl RowKind {
             RowKind::Position | RowKind::Rotation | RowKind::Scale => Section::Transform,
             RowKind::Play => Section::Behaviour,
             RowKind::Visible => Section::Visibility,
+            RowKind::Color => Section::Material,
             RowKind::Script => Section::Script,
             RowKind::NodePosition | RowKind::NodeRotation | RowKind::NodeScale => Section::Node,
         }
@@ -250,6 +259,7 @@ impl RowKind {
             RowKind::Scale | RowKind::NodeScale => "Scale",
             RowKind::Play => "Play",
             RowKind::Visible => "Visible",
+            RowKind::Color => "Color",
             RowKind::Script => "Script",
         }
     }
@@ -282,6 +292,20 @@ pub struct FilterRow(pub RowKind);
 /// Script-declared property row the filter can match.
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct FilterScriptRow(pub String);
+
+/// One channel of the selected object's material color.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ColorValue(pub u8);
+
+/// Remembers which object a focused color field was opened on.
+#[derive(Component, Clone, Copy)]
+pub struct ColorEdit {
+    target: u64,
+}
+
+/// Preview square that mirrors the authored material color.
+#[derive(Component, Clone, Copy, Default)]
+pub struct MaterialSwatch;
 
 /// Text typed into the inspector filter.
 #[derive(Resource, Clone, Default)]
@@ -482,6 +506,8 @@ pub fn body() -> Part {
             {section(Section::Behaviour, "Behaviour", vec![behaviour_row()])}
             --
             {section(Section::Visibility, "Visibility", vec![visibility_row()])}
+            --
+            {section(Section::Material, "Material", vec![color_row()])}
             --
             {script_section()}
             --
@@ -1482,6 +1508,239 @@ fn axis_field(
     })
 }
 
+fn color_row() -> Part {
+    let top = vec![
+        color_field("R", tokens::AXIS_X, tokens::AXIS_X_TEXT, "1", ColorValue(0)),
+        color_field("G", tokens::AXIS_Y, tokens::AXIS_Y_TEXT, "1", ColorValue(1)),
+    ];
+    let bottom = vec![
+        color_field("B", tokens::AXIS_Z, tokens::AXIS_Z_TEXT, "1", ColorValue(2)),
+        color_field("A", tokens::BORDER, tokens::TEXT_DIM, "1", ColorValue(3)),
+    ];
+    Box::new(bsn! {
+        Node {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            padding: UiRect::horizontal(px(10)),
+            row_gap: px(4),
+        }
+        FilterRow(RowKind::Color)
+        Children [
+            Node {
+                height: px(20),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+            }
+            Children [ {label_cell("Color")} -- {spacer()} -- {material_swatch()} ]
+            --
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(4),
+            }
+            Children [ {top} ]
+            --
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(4),
+            }
+            Children [ {bottom} ]
+        ]
+    })
+}
+
+fn material_swatch() -> Part {
+    Box::new(bsn! {
+        Node {
+            width: px(18),
+            height: px(18),
+            border: px(1),
+            border_radius: px(3),
+        }
+        MaterialSwatch
+        BackgroundColor(Color::WHITE)
+        ThemeBorderColor(tokens::BORDER)
+    })
+}
+
+fn color_field(
+    letter: &str,
+    line: ThemeToken,
+    letter_tint: ThemeToken,
+    value: &str,
+    seat: ColorValue,
+) -> Part {
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            height: px(FIELD_H),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Stretch,
+            border: UiRect { bottom: px(2) },
+            border_radius: px(3),
+            overflow: Overflow::clip(),
+        }
+        ThemeBackgroundColor(tokens::FIELD)
+        ThemeBorderColor(line)
+        Children [
+            Node {
+                width: px(24),
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+            }
+            ThemeBackgroundColor(tokens::LABEL_STRIP)
+            Children [ {text(letter, FONT_SIZE, letter_tint)} ]
+            --
+            Node {
+                flex_grow: 1.0,
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                padding: UiRect { left: px(6) },
+            }
+            Children [ {color_text(value.into(), seat)} ]
+        ]
+    })
+}
+
+fn color_text(value: String, seat: ColorValue) -> Part {
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            overflow: Overflow::clip(),
+        }
+        EditableText::new(value)
+        TextInput
+        TabIndex(0)
+        TextLayout { linebreak: LineBreak::NoWrap }
+        TextFont {
+            font: FontSourceTemplate::Handle(fonts::REGULAR),
+            font_size: FontSize::Px(FONT_SIZE),
+            weight: FontWeight::NORMAL,
+        }
+        ThemeTextColor(tokens::TEXT)
+        seat
+        on(focus_color_field)
+        on(blur_color_field)
+        on(color_field_key)
+    })
+}
+
+fn focus_color_field(
+    press: On<PointerPress>,
+    fields: Query<&ColorValue>,
+    state: Res<SceneState>,
+    mut values: Query<&mut EditableText>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    if press.button != PointerButton::Primary || !fields.contains(press.entity) {
+        return;
+    }
+    let Some(target) = state.primary() else {
+        return;
+    };
+    commands.entity(press.entity).insert(ColorEdit { target });
+    if let Ok(mut value) = values.get_mut(press.entity) {
+        value.queue_edit(TextEdit::SelectAll);
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
+
+fn color_field_key(
+    key: On<FocusedInput<KeyboardInput>>,
+    fields: Query<(&ColorValue, &EditableText)>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    let input = &key.input;
+    if !input.state.is_pressed() || input.repeat {
+        return;
+    }
+    let entity = key.focused_entity;
+    let Ok((seat, value)) = fields.get(entity) else {
+        return;
+    };
+    if input.key_code == KeyCode::Escape {
+        commands.entity(entity).remove::<ColorEdit>();
+        return;
+    }
+    if input.key_code != KeyCode::Enter {
+        return;
+    }
+    commit_color(
+        &mut state,
+        &mut undo,
+        *seat,
+        value.value().to_string().as_str(),
+    );
+    commands.entity(entity).remove::<ColorEdit>();
+    focus.clear();
+}
+
+fn blur_color_field(
+    lost: On<FocusLost>,
+    edits: Query<&ColorEdit>,
+    fields: Query<(&ColorValue, &EditableText)>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut commands: Commands,
+) {
+    let entity = lost.event_target();
+    let Ok(edit) = edits.get(entity) else {
+        return;
+    };
+    commands.entity(entity).remove::<ColorEdit>();
+    if state.primary() != Some(edit.target) {
+        return;
+    }
+    let Ok((seat, value)) = fields.get(entity) else {
+        return;
+    };
+    commit_color(
+        &mut state,
+        &mut undo,
+        *seat,
+        value.value().to_string().as_str(),
+    );
+}
+
+fn commit_color(state: &mut SceneState, undo: &mut Undo, seat: ColorValue, raw: &str) -> bool {
+    let Some(value) = parse_num(raw) else {
+        return false;
+    };
+    let Some(id) = state.primary() else {
+        return false;
+    };
+    let Some(obj) = state.doc.get(id) else {
+        return false;
+    };
+    let index = seat.0 as usize;
+    if index > 3 {
+        return false;
+    }
+    let mut color = obj.color.unwrap_or([1.0; 4]);
+    let next = value.clamp(0.0, 1.0);
+    if color[index] == next {
+        return false;
+    }
+    color[index] = next;
+    undo.checkpoint(state, "Edit Color");
+    state.doc.set_color(id, Some(color));
+    state.touch();
+    true
+}
+
 fn behaviour_row() -> Part {
     Box::new(bsn! {
         Node {
@@ -1594,6 +1853,22 @@ fn script_section() -> Part {
         SearchableSection(Section::Script)
         Children [ {section_header(Section::Script, "Script")} -- {body} ]
     })
+}
+
+/// Paints the material preview from the selected object's authored color.
+pub fn sync_color_swatch(
+    state: Res<SceneState>,
+    mut swatches: Query<&mut BackgroundColor, With<MaterialSwatch>>,
+) {
+    let color = state
+        .selected_object()
+        .and_then(|obj| obj.color)
+        .map_or(Color::WHITE, |[r, g, b, a]| Color::linear_rgba(r, g, b, a));
+    for mut swatch in &mut swatches {
+        if swatch.0 != color {
+            swatch.0 = color;
+        }
+    }
 }
 
 /// Rebuilds the Script section rows for the selected object.
@@ -2105,7 +2380,14 @@ pub fn sync_inspector(
     mut commands: Commands,
     sections: Option<ResMut<InspectorSections>>,
     mut focus: ResMut<InputFocus>,
-    mut values: Query<(Entity, &AxisValue, &mut EditableText, Option<&FieldEdit>)>,
+    mut values: Query<
+        (Entity, &AxisValue, &mut EditableText, Option<&FieldEdit>),
+        Without<ColorValue>,
+    >,
+    mut colors: Query<
+        (Entity, &ColorValue, &mut EditableText, Option<&ColorEdit>),
+        Without<AxisValue>,
+    >,
     mut titles: Query<&mut Text, (With<ObjectTitle>, Without<BehaviourValue>)>,
     mut behaviours: Query<&mut Text, (With<BehaviourValue>, Without<ObjectTitle>)>,
     mut slots: Query<
@@ -2165,6 +2447,28 @@ pub fn sync_inspector(
             (None, Prop::Scale) => "1".into(),
             (None, _) => "0".into(),
         };
+        if value.value().to_string() != text {
+            value.editor.set_text(&text);
+        }
+    }
+
+    for (entity, seat, mut value, edit) in &mut colors {
+        if let Some(edit) = edit
+            && primary != Some(edit.target)
+        {
+            commands.entity(entity).remove::<ColorEdit>();
+            if focus.get() == Some(entity) {
+                focus.clear();
+            }
+            continue;
+        }
+        if edit.is_some() || focus.get() == Some(entity) {
+            continue;
+        }
+        let text = selected.map_or_else(
+            || "1".into(),
+            |obj| fmt_num(obj.color.unwrap_or([1.0; 4])[seat.0 as usize]),
+        );
         if value.value().to_string() != text {
             value.editor.set_text(&text);
         }
@@ -2835,6 +3139,53 @@ mod tests {
         ));
         close(state.doc.get(parent).unwrap().translation[0], 3.0);
         close(state.doc.get(child).unwrap().translation[0], 5.0);
+    }
+
+    #[test]
+    fn color_commits_clamp_and_undo() {
+        let mut state = SceneState::default();
+        let id = state.spawn(ObjectKind::Cube);
+        state.select_only(id);
+        let mut undo = Undo::default();
+
+        assert!(commit_color(&mut state, &mut undo, ColorValue(0), "0.5"));
+        assert_eq!(
+            state.doc.get(id).unwrap().color,
+            Some([0.5, 1.0, 1.0, 1.0])
+        );
+        assert!(undo.can_undo());
+
+        assert!(commit_color(&mut state, &mut undo, ColorValue(2), "-1"));
+        assert_eq!(
+            state.doc.get(id).unwrap().color,
+            Some([0.5, 1.0, 0.0, 1.0])
+        );
+
+        assert!(!commit_color(&mut state, &mut undo, ColorValue(0), "nope"));
+        assert_eq!(
+            state.doc.get(id).unwrap().color,
+            Some([0.5, 1.0, 0.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn the_material_swatch_follows_the_authored_color() {
+        use eme::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        let mut state = SceneState::default();
+        let id = state.spawn(ObjectKind::Cube);
+        state.select_only(id);
+        state.doc.set_color(id, Some([0.2, 0.4, 0.6, 1.0]));
+        world.insert_resource(state);
+        let swatch = world
+            .spawn((MaterialSwatch, BackgroundColor(Color::WHITE)))
+            .id();
+        world.run_system_once(sync_color_swatch).unwrap();
+        assert_eq!(
+            world.get::<BackgroundColor>(swatch).unwrap().0,
+            Color::linear_rgba(0.2, 0.4, 0.6, 1.0)
+        );
     }
 }
 

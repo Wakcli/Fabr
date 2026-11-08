@@ -307,6 +307,7 @@ impl Plugin for EditorPlugin {
                     ),
                     (
                         inspector::sync_inspector,
+                        inspector::sync_color_swatch,
                         inspector::sync_inspector_filter,
                         inspector::sync_inspector_filter_hint,
                         inspector::apply_inspector_filter,

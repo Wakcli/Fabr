@@ -297,7 +297,7 @@ pub fn sync(mut commands: Commands, roots: Query<Entity, With<DockRoot>>, layout
     let Ok(root) = roots.single() else {
         return;
     };
-    commands.entity(root).despawn_children();
+    chrome::despawn_children(&mut commands, root);
     commands.spawn_scene(bsn! {
         Node {
             flex_grow: 1.0,

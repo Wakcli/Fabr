@@ -139,7 +139,7 @@ pub fn sync(
         return;
     }
     *last = Some((host, log.rev(), filter.rev));
-    commands.entity(host).despawn_children();
+    chrome::despawn_children(&mut commands, host);
     for line in log.matching(&filter.query) {
         let text = chrome::text_mono(line, FONT_SIZE_OUTPUT, tokens::TEXT);
         commands.spawn_scene(eme::scene::bsn! {

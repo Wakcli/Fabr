@@ -198,7 +198,7 @@ pub fn sync(
         return;
     }
     *shown = Some(signature);
-    commands.entity(host).despawn_children();
+    chrome::despawn_children(&mut commands, host);
     if !state.open {
         return;
     }

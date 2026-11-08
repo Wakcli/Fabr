@@ -254,7 +254,7 @@ pub(crate) fn rebuild_strip(
     } else {
         return;
     }
-    commands.entity(host).despawn_children();
+    chrome::despawn_children(&mut commands, host);
 
     let kids: Vec<Part> = tabs
         .entries

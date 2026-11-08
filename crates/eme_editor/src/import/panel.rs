@@ -182,7 +182,7 @@ pub fn sync(
         return;
     }
     *last = Some((host, panel.rev, panel.open));
-    commands.entity(host).despawn_children();
+    chrome::despawn_children(&mut commands, host);
     if !panel.open {
         return;
     }

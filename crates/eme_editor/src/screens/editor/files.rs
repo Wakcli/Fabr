@@ -444,7 +444,7 @@ pub fn sync_file_rows(
     tree.pending = false;
     tree.host = Some(host);
     tree.built = tree.rev;
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
     for row in rows(&tree.scan, &tree.expanded) {
         spawn_row(&mut commands, host, &tree, row);
     }
@@ -1060,7 +1060,7 @@ pub fn sync_import_menu(
         return;
     }
     *shown = Some(signature);
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
     if menu.stage == ImportMenuStage::Root {
         commands.spawn_scene(bsn! {
             Node {

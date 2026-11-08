@@ -553,7 +553,7 @@ pub fn rebuild_scene_rows(
     }
     tree.host = Some(host);
     tree.signature = Some(sig);
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
 
     let visible = filter.visible(&state.doc);
     let no_collapse = HashSet::new();
@@ -1130,7 +1130,7 @@ pub(crate) fn sync_history(
     let Ok(host) = hosts.single() else {
         return;
     };
-    commands.entity(host).despawn_children();
+    despawn_children(commands, host);
 
     if names.is_empty() {
         let empty = bsn! {
@@ -1318,7 +1318,7 @@ pub fn sync_stats(
         return;
     }
     *shown = Some((host, stats.rev));
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
     for (label, value) in [
         ("FPS", format!("{}", stats.fps)),
         ("Frame", format!("{:.2} ms", stats.frame_ms)),
@@ -1456,7 +1456,7 @@ pub fn sync_outline(
         return;
     }
     *shown = Some(signature);
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
 
     let mut counts: alloc::collections::BTreeMap<&'static str, usize> = Default::default();
     for obj in &state.doc.objects {

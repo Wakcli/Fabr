@@ -856,7 +856,7 @@ pub fn sync_top_menu(
         return;
     }
     *shown = Some(signature);
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
     let Some(kind) = menu.open else {
         return;
     };

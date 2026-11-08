@@ -1611,7 +1611,7 @@ pub fn sync_script_rows(
         let signature = "none".to_string();
         if shown.as_ref() != Some(&(host, signature.clone())) {
             *shown = Some((host, signature));
-            commands.entity(host).despawn_children();
+            despawn_children(&mut commands, host);
             let line = text("No selection", FONT_SIZE, tokens::TEXT_DIM);
             commands.spawn_scene(bsn! {
                 Node { padding: UiRect::horizontal(px(8)) }
@@ -1656,7 +1656,7 @@ pub fn sync_script_rows(
         return;
     }
     *shown = Some((host, signature));
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
 
     let object = obj.id;
     let label = text("Script", FONT_SIZE, tokens::TEXT);
@@ -1915,7 +1915,7 @@ pub fn sync_script_picker(
         return;
     }
     *shown = Some(signature);
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
     let Some(object) = picker.object else {
         return;
     };
@@ -2322,7 +2322,7 @@ pub fn sync_override_panel(
         return;
     }
     *shown = Some((host, signature));
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
     let Some((catalog, status, instance)) = model else {
         return;
     };
@@ -2892,7 +2892,7 @@ pub fn sync_import_report(
     }
     *shown = Some((host, selected, signature));
 
-    commands.entity(host).despawn_children();
+    despawn_children(&mut commands, host);
     let Some(report) = report else {
         return;
     };

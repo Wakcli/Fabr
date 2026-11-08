@@ -14,6 +14,26 @@ use crate::tokens;
 /// A scene fragment that can be nested anywhere in the frame.
 pub type Part = Box<dyn SceneList>;
 
+/// Despawns an entity's children only if the entity still exists when the command runs.
+///
+/// Panel sync systems queue rebuilds from a query snapshot; switching dock tabs in the
+/// same frame can despawn the host before the command applies.
+pub fn despawn_children(commands: &mut Commands, host: Entity) {
+    commands.queue(DespawnChildren(host));
+}
+
+struct DespawnChildren(Entity);
+
+impl Command for DespawnChildren {
+    type Out = ();
+
+    fn apply(self, world: &mut World) {
+        if let Ok(mut entity) = world.get_entity_mut(self.0) {
+            entity.despawn_children();
+        }
+    }
+}
+
 /// The editor body size.
 pub const FONT_SIZE: f32 = 15.0;
 /// The log body size.
@@ -217,4 +237,27 @@ pub fn text_clipped(value: impl Into<String>, size: f32, token: ThemeToken) -> P
         }
         ThemeTextColor(token)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn despawning_children_of_a_despawned_host_is_ignored() {
+        let mut world = World::new();
+        let host = world.spawn_empty().id();
+        world.despawn(host);
+        DespawnChildren(host).apply(&mut world);
+    }
+
+    #[test]
+    fn live_hosts_still_lose_their_children() {
+        let mut world = World::new();
+        let host = world.spawn_empty().id();
+        let child = world.spawn_empty().id();
+        world.entity_mut(host).add_child(child);
+        DespawnChildren(host).apply(&mut world);
+        assert!(world.get_entity(child).is_err());
+    }
 }

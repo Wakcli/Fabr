@@ -87,6 +87,10 @@ pub const COMMANDS: &[Command] = &[
         action: TopAction::AnimationEditor,
     },
     Command {
+        label: "Layout Presets",
+        action: TopAction::LayoutPresets,
+    },
+    Command {
         label: "About Fabr",
         action: TopAction::About,
     },
@@ -522,6 +526,7 @@ mod tests {
             .init_resource::<crate::shortcuts::ShortcutConfig>()
             .insert_resource(crate::extensions::ExtensionsState::load())
             .init_resource::<crate::animation::AnimationState>()
+            .insert_resource(crate::layouts::LayoutsState::load())
             .insert_resource(ProjectSettingsState {
                 open: false,
                 settings: Default::default(),

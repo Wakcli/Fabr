@@ -11,7 +11,7 @@ use crate::tokens;
 
 mod build_dialog;
 pub(crate) mod chrome;
-mod dock;
+pub(crate) mod dock;
 pub(crate) mod docks;
 pub(crate) mod files;
 mod gizmo;
@@ -70,6 +70,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             {crate::extensions::panel()}
             --
             {crate::animation::panel()}
+            --
+            {crate::layouts::panel()}
             --
             {palette::overlay()}
             --
@@ -245,6 +247,7 @@ impl Plugin for EditorPlugin {
         crate::profile::install(app);
         crate::animation::install(app);
         crate::console_cmd::install(app);
+        crate::layouts::install(app);
         crate::hud::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()

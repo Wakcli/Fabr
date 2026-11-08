@@ -27,6 +27,7 @@ mod profile;
 mod hud;
 mod memory;
 mod animation;
+mod layouts;
 mod orbit;
 mod persist;
 mod play;

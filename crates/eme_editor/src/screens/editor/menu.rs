@@ -818,6 +818,8 @@ pub enum TopAction {
     Extensions,
     /// Open the animation editor.
     AnimationEditor,
+    /// Open the saved layout presets.
+    LayoutPresets,
     /// Today's build, in the console.
     About,
 }
@@ -895,6 +897,7 @@ pub fn sync_top_menu(
             ("Keyboard Shortcuts…", TopAction::Shortcuts),
             ("Extensions…", TopAction::Extensions),
             ("Animation Editor…", TopAction::AnimationEditor),
+            ("Layout Presets…", TopAction::LayoutPresets),
         ],
         TopKind::Help => &[("About Fabr", TopAction::About)],
     };
@@ -931,6 +934,7 @@ pub struct Windows<'w> {
     shortcut_config: Res<'w, crate::shortcuts::ShortcutConfig>,
     extensions: ResMut<'w, crate::extensions::ExtensionsState>,
     animation: ResMut<'w, crate::animation::AnimationState>,
+    layouts: ResMut<'w, crate::layouts::LayoutsState>,
 }
 
 /// Runs one top-level menu command and closes the menu.
@@ -989,6 +993,7 @@ pub fn run_top_action(
             crate::shortcuts::open(&mut windows.shortcuts, &windows.shortcut_config);
         }
         TopAction::Extensions => crate::extensions::open(&mut windows.extensions),
+        TopAction::LayoutPresets => crate::layouts::open(&mut windows.layouts),
         TopAction::AnimationEditor => {
             let selected = state.primary().and_then(|id| {
                 state

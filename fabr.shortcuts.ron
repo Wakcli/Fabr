@@ -1,7 +1,12 @@
 (
     binds: {
         "command_palette": "Ctrl+P",
+        "delete": "Delete",
+        "duplicate": "Ctrl+D",
         "open_scene": "Ctrl+O",
+        "play": "F5",
+        "redo": "Ctrl+Shift+Z",
         "save_scene": "Ctrl+S",
+        "undo": "Ctrl+Z",
     },
 )

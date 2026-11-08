@@ -31,14 +31,29 @@ pub enum Command {
     SaveScene,
     /// Reload the active scene from disk.
     OpenScene,
+    /// Undo the last edit.
+    Undo,
+    /// Redo the last undone edit.
+    Redo,
+    /// Delete the selection.
+    Delete,
+    /// Duplicate the selection.
+    Duplicate,
+    /// Start or stop the embedded game.
+    Play,
 }
 
 impl Command {
     /// Every command, in display order.
-    pub const ALL: [Command; 3] = [
+    pub const ALL: [Command; 8] = [
         Command::Palette,
         Command::SaveScene,
         Command::OpenScene,
+        Command::Undo,
+        Command::Redo,
+        Command::Delete,
+        Command::Duplicate,
+        Command::Play,
     ];
 
     /// Stable identifier used in the project file.
@@ -47,6 +62,11 @@ impl Command {
             Command::Palette => "command_palette",
             Command::SaveScene => "save_scene",
             Command::OpenScene => "open_scene",
+            Command::Undo => "undo",
+            Command::Redo => "redo",
+            Command::Delete => "delete",
+            Command::Duplicate => "duplicate",
+            Command::Play => "play",
         }
     }
 
@@ -56,6 +76,11 @@ impl Command {
             Command::Palette => "Command palette",
             Command::SaveScene => "Save scene",
             Command::OpenScene => "Open scene",
+            Command::Undo => "Undo",
+            Command::Redo => "Redo",
+            Command::Delete => "Delete selection",
+            Command::Duplicate => "Duplicate selection",
+            Command::Play => "Play / stop",
         }
     }
 
@@ -123,12 +148,25 @@ impl Chord {
         if self.alt {
             out.push_str("Alt+");
         }
-        out.push_str(&self.key);
+        out.push_str(match self.key.as_str() {
+            "DELETE" => "Delete",
+            "ESCAPE" => "Esc",
+            "SPACE" => "Space",
+            "ENTER" => "Enter",
+            other => other,
+        });
         out
     }
 
     /// Matching key code, or `None` for an unsupported key name.
     pub fn key_code(&self) -> Option<KeyCode> {
+        match self.key.as_str() {
+            "DELETE" => return Some(KeyCode::Delete),
+            "ESCAPE" | "ESC" => return Some(KeyCode::Escape),
+            "SPACE" => return Some(KeyCode::Space),
+            "ENTER" => return Some(KeyCode::Enter),
+            _ => {}
+        }
         if let Some(rest) = self.key.strip_prefix('F')
             && let Ok(number) = rest.parse::<u8>()
             && (1..=12).contains(&number)
@@ -218,6 +256,11 @@ impl Default for Shortcuts {
         binds.insert(Command::Palette.id().into(), "Ctrl+P".into());
         binds.insert(Command::SaveScene.id().into(), "Ctrl+S".into());
         binds.insert(Command::OpenScene.id().into(), "Ctrl+O".into());
+        binds.insert(Command::Undo.id().into(), "Ctrl+Z".into());
+        binds.insert(Command::Redo.id().into(), "Ctrl+Shift+Z".into());
+        binds.insert(Command::Delete.id().into(), "Delete".into());
+        binds.insert(Command::Duplicate.id().into(), "Ctrl+D".into());
+        binds.insert(Command::Play.id().into(), "F5".into());
         Self { binds }
     }
 }
@@ -635,14 +678,16 @@ pub fn keys(
     mut palette: ResMut<palette::Palette>,
     mut focus: ResMut<eme::input_focus::InputFocus>,
     mut inputs: Query<(Entity, &mut EditableText), With<palette::PaletteInput>>,
+    texts: Query<(), With<TextInput>>,
     mut state: ResMut<crate::scene::SceneState>,
+    mut undo: ResMut<crate::undo::Undo>,
+    mut play: ResMut<crate::play::PlayState>,
+    mut view: ResMut<crate::orbit::ViewMode>,
+    mut tabs: ResMut<crate::screens::editor::tabs::Tabs>,
     index: Res<crate::scene::ModelIndex>,
     mut log: ResMut<crate::console::ConsoleLog>,
 ) {
-    let focused_text = focus
-        .get()
-        .is_some_and(|entity| inputs.get_mut(entity).is_ok());
-    if focused_text {
+    if focus.get().is_some_and(|entity| texts.contains(entity)) {
         return;
     }
     let Some(command) = config.0.fire(&keys) else {
@@ -661,6 +706,40 @@ pub fn keys(
                 &index,
                 &mut log,
             );
+        }
+        Command::Undo => {
+            if undo.can_undo() {
+                undo.undo(&mut state);
+                log.push("undo".to_string());
+            }
+        }
+        Command::Redo => {
+            if undo.can_redo() {
+                undo.redo(&mut state);
+                log.push("redo".to_string());
+            }
+        }
+        Command::Delete => {
+            if state.selection.is_empty() {
+                return;
+            }
+            undo.checkpoint(&state, "Delete");
+            let removed = state.despawn_selected();
+            log.push(format!("deleted {removed} object(s)"));
+        }
+        Command::Duplicate => {
+            let count = crate::clipboard::duplicate_selection(&mut state, &mut undo);
+            log.push(format!("duplicated {count} object(s)"));
+        }
+        Command::Play => {
+            if play.running() {
+                play.stop_embedded(&mut state, &mut view, &mut tabs);
+                play.stop();
+                log.push("stopped the game".to_string());
+            } else {
+                play.start_embedded(&mut state, &mut view, &mut tabs);
+                log.push("started the game".to_string());
+            }
         }
     }
 }
@@ -687,6 +766,9 @@ mod tests {
         set.validate().unwrap();
         assert_eq!(set.chord(Command::SaveScene).label(), "Ctrl+S");
         assert_eq!(set.chord(Command::Palette).label(), "Ctrl+P");
+        assert_eq!(set.chord(Command::Undo).label(), "Ctrl+Z");
+        assert_eq!(set.chord(Command::Delete).label(), "Delete");
+        assert_eq!(set.chord(Command::Play).label(), "F5");
     }
 
     #[test]
@@ -748,6 +830,15 @@ mod tests {
         keys.press(KeyCode::ControlLeft);
         keys.press(KeyCode::KeyS);
         assert_eq!(set.fire(&keys), Some(Command::SaveScene));
+
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::ControlLeft);
+        keys.press(KeyCode::KeyD);
+        assert_eq!(set.fire(&keys), Some(Command::Duplicate));
+
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::Delete);
+        assert_eq!(set.fire(&keys), Some(Command::Delete));
 
         let mut keys = ButtonInput::<KeyCode>::default();
         keys.press(KeyCode::KeyS);

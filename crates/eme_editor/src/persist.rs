@@ -125,23 +125,6 @@ pub fn edit_shortcuts(
     if !ctrl {
         return;
     }
-    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    if keys.just_pressed(KeyCode::KeyZ) {
-        if shift {
-            if undo.can_redo() {
-                undo.redo(&mut state);
-            }
-        } else if undo.can_undo() {
-            undo.undo(&mut state);
-        }
-        return;
-    }
-    if keys.just_pressed(KeyCode::KeyY) {
-        if undo.can_redo() {
-            undo.redo(&mut state);
-        }
-        return;
-    }
     if keys.just_pressed(KeyCode::KeyC) {
         clipboard::copy_selection(&state, &mut clip);
         return;
@@ -152,9 +135,5 @@ pub fn edit_shortcuts(
     }
     if keys.just_pressed(KeyCode::KeyV) {
         clipboard::paste(&mut state, &clip, &mut undo);
-        return;
-    }
-    if keys.just_pressed(KeyCode::KeyD) {
-        clipboard::duplicate_selection(&mut state, &mut undo);
     }
 }

@@ -1173,7 +1173,7 @@ pub fn draw_camera_frusta(
     }
 }
 
-/// Arrow keys nudge every selected object on X/Z; Delete and Backspace remove them.
+/// Arrow keys nudge every selected object on X/Z.
 pub fn keyboard_edit(
     keys: Res<ButtonInput<KeyCode>>,
     focus: Res<InputFocus>,
@@ -1190,12 +1190,6 @@ pub fn keyboard_edit(
     }
     let ids: Vec<u64> = state.selected_ids().collect();
     if ids.is_empty() {
-        return;
-    }
-
-    if keys.just_pressed(KeyCode::Delete) || keys.just_pressed(KeyCode::Backspace) {
-        undo.checkpoint(&state, "Delete");
-        state.despawn_selected();
         return;
     }
 
@@ -1968,22 +1962,22 @@ mod tests {
         let mut state = SceneState::default();
         let id = state.spawn(ObjectKind::Cube);
         state.select_only(id);
+        let before = state.doc.get(id).unwrap().transform().translation[0];
         world.insert_resource(state);
         world.insert_resource(Undo::default());
         let mut keys = ButtonInput::<KeyCode>::default();
-        keys.press(KeyCode::Backspace);
+        keys.press(KeyCode::ArrowRight);
         world.insert_resource(keys);
         let field = world.spawn(TextInput).id();
         world.insert_resource(InputFocus::from_entity(field));
 
         world.run_system_once(keyboard_edit).unwrap();
-        assert_eq!(world.resource::<SceneState>().doc.len(), 1);
+        let focused = world.resource::<SceneState>().doc.get(id).unwrap().transform().translation[0];
+        assert_eq!(focused, before);
 
         world.insert_resource(InputFocus::default());
-        let mut keys = ButtonInput::<KeyCode>::default();
-        keys.press(KeyCode::Backspace);
-        world.insert_resource(keys);
         world.run_system_once(keyboard_edit).unwrap();
-        assert_eq!(world.resource::<SceneState>().doc.len(), 0);
+        let moved = world.resource::<SceneState>().doc.get(id).unwrap().transform().translation[0];
+        assert!((moved - before - MOVE_STEP).abs() < 1e-5, "moved {before} -> {moved}");
     }
 }

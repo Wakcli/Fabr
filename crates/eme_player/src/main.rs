@@ -34,6 +34,7 @@ struct Args {
     connect: Option<String>,
     interp: Option<f32>,
     token: Option<String>,
+    claim: Option<u64>,
     write_demo: bool,
     help: bool,
 }
@@ -61,6 +62,10 @@ impl Args {
                 }
                 "--token" => {
                     out.token = Some(args.next().ok_or("--token needs a value")?);
+                }
+                "--claim" => {
+                    let value = args.next().ok_or("--claim needs an object id")?;
+                    out.claim = Some(value.parse().map_err(|_| "invalid --claim id")?);
                 }
                 "--write-demo" => out.write_demo = true,
                 "--help" | "-h" => out.help = true,
@@ -213,6 +218,13 @@ fn main() {
         app.add_plugins(eme_net::NetworkPlugin);
     }
     hud::install(&mut app);
+    app.add_systems(
+        Update,
+        (
+            apply_network_inputs.before(eme_game_runtime::step_controllers),
+            log_predictions,
+        ),
+    );
     run_with_plugins(app, &extensions);
 }
 
@@ -235,6 +247,42 @@ fn trace_controllers(
         info!(
             "ctrl desired {:?} pos {:?} grounded {}",
             controller.desired, transform.translation, controller.grounded
+        );
+    }
+}
+
+fn apply_network_inputs(
+    config: Res<eme_net::NetworkConfig>,
+    mut server: ResMut<eme_net::NetworkServer>,
+    mut controllers: Query<(&eme_net::ReplicatedObject, &mut eme_game_runtime::KinematicController)>,
+) {
+    if !matches!(config.role, eme_net::NetworkRole::Server { .. }) {
+        return;
+    }
+    for (client, object, input) in server.take_inputs() {
+        for (replicated, mut controller) in &mut controllers {
+            if replicated.0 != object {
+                continue;
+            }
+            controller.walk(input.walk[0], input.walk[1]);
+            if input.jump {
+                controller.jump();
+            }
+        }
+        server.send_to(client, &eme_net::Message::Ack { client, seq: input.seq });
+    }
+}
+
+fn log_predictions(
+    prediction: Res<eme_net::Prediction>,
+    mut last: Local<u32>,
+) {
+    if prediction.corrections != *last {
+        *last = prediction.corrections;
+        info!(
+            "net: prediction corrections {} ({} pending)",
+            prediction.corrections,
+            prediction.history.len()
         );
     }
 }
@@ -275,6 +323,8 @@ fn network_config(args: &Args) -> eme_net::NetworkConfig {
         role,
         interpolation_delay: args.interp.unwrap_or(0.1),
         auth_token: args.token.clone(),
+        claim: args.claim,
+        walk_speed: 4.0,
     }
 }
 
@@ -302,6 +352,7 @@ usage: eme_player [--scene <path>]
   --connect <a>   connect to host:port and apply replicated transforms
   --interp <s>    client interpolation delay in seconds (default 0.1)
   --token <val>   session token: required by a server, presented by a client
+  --claim <id>    client: ask to own the replicated object with this id
   --write-demo    write a demo scene to scenes/player-demo.ember and exit
   -h, --help      show this text
 
@@ -416,6 +467,15 @@ mod tests {
         );
         assert!(!a.write_demo);
         assert!(!a.help);
+    }
+
+    #[test]
+    fn the_claim_flag_reaches_the_network_config() {
+        let parsed = args(&["--connect", "127.0.0.1:1", "--claim", "7"]).unwrap();
+        let config = network_config(&parsed);
+        assert_eq!(config.claim, Some(7));
+        assert!(args(&["--claim"]).is_err());
+        assert!(args(&["--claim", "x"]).is_err());
     }
 
     #[test]

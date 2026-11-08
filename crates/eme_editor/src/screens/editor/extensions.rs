@@ -33,6 +33,10 @@ pub struct RenderedExtensions {
 #[derive(Resource, Default)]
 pub struct PendingPanelActions(Vec<(usize, usize)>);
 
+/// Whether an Extensions panel body is currently on screen.
+#[derive(Resource, Default)]
+pub struct ExtensionsVisible(bool);
+
 /// Host inside the dock whose children mirror the rendered panels.
 #[derive(Component, Clone, Copy, Default)]
 pub struct ExtensionsBody;
@@ -59,6 +63,7 @@ pub struct PanelRowValue {
 pub fn install(app: &mut App) {
     app.init_resource::<RenderedExtensions>()
         .init_resource::<PendingPanelActions>()
+        .init_resource::<ExtensionsVisible>()
         .add_systems(Update, (evaluate, sync, sync_values).chain());
 }
 
@@ -92,6 +97,18 @@ pub fn panel() -> Part {
 ///
 /// Row providers and button actions take `&mut World`, so this is exclusive.
 pub fn evaluate(world: &mut World) {
+    // a hidden panel costs nothing per frame; the first pass still runs so the
+    // rows are ready the moment the tab is shown
+    let visible = world
+        .get_resource::<ExtensionsVisible>()
+        .is_some_and(|visible| visible.0);
+    let populated = world
+        .get_resource::<RenderedExtensions>()
+        .is_some_and(|rendered| !rendered.panels.is_empty());
+    if !visible && populated {
+        return;
+    }
+
     let queued: Vec<(usize, usize)> = world
         .get_resource_mut::<PendingPanelActions>()
         .map(|mut pending| core::mem::take(&mut pending.0))
@@ -141,11 +158,14 @@ pub fn sync(
     rendered: Res<RenderedExtensions>,
     mut commands: Commands,
     hosts: Query<Entity, With<ExtensionsBody>>,
+    mut visible: ResMut<ExtensionsVisible>,
     mut shown: Local<Option<(Entity, PanelShape)>>,
 ) {
     let Ok(host) = hosts.single() else {
+        visible.0 = false;
         return;
     };
+    visible.0 = true;
     let shape: PanelShape = rendered
         .panels
         .iter()
@@ -349,6 +369,7 @@ mod tests {
         world.insert_resource(Value::default());
         world.insert_resource(RenderedExtensions::default());
         world.insert_resource(PendingPanelActions::default());
+        world.insert_resource(ExtensionsVisible(true));
         let mut extensions = EditorExtensions::default();
         extensions.add_panel(
             eme::editor::PanelSpec::new("test.panel", "Test Panel", |world| {
@@ -384,6 +405,67 @@ mod tests {
         let rendered = world.resource::<RenderedExtensions>();
         assert_eq!(rendered.revision, revision + 1);
         assert_eq!(rendered.panels[0].rows[0].value, "7");
+    }
+
+    #[test]
+    fn a_hidden_panel_skips_evaluation() {
+        let mut world = world();
+        world.run_system_once(evaluate).unwrap();
+        let revision = world.resource::<RenderedExtensions>().revision;
+        world.resource_mut::<ExtensionsVisible>().0 = false;
+        world.resource_mut::<Value>().0 = 9;
+        world.run_system_once(evaluate).unwrap();
+        let rendered = world.resource::<RenderedExtensions>();
+        assert_eq!(rendered.revision, revision);
+        assert_eq!(rendered.panels[0].rows[0].value, "0");
+    }
+
+    /// Times the exclusive panel pass while hidden and while on screen.
+    ///
+    /// Run with `cargo test -p eme_editor --bin eme_editor bench_hidden_extension_pass -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_hidden_extension_pass() {
+        use std::io::Write;
+        use std::time::Instant;
+        let mut world = World::new();
+        world.insert_resource(Value::default());
+        world.insert_resource(RenderedExtensions::default());
+        world.insert_resource(PendingPanelActions::default());
+        world.insert_resource(ExtensionsVisible(false));
+        let mut extensions = EditorExtensions::default();
+        for panel in 0..4 {
+            extensions.add_panel(
+                eme::editor::PanelSpec::new(
+                    format!("bench.panel.{panel}"),
+                    format!("Panel {panel}"),
+                    |_| {
+                        (0..5)
+                            .map(|row| PanelRow::text(format!("Row {row}"), format!("{row}")))
+                            .collect()
+                    },
+                )
+                .with_button("Go", |_| {}),
+            );
+        }
+        world.insert_resource(extensions);
+        evaluate(&mut world);
+        let runs = 10_000;
+        let start = Instant::now();
+        for _ in 0..runs {
+            evaluate(&mut world);
+        }
+        let hidden = start.elapsed().as_secs_f64() * 1_000_000.0 / runs as f64;
+        world.resource_mut::<ExtensionsVisible>().0 = true;
+        let start = Instant::now();
+        for _ in 0..runs {
+            evaluate(&mut world);
+        }
+        let visible = start.elapsed().as_secs_f64() * 1_000_000.0 / runs as f64;
+        let _ = writeln!(
+            std::io::stderr(),
+            "extension pass: 4 panels x 5 rows -> {hidden:.3} us/pass hidden, {visible:.3} us/pass visible"
+        );
     }
 
     #[test]

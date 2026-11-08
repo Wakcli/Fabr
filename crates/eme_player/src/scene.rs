@@ -190,12 +190,7 @@ fn to_transform(translation: [f32; 3], rotation: [f32; 4], scale: [f32; 3]) -> T
         .with_scale(Vec3::from_array(scale))
 }
 
-fn behaviour_for(obj: &SceneObject) -> SceneBehaviour {
-    SceneBehaviour {
-        spec: obj.behaviour,
-        base: to_transform(obj.translation, obj.rotation, obj.scale),
-    }
-}
+
 
 pub fn announce(scene: Res<LoadedScene>) {
     if scene.doc.objects.is_empty() {
@@ -393,6 +388,11 @@ pub fn spawn_scene(
 }
 
 
+/// The behaviour component an object needs, or `None` for idle objects.
+fn behaviour_component(obj: &SceneObject, base: Transform) -> Option<SceneBehaviour> {
+    SceneBehaviour::for_object(obj.behaviour, base)
+}
+
 /// Spawns every object of `doc`, tagging roots with `layer`.
 #[expect(
     clippy::too_many_arguments,
@@ -413,7 +413,7 @@ fn spawn_doc(
 ) {
     for obj in &doc.objects {
         let trs = to_transform(obj.translation, obj.rotation, obj.scale);
-        let behaviour = behaviour_for(obj);
+        let behaviour = behaviour_component(obj, trs);
         let name = Name::new(obj.name.clone());
         let script = obj.script.clone().map(|script| {
             (
@@ -442,12 +442,14 @@ fn spawn_doc(
             Body::Empty => {
                 let mut spawned = commands.spawn((
                     trs,
-                    behaviour,
                     name,
                     ReplicatedObject(obj.id),
                     SceneRoot,
                     SceneLayerId(layer),
                 ));
+                if let Some(behaviour) = behaviour {
+                    spawned.insert(behaviour);
+                }
                 if let Some(script) = script {
                     spawned.insert(script);
                 }
@@ -474,13 +476,15 @@ fn spawn_doc(
                         let pivot = eme_game_runtime::pivot_transform(import);
                         let mut spawned = commands.spawn((
                             trs,
-                            behaviour,
                             name,
                             Visibility::Inherited,
                             ReplicatedObject(obj.id),
                             SceneRoot,
                             SceneLayerId(layer),
                         ));
+                        if let Some(behaviour) = behaviour {
+                            spawned.insert(behaviour);
+                        }
                         if let Some(script) = script {
                             spawned.insert(script);
                         }
@@ -521,12 +525,14 @@ fn spawn_doc(
                         ..default()
                     },
                     trs,
-                    behaviour,
                     name,
                     ReplicatedObject(obj.id),
                     SceneRoot,
                     SceneLayerId(layer),
                 ));
+                if let Some(behaviour) = behaviour {
+                    spawned.insert(behaviour);
+                }
                 if let Some(script) = script {
                     spawned.insert(script);
                 }
@@ -546,12 +552,14 @@ fn spawn_doc(
                         ..default()
                     },
                     trs,
-                    behaviour,
                     name,
                     ReplicatedObject(obj.id),
                     SceneRoot,
                     SceneLayerId(layer),
                 ));
+                if let Some(behaviour) = behaviour {
+                    spawned.insert(behaviour);
+                }
                 if let Some(script) = script {
                     spawned.insert(script);
                 }
@@ -589,7 +597,6 @@ fn spawn_doc(
                     Mesh3d(mesh),
                     MeshMaterial3d(materials.add(material)),
                     trs,
-                    behaviour,
                     name,
                     ReplicatedObject(obj.id),
                     ReplicatedSpawn {
@@ -599,6 +606,9 @@ fn spawn_doc(
                     SceneRoot,
                     SceneLayerId(layer),
                 ));
+                if let Some(behaviour) = behaviour {
+                    spawned.insert(behaviour);
+                }
                 if let Some(script) = script {
                     spawned.insert(script);
                 }
@@ -807,6 +817,22 @@ mod tests {
     }
 
     #[test]
+    fn idle_objects_skip_the_behaviour_component() {
+        let doc = demo_doc();
+        let base = Transform::default();
+        let idle = doc
+            .iter()
+            .find(|obj| obj.behaviour.kind == BehaviourKind::None)
+            .expect("demo scene has static objects");
+        assert!(behaviour_component(idle, base).is_none());
+        let spinning = doc
+            .iter()
+            .find(|obj| obj.behaviour.kind == BehaviourKind::Spin)
+            .expect("demo scene has a spinning object");
+        assert!(behaviour_component(spinning, base).is_some());
+    }
+
+    #[test]
     fn demo_scene_round_trips_through_ron() {
         let doc = demo_doc();
         let text = doc.to_ron().unwrap();
@@ -850,11 +876,12 @@ mod tests {
             )))
             .add_systems(Update, run_behaviours);
 
+        let base = to_transform(obj.translation, obj.rotation, obj.scale);
         let entity = app
             .world_mut()
             .spawn((
-                behaviour_for(obj),
-                to_transform(obj.translation, obj.rotation, obj.scale),
+                SceneBehaviour::for_object(obj.behaviour, base).expect("spin behaviour"),
+                base,
             ))
             .id();
 

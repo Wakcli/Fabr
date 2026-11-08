@@ -569,14 +569,22 @@ pub fn reconcile_scene(
         let light = obj.light;
         let spec = obj.behaviour;
         let trs = to_transform(&transform);
-        let behaviour = SceneBehaviour { spec, base: trs };
+        let behaviour = SceneBehaviour::for_object(spec, trs);
 
         match state.entities.get(&id).copied() {
             Some(entity) if links.get(entity).is_ok_and(|link| link.kind == kind) => {
                 let entity_id = entity;
                 apply_light(&mut suns, &mut points, entity_id, light);
                 let mut entity = commands.entity(entity);
-                entity.insert((Name::new(name), behaviour));
+                entity.insert(Name::new(name));
+                match behaviour {
+                    Some(behaviour) => {
+                        entity.insert(behaviour);
+                    }
+                    None => {
+                        entity.remove::<SceneBehaviour>();
+                    }
+                }
                 match obj.script.clone() {
                     Some(script) => {
                         entity.insert((
@@ -913,7 +921,7 @@ fn spawn_entity(
 ) -> Entity {
     let light = light.unwrap_or_default();
     let trs = to_transform(transform);
-    let behaviour = SceneBehaviour { spec, base: trs };
+    let behaviour = SceneBehaviour::for_object(spec, trs);
     let entity = match kind {
         ObjectKind::Empty => commands.spawn(trs).id(),
         ObjectKind::PointLight => commands
@@ -1059,14 +1067,12 @@ fn spawn_entity(
                 .insert(PhysicsBody::from_spec(physics));
         }
     }
-    commands
-        .entity(entity)
-        .insert((
-            Name::new(name),
-            SceneLink { id, kind },
-            behaviour,
-            ReplicatedObject(id),
-        ))
+    let mut spawned = commands.entity(entity);
+    spawned.insert((Name::new(name), SceneLink { id, kind }, ReplicatedObject(id)));
+    if let Some(behaviour) = behaviour {
+        spawned.insert(behaviour);
+    }
+    spawned
         .observe(click_object)
         .observe(drag_start)
         .observe(drag_object);

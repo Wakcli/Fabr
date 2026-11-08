@@ -48,6 +48,16 @@ pub struct SceneBehaviour {
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct ScriptControlled;
 
+impl SceneBehaviour {
+    /// The component for an authored behaviour, or `None` for idle objects.
+    ///
+    /// Idle objects do not need a component: the per-frame pass would skip
+    /// them anyway, and large static scenes would pay a query visit each.
+    pub fn for_object(spec: Behaviour, base: Transform) -> Option<Self> {
+        (spec.kind != BehaviourKind::None).then_some(Self { spec, base })
+    }
+}
+
 /// The transform `spec` produces `time` seconds after `base`.
 ///
 /// `Spin` composes around the world Y axis; `Bob` offsets along world Y and
@@ -140,6 +150,50 @@ mod tests {
         assert_eq!(middle.rotation, base.rotation);
     }
 
+    /// Compares the behaviour pass with and without idle components.
+    ///
+    /// Run with `cargo test -p eme_game_runtime --release --lib bench_behaviour_pass -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_behaviour_pass() {
+        use std::io::Write;
+        let objects = 20_000usize;
+        let frames = 300usize;
+        let run = |with_component: bool| {
+            let mut world = World::new();
+            world.insert_resource(Time::<()>::default());
+            for _ in 0..objects {
+                let base = Transform::from_xyz(1.0, 2.0, 3.0);
+                if with_component {
+                    world.spawn((
+                        SceneBehaviour {
+                            spec: Behaviour::default(),
+                            base,
+                        },
+                        base,
+                    ));
+                } else {
+                    world.spawn(base);
+                }
+            }
+            world.run_system_once(run_behaviours).unwrap();
+            let start = std::time::Instant::now();
+            for _ in 0..frames {
+                world
+                    .resource_mut::<Time>()
+                    .advance_by(core::time::Duration::from_secs_f32(1.0 / 60.0));
+                world.run_system_once(run_behaviours).unwrap();
+            }
+            start.elapsed().as_secs_f64() * 1000.0 / frames as f64
+        };
+        let with = run(true);
+        let without = run(false);
+        let _ = writeln!(
+            std::io::stderr(),
+            "behaviour bench: {objects} idle objects, {frames} frames ->              {with:.3} ms/frame with components, {without:.3} ms/frame without"
+        );
+    }
+
     /// Times the physics step with many dynamic and static bodies.
     ///
     /// Run with `cargo test -p eme_game_runtime --release --lib bench_physics_step -- --ignored --nocapture`.
@@ -202,6 +256,14 @@ mod tests {
         world.insert_resource(Time::<()>::default());
         world.run_system_once(run_behaviours).unwrap();
         world
+    }
+
+    #[test]
+    fn idle_behaviours_do_not_produce_a_component() {
+        let base = base();
+        assert!(SceneBehaviour::for_object(Behaviour::default(), base).is_none());
+        let spinning = SceneBehaviour::for_object(spinning(), base).expect("spin has a component");
+        assert_eq!(spinning.spec.kind, BehaviourKind::Spin);
     }
 
     #[test]

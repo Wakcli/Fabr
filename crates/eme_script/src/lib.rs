@@ -964,6 +964,21 @@ mod tests {
     }
 
     #[test]
+    fn property_defaults_are_read_without_running_lifecycle() {
+        let dir = scratch("defaults");
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::write(
+            dir.join("scripts/props.lua"),
+            "return { properties = { speed = 2.5, label = 'x', enabled = true }, on_start = function() error('must not run') end }",
+        )
+        .unwrap();
+        let defaults = script_property_defaults(&dir, "scripts/props.lua").unwrap();
+        assert_eq!(defaults.get("speed"), Some(&ScriptValue::Number(2.5)));
+        assert_eq!(defaults.get("label"), Some(&ScriptValue::Text("x".into())));
+        assert_eq!(defaults.get("enabled"), Some(&ScriptValue::Bool(true)));
+    }
+
+    #[test]
     fn input_actions_reach_scripts() {
         let dir = scratch("actions");
         std::fs::write(

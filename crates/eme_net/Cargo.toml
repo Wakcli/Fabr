@@ -1,0 +1,24 @@
+[package]
+name = "eme_net"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Local client/server networking and transform replication for Fabr"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["fabr", "networking", "replication"]
+rust-version = "1.96.0"
+
+[dependencies]
+eme_app = { path = "../eme_app", version = "0.20.0-dev" }
+eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_math = { path = "../eme_math", version = "0.20.0-dev" }
+eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

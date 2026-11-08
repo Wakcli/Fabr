@@ -7,6 +7,7 @@ use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
 use eme_anim::AnimationSource;
 use eme_game_runtime::PhysicsBody;
+use eme_net::ReplicatedObject;
 use fabr::ScriptedObject;
 use eme_game_scene::{
     Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
@@ -214,7 +215,7 @@ pub fn spawn_scene(
         let physics = obj.physics.as_ref().map(PhysicsBody::from_spec);
         match body(obj.kind) {
             Body::Empty => {
-                let mut spawned = commands.spawn((trs, behaviour, name));
+                let mut spawned = commands.spawn((trs, behaviour, name, ReplicatedObject(obj.id)));
                 if let Some(script) = script {
                     spawned.insert(script);
                 }
@@ -236,7 +237,13 @@ pub fn spawn_scene(
                         let handle =
                             asset_server.load(GltfAssetLabel::Scene(0).from_asset(rel.clone()));
                         let pivot = eme_game_runtime::pivot_transform(import);
-                        let mut spawned = commands.spawn((trs, behaviour, name, Visibility::Inherited));
+                        let mut spawned = commands.spawn((
+                            trs,
+                            behaviour,
+                            name,
+                            Visibility::Inherited,
+                            ReplicatedObject(obj.id),
+                        ));
                         if let Some(script) = script {
                             spawned.insert(script);
                         }
@@ -276,6 +283,7 @@ pub fn spawn_scene(
                     trs,
                     behaviour,
                     name,
+                    ReplicatedObject(obj.id),
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -294,6 +302,7 @@ pub fn spawn_scene(
                     trs,
                     behaviour,
                     name,
+                    ReplicatedObject(obj.id),
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);
@@ -324,6 +333,7 @@ pub fn spawn_scene(
                     trs,
                     behaviour,
                     name,
+                    ReplicatedObject(obj.id),
                 ));
                 if let Some(script) = script {
                     spawned.insert(script);

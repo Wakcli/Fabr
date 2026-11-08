@@ -29,6 +29,8 @@ pub(crate) fn asset_root() -> PathBuf {
 #[derive(Default)]
 struct Args {
     scene: Option<PathBuf>,
+    host: Option<u16>,
+    connect: Option<String>,
     write_demo: bool,
     help: bool,
 }
@@ -42,6 +44,13 @@ impl Args {
                 "--scene" | "-s" => {
                     let path = args.next().ok_or("--scene needs a path")?;
                     out.scene = Some(path.into());
+                }
+                "--host" => {
+                    let port = args.next().ok_or("--host needs a port")?;
+                    out.host = Some(port.parse().map_err(|_| "invalid host port")?);
+                }
+                "--connect" => {
+                    out.connect = Some(args.next().ok_or("--connect needs host:port")?);
                 }
                 "--write-demo" => out.write_demo = true,
                 "--help" | "-h" => out.help = true,
@@ -98,7 +107,12 @@ fn main() {
         }))
         .add_plugins(fabr::ScriptPlugin)
         .add_plugins(eme_anim::AnimationRuntimePlugin)
-        .insert_resource(fabr::ScriptsActive(true))
+        .add_plugins(eme_net::NetworkPlugin)
+        .insert_resource(network_config(&args))
+        .insert_resource(fabr::ScriptsActive(!matches!(
+            network_config(&args).role,
+            eme_net::NetworkRole::Client { .. }
+        )))
         .insert_resource(fabr::ScriptRoot(assets))
         .insert_resource(actions)
         .insert_resource(scene::PlayerMsaa(settings.graphics.msaa))
@@ -110,7 +124,8 @@ fn main() {
         .insert_resource(eme_game_runtime::PhysicsSettings {
             gravity: settings.physics.gravity,
             bounce: settings.physics.bounce,
-            enabled: settings.physics.enabled,
+            enabled: settings.physics.enabled
+                && !matches!(network_config(&args).role, eme_net::NetworkRole::Client { .. }),
         })
         .insert_resource(GlobalVolume::new(eme::audio::Volume::Linear(
             settings.audio.master_volume,
@@ -122,13 +137,47 @@ fn main() {
             (
                 exit_on_esc,
                 capture_on_frame,
-                eme_game_runtime::run_behaviours,
+                eme_game_runtime::run_behaviours.run_if(is_not_client),
                 eme_game_overrides::sync_model_nodes,
                 log_script_lines,
                 eme_game_runtime::step_physics.after(fabr::update_scripts),
+                log_network,
             ),
         )
+            .configure_sets(
+            Update,
+            eme_net::NetworkSet
+                .after(eme_game_runtime::step_physics)
+                .after(fabr::update_scripts),
+        )
         .run();
+}
+
+fn is_not_client(config: Res<eme_net::NetworkConfig>) -> bool {
+    !matches!(config.role, eme_net::NetworkRole::Client { .. })
+}
+
+fn network_config(args: &Args) -> eme_net::NetworkConfig {
+    let role = if let Some(port) = args.host {
+        eme_net::NetworkRole::Server { port }
+    } else if let Some(addr) = &args.connect {
+        eme_net::NetworkRole::Client { addr: addr.clone() }
+    } else {
+        eme_net::NetworkRole::Offline
+    };
+    eme_net::NetworkConfig { role }
+}
+
+fn log_network(status: Res<eme_net::NetworkStatus>, mut last: Local<u64>) {
+    if status.rev == *last {
+        return;
+    }
+    *last = status.rev;
+    if let Some(error) = &status.error {
+        info!("net: {error}");
+    } else {
+        info!("net: {} peer(s)", status.peers);
+    }
 }
 
 const HELP: &str = "\
@@ -139,6 +188,8 @@ usage: eme_player [--scene <path>]
 
   --scene <path>  render the given scene document; without it the player tries
                   scene.ember next to the executable, then scenes/main.ember
+  --host <port>   host a local replication server
+  --connect <a>   connect to host:port and apply replicated transforms
   --write-demo    write a demo scene to scenes/player-demo.ember and exit
   -h, --help      show this text
 

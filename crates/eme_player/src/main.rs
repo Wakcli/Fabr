@@ -102,6 +102,10 @@ fn main() {
         .insert_resource(actions)
         .insert_resource(scene::PlayerMsaa(settings.graphics.msaa))
         .insert_resource(scene::PlayerShadows(settings.quality.shadows))
+        .insert_resource(fabr::AudioMix {
+            sfx: settings.audio.sfx_volume,
+            music: settings.audio.music_volume,
+        })
         .insert_resource(eme_game_runtime::PhysicsSettings {
             gravity: settings.physics.gravity,
             bounce: settings.physics.bounce,

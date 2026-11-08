@@ -18,14 +18,19 @@ use crate::persist;
 /// Platform the build produces a game for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Target {
-    /// Native Linux folder, the only target this machine can assemble.
+    /// Native Linux folder.
     #[default]
     Linux,
-    /// Needs a CI template: the player must be compiled on Windows.
+    /// Windows executable cross-compiled with the MinGW toolchain.
     Windows,
-    /// Needs a CI template: the player must be compiled on macOS.
+    /// Needs a macOS host: Apple's linker cannot run anywhere else.
     MacOs,
 }
+
+/// Rust target triple the Windows export is compiled for.
+pub const WINDOWS_TRIPLE: &str = "x86_64-pc-windows-gnu";
+/// MinGW GNU C compiler used as the Windows linker.
+pub const MINGW_LINKER: &str = "x86_64-w64-mingw32-gcc";
 
 impl Target {
     pub const ALL: [Target; 3] = [Target::Linux, Target::Windows, Target::MacOs];
@@ -38,10 +43,166 @@ impl Target {
         }
     }
 
+    /// Folder the staged game is written to.
+    pub fn out_dir(self) -> &'static str {
+        match self {
+            Target::Linux => "build/linux",
+            Target::Windows => "build/windows",
+            Target::MacOs => "build/macos",
+        }
+    }
+
+    /// Name the player binary takes in the game folder.
+    pub fn binary_name(self) -> &'static str {
+        match self {
+            Target::Windows => "emberrly-game.exe",
+            _ => "emberrly-game",
+        }
+    }
+
+    /// Cargo `--target` triple, or `None` for the host.
+    pub fn cargo_target(self) -> Option<&'static str> {
+        match self {
+            Target::Linux => None,
+            Target::Windows => Some(WINDOWS_TRIPLE),
+            Target::MacOs => Some("x86_64-apple-darwin"),
+        }
+    }
+
+    /// Name cargo gives the player binary for this target.
+    pub fn player_name(self) -> &'static str {
+        match self {
+            Target::Windows => "eme_player.exe",
+            _ => "eme_player",
+        }
+    }
+
     /// Whether this machine can assemble the target end to end.
     pub fn ready(self) -> bool {
-        matches!(self, Target::Linux)
+        match self {
+            Target::Linux => true,
+            Target::Windows => {
+                mingw_linker().is_some() && toolchain_for(WINDOWS_TRIPLE, toolchain_root()).is_some()
+            }
+            Target::MacOs => false,
+        }
     }
+
+    /// One-line explanation shown under the target chips.
+    pub fn note(self) -> &'static str {
+        match self {
+            Target::Linux => "Native build, staged for the current machine.",
+            Target::Windows => {
+                "Cross-compiled with MinGW; needs the Rust Windows target installed."
+            }
+            Target::MacOs => "Needs a macOS host or CI runner with Apple's linker.",
+        }
+    }
+}
+
+/// Cargo invocation plus the environment a cross build needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CargoCommand {
+    /// Cargo executable.
+    pub program: PathBuf,
+    /// `rustc` to force, when a specific toolchain was picked.
+    pub rustc: Option<PathBuf>,
+    /// Human-readable toolchain label for the build log.
+    pub label: String,
+}
+
+/// Picks cargo for `target`, preferring a toolchain that has the target std.
+pub fn cargo_command(target: Target) -> CargoCommand {
+    let Some(triple) = target.cargo_target() else {
+        return CargoCommand {
+            program: PathBuf::from("cargo"),
+            rustc: None,
+            label: "host cargo".into(),
+        };
+    };
+    if let Some(program) = std::env::var_os("FABR_CARGO") {
+        let program = PathBuf::from(program);
+        return CargoCommand {
+            label: format!("{} (FABR_CARGO)", program.display()),
+            rustc: program.parent().map(|dir| dir.join("rustc")).filter(|p| p.is_file()),
+            program,
+        };
+    }
+    if let Some(toolchain) = toolchain_for(triple, toolchain_root()) {
+        return CargoCommand {
+            program: toolchain.cargo,
+            rustc: toolchain.rustc,
+            label: toolchain.label,
+        };
+    }
+    CargoCommand {
+        program: PathBuf::from("cargo"),
+        rustc: None,
+        label: format!("host cargo (no {triple} std found)"),
+    }
+}
+
+/// One Rust toolchain that carries a target's standard library.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Toolchain {
+    /// `bin/cargo` inside the toolchain.
+    pub cargo: PathBuf,
+    /// `bin/rustc` inside the toolchain.
+    pub rustc: Option<PathBuf>,
+    /// Toolchain name, used in the build log.
+    pub label: String,
+}
+
+/// Folder holding rustup toolchains.
+pub fn toolchain_root() -> PathBuf {
+    if let Some(home) = std::env::var_os("RUSTUP_HOME") {
+        return PathBuf::from(home).join("toolchains");
+    }
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".rustup/toolchains"))
+        .unwrap_or_else(|| PathBuf::from(".rustup/toolchains"))
+}
+
+/// Finds the newest toolchain under `root` with `triple`'s std installed.
+pub fn toolchain_for(triple: &str, root: PathBuf) -> Option<Toolchain> {
+    let entries = std::fs::read_dir(&root).ok()?;
+    let mut best: Option<Toolchain> = None;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let cargo = dir.join("bin/cargo");
+        let rustc = dir.join("bin/rustc");
+        if !cargo.is_file() || !dir.join("lib/rustlib").join(triple).join("lib").is_dir() {
+            continue;
+        }
+        let label = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let candidate = Toolchain {
+            cargo,
+            rustc: rustc.is_file().then_some(rustc),
+            label,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|current| candidate.label > current.label)
+        {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+fn mingw_linker() -> Option<&'static Path> {
+    static LINKER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    LINKER
+        .get_or_init(|| {
+            let path = std::env::var_os("PATH")?;
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(MINGW_LINKER))
+                .find(|candidate| candidate.is_file())
+        })
+        .as_deref()
 }
 
 /// Cargo profile the staged player was built with.
@@ -64,6 +225,14 @@ impl Profile {
         }
     }
 
+    /// Cargo's output subfolder for this profile.
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Profile::Release => "release",
+            Profile::Debug => "debug",
+        }
+    }
+
     fn cargo_flags(self) -> &'static [&'static str] {
         match self {
             Profile::Release => &["--release"],
@@ -72,10 +241,6 @@ impl Profile {
     }
 }
 
-/// Folder the game is written to, relative to the project root.
-pub const OUT_DIR: &str = "build/linux";
-/// Name the player binary takes in the game folder.
-pub const GAME_BIN: &str = "emberrly-game";
 /// Scene file the player looks for next to itself.
 pub const SCENE_FILE: &str = "scene.ember";
 /// Asset folder staged beside the player when the project has one.
@@ -113,6 +278,8 @@ pub struct BuildState {
     pub running: bool,
     /// Cargo profile the next build uses.
     pub profile: Profile,
+    /// Platform the next build produces.
+    pub target: Target,
     pub log: Vec<Line>,
     /// Binary of the last successful build, ready to run.
     pub game: Option<PathBuf>,
@@ -147,9 +314,28 @@ impl BuildState {
         self.rev += 1;
     }
 
+    /// Selects the build target.
+    pub fn set_target(&mut self, target: Target) {
+        if self.target == target || !target.ready() {
+            return;
+        }
+        self.target = target;
+        self.rev += 1;
+    }
+
     /// Starts a background build of `doc`; ignored while one is running.
     pub fn start(&mut self, doc: SceneDoc) {
         if self.running {
+            return;
+        }
+        if !self.target.ready() {
+            self.line(
+                Level::Error,
+                format!(
+                    "{} needs a toolchain this machine does not have",
+                    self.target.label()
+                ),
+            );
             return;
         }
         self.running = true;
@@ -165,7 +351,8 @@ impl BuildState {
         let (tx, rx) = mpsc::channel();
         self.rx = Some(Mutex::new(rx));
         let profile = self.profile;
-        thread::spawn(move || run(doc, profile, tx));
+        let target = self.target;
+        thread::spawn(move || run(doc, profile, target, tx));
     }
 
     /// Appends one log line, dropping the oldest past [`MAX_LINES`].
@@ -221,12 +408,12 @@ pub fn poll_build(mut state: ResMut<BuildState>) {
     }
 }
 
-fn run(doc: SceneDoc, profile: Profile, tx: Sender<Msg>) {
-    match package(&doc, profile, &tx) {
+fn run(doc: SceneDoc, profile: Profile, target: Target, tx: Sender<Msg>) {
+    match package(&doc, profile, target, &tx) {
         Ok(dir) => {
             let abs = std::fs::canonicalize(&dir).unwrap_or(dir);
             say(&tx, Level::Done, format!("game folder {}", abs.display()));
-            let _ = tx.send(Msg::Done(Ok(abs.join(GAME_BIN))));
+            let _ = tx.send(Msg::Done(Ok(abs.join(target.binary_name()))));
         }
         Err(err) => {
             say(&tx, Level::Error, format!("build failed: {err}"));
@@ -235,28 +422,42 @@ fn run(doc: SceneDoc, profile: Profile, tx: Sender<Msg>) {
     }
 }
 
-fn package(doc: &SceneDoc, profile: Profile, tx: &Sender<Msg>) -> Result<PathBuf, String> {
+fn package(
+    doc: &SceneDoc,
+    profile: Profile,
+    target: Target,
+    tx: &Sender<Msg>,
+) -> Result<PathBuf, String> {
+    say(tx, Level::Step, format!("target {}", target.label()));
     let scene = persist::save_to(doc, persist::SCENE_PATH)
         .map_err(|err| format!("could not save scene: {err}"))?;
     say(tx, Level::Step, format!("saved scene {}", scene.display()));
 
-    let target = target_dir();
-    say(tx, Level::Step, format!("target dir {}", target.display()));
-    let player = resolve_player(&target, profile, tx)?;
+    let out_dir = target_dir();
+    say(tx, Level::Step, format!("target dir {}", out_dir.display()));
+    let player = resolve_player(&out_dir, profile, target, tx)?;
 
-    let out = PathBuf::from(OUT_DIR);
+    let out = PathBuf::from(target.out_dir());
     let assets = Path::new(ASSET_DIR);
-    stage(&player, &scene, &out, assets.is_dir().then_some(assets), tx)?;
+    stage(
+        &player,
+        &scene,
+        &out,
+        assets.is_dir().then_some(assets),
+        target,
+        tx,
+    )?;
     Ok(out)
 }
 
 /// Picks the player binary, building it first when cargo has not produced one.
-fn resolve_player(target: &Path, profile: Profile, tx: &Sender<Msg>) -> Result<PathBuf, String> {
-    let [release, debug] = candidates(target);
-    let chosen = match profile {
-        Profile::Release => release,
-        Profile::Debug => debug,
-    };
+fn resolve_player(
+    target_dir: &Path,
+    profile: Profile,
+    target: Target,
+    tx: &Sender<Msg>,
+) -> Result<PathBuf, String> {
+    let chosen = player_path(target_dir, target, profile);
     if chosen.is_file() {
         say(
             tx,
@@ -269,12 +470,16 @@ fn resolve_player(target: &Path, profile: Profile, tx: &Sender<Msg>) -> Result<P
         tx,
         Level::Step,
         format!(
-            "no player {} binary, running cargo build -p {PLAYER_PKG} {}",
+            "no player {} binary, running cargo build -p {PLAYER_PKG} {}{}",
             profile.label().to_ascii_lowercase(),
-            profile.cargo_flags().join(" ")
+            profile.cargo_flags().join(" "),
+            target
+                .cargo_target()
+                .map(|triple| format!(" --target {triple}"))
+                .unwrap_or_default()
         ),
     );
-    build_player(tx, profile)?;
+    build_player(tx, profile, target)?;
     if chosen.is_file() {
         say(tx, Level::Step, "player built");
         return Ok(chosen);
@@ -285,18 +490,47 @@ fn resolve_player(target: &Path, profile: Profile, tx: &Sender<Msg>) -> Result<P
     ))
 }
 
+/// Where cargo puts the player for `target` and `profile`.
+pub fn player_path(target_dir: &Path, target: Target, profile: Profile) -> PathBuf {
+    let root = match target.cargo_target() {
+        Some(triple) => target_dir.join(triple),
+        None => target_dir.to_path_buf(),
+    };
+    root.join(profile.dir_name()).join(target.player_name())
+}
+
 /// Player locations in preference order: release first, then debug.
 fn candidates(target: &Path) -> [PathBuf; 2] {
     [
-        target.join("release").join(player_name()),
-        target.join("debug").join(player_name()),
+        target.join("release").join(Target::Linux.player_name()),
+        target.join("debug").join(Target::Linux.player_name()),
     ]
 }
 
-fn build_player(tx: &Sender<Msg>, profile: Profile) -> Result<(), String> {
-    let mut child = Command::new("cargo")
+fn build_player(tx: &Sender<Msg>, profile: Profile, target: Target) -> Result<(), String> {
+    let cargo = cargo_command(target);
+    say(tx, Level::Step, format!("toolchain {}", cargo.label));
+    let mut command = Command::new(&cargo.program);
+    command
         .args(["build", "-p", PLAYER_PKG])
-        .args(profile.cargo_flags())
+        .args(profile.cargo_flags());
+    if let Some(triple) = target.cargo_target() {
+        command.args(["--target", triple]);
+        if triple == WINDOWS_TRIPLE {
+            let linker = mingw_linker().ok_or_else(|| {
+                format!("{MINGW_LINKER} is not installed, so Windows cannot be linked")
+            })?;
+            command.env(
+                "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER",
+                linker.as_os_str(),
+            );
+            say(tx, Level::Step, format!("linker {}", linker.display()));
+        }
+    }
+    if let Some(rustc) = &cargo.rustc {
+        command.env("RUSTC", rustc);
+    }
+    let mut child = command
         .current_dir(workspace())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -325,28 +559,29 @@ fn stage(
     scene: &Path,
     out: &Path,
     assets: Option<&Path>,
+    target: Target,
     tx: &Sender<Msg>,
 ) -> Result<(), String> {
     if out.exists() {
         std::fs::remove_dir_all(out).map_err(|err| io(out, err))?;
-        say(tx, Level::Step, format!("cleaned {OUT_DIR}"));
+        say(tx, Level::Step, format!("cleaned {}", target.out_dir()));
     }
     std::fs::create_dir_all(out).map_err(|err| io(out, err))?;
 
-    let game = out.join(GAME_BIN);
+    let game = out.join(target.binary_name());
     std::fs::copy(player, &game).map_err(|err| io(player, err))?;
     set_executable(&game)?;
     say(
         tx,
         Level::Step,
-        format!("copied player to {}/{GAME_BIN}", OUT_DIR),
+        format!("copied player to {}/{}", target.out_dir(), target.binary_name()),
     );
 
     std::fs::copy(scene, out.join(SCENE_FILE)).map_err(|err| io(scene, err))?;
     say(
         tx,
         Level::Step,
-        format!("copied scene to {OUT_DIR}/{SCENE_FILE}"),
+        format!("copied scene to {}/{SCENE_FILE}", target.out_dir()),
     );
 
     match assets {
@@ -443,14 +678,6 @@ fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn player_name() -> &'static str {
-    if cfg!(windows) {
-        "eme_player.exe"
-    } else {
-        "eme_player"
-    }
-}
-
 fn say(tx: &Sender<Msg>, level: Level, text: impl Into<String>) {
     let _ = tx.send(Msg::Line(level, text.into()));
 }
@@ -489,17 +716,68 @@ mod tests {
     #[test]
     fn the_selected_profile_chooses_its_player_binary() {
         let dir = scratch("profiles");
-        write(&dir.join("debug").join(player_name()), b"debug");
-        write(&dir.join("release").join(player_name()), b"release");
+        let name = Target::Linux.player_name();
+        write(&dir.join("debug").join(name), b"debug");
+        write(&dir.join("release").join(name), b"release");
         let (tx, _rx) = mpsc::channel();
         assert_eq!(
-            resolve_player(&dir, Profile::Release, &tx).unwrap(),
-            dir.join("release").join(player_name())
+            resolve_player(&dir, Profile::Release, Target::Linux, &tx).unwrap(),
+            dir.join("release").join(name)
         );
         assert_eq!(
-            resolve_player(&dir, Profile::Debug, &tx).unwrap(),
-            dir.join("debug").join(player_name())
+            resolve_player(&dir, Profile::Debug, Target::Linux, &tx).unwrap(),
+            dir.join("debug").join(name)
         );
+    }
+
+    #[test]
+    fn each_target_stages_its_own_layout() {
+        assert_eq!(Target::Linux.out_dir(), "build/linux");
+        assert_eq!(Target::Linux.binary_name(), "emberrly-game");
+        assert_eq!(Target::Windows.out_dir(), "build/windows");
+        assert_eq!(Target::Windows.binary_name(), "emberrly-game.exe");
+        assert_eq!(Target::Windows.cargo_target(), Some("x86_64-pc-windows-gnu"));
+        assert_eq!(Target::Linux.cargo_target(), None);
+        assert!(!Target::MacOs.ready());
+    }
+
+    #[test]
+    fn cross_player_paths_include_the_target_directory() {
+        let dir = Path::new("/target");
+        assert_eq!(
+            player_path(dir, Target::Windows, Profile::Release),
+            Path::new("/target/x86_64-pc-windows-gnu/release/eme_player.exe")
+        );
+        assert_eq!(
+            player_path(dir, Target::Linux, Profile::Debug),
+            Path::new("/target/debug/eme_player")
+        );
+    }
+
+    #[test]
+    fn toolchains_with_the_target_std_are_preferred_newest_first() {
+        let root = scratch("toolchains");
+        let with_std = root.join("1.90.0/bin");
+        write(&with_std.join("cargo"), b"");
+        write(&with_std.join("rustc"), b"");
+        write(
+            &root.join("1.90.0/lib/rustlib/x86_64-pc-windows-gnu/lib/libcore.rlib"),
+            b"",
+        );
+        let newer = root.join("1.99.0/bin");
+        write(&newer.join("cargo"), b"");
+        write(&newer.join("rustc"), b"");
+        write(
+            &root.join("1.99.0/lib/rustlib/x86_64-pc-windows-gnu/lib/libcore.rlib"),
+            b"",
+        );
+        write(&root.join("1.80.0/bin/cargo"), b"");
+
+        let picked = toolchain_for("x86_64-pc-windows-gnu", root.clone()).unwrap();
+        assert_eq!(picked.cargo, newer.join("cargo"));
+        assert_eq!(picked.rustc, Some(newer.join("rustc")));
+        assert_eq!(picked.label, "1.99.0");
+        assert!(toolchain_for("aarch64-apple-darwin", root).is_none());
     }
 
     #[test]
@@ -514,14 +792,25 @@ mod tests {
         let out = dir.join("build/linux");
 
         let (tx, rx) = mpsc::channel();
-        stage(&player, &scene, &out, Some(&assets), &tx).unwrap();
+        stage(
+            &player,
+            &scene,
+            &out,
+            Some(&assets),
+            Target::Linux,
+            &tx,
+        )
+        .unwrap();
         drop(tx);
 
-        assert!(out.join(GAME_BIN).is_file());
+        assert!(out.join(Target::Linux.binary_name()).is_file());
         assert!(out.join(SCENE_FILE).is_file());
         assert!(out.join("assets/textures/a.txt").is_file());
         let log = lines(&rx);
-        assert!(log.iter().any(|line| line.contains(OUT_DIR)), "{log:?}");
+        assert!(
+            log.iter().any(|line| line.contains(Target::Linux.out_dir())),
+            "{log:?}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -538,8 +827,8 @@ mod tests {
         let out = dir.join("build/linux");
 
         let (tx, _rx) = mpsc::channel();
-        stage(&player, &scene, &out, None, &tx).unwrap();
-        let mode = std::fs::metadata(out.join(GAME_BIN))
+        stage(&player, &scene, &out, None, Target::Linux, &tx).unwrap();
+        let mode = std::fs::metadata(out.join(Target::Linux.binary_name()))
             .unwrap()
             .permissions()
             .mode();
@@ -558,17 +847,23 @@ mod tests {
         write(&out.join("stale.txt"), b"old");
 
         let (tx, _rx) = mpsc::channel();
-        stage(&player, &scene, &out, None, &tx).unwrap();
+        stage(&player, &scene, &out, None, Target::Linux, &tx).unwrap();
         assert!(!out.join("stale.txt").exists());
-        assert!(out.join(GAME_BIN).is_file());
+        assert!(out.join(Target::Linux.binary_name()).is_file());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn player_prefers_release_over_debug() {
         let [first, second] = candidates(Path::new("target"));
-        assert_eq!(first, Path::new("target/release").join(player_name()));
-        assert_eq!(second, Path::new("target/debug").join(player_name()));
+        assert_eq!(
+            first,
+            Path::new("target/release").join(Target::Linux.player_name())
+        );
+        assert_eq!(
+            second,
+            Path::new("target/debug").join(Target::Linux.player_name())
+        );
     }
 
     #[test]
@@ -578,8 +873,21 @@ mod tests {
             assert!(!target.label().is_empty());
         }
         assert!(Target::Linux.ready());
-        assert!(!Target::Windows.ready());
         assert!(!Target::MacOs.ready());
+        assert_eq!(
+            Target::Windows.ready(),
+            mingw_linker().is_some()
+                && toolchain_for(WINDOWS_TRIPLE, toolchain_root()).is_some()
+        );
+    }
+
+    #[test]
+    fn selecting_an_unavailable_target_is_refused() {
+        let mut state = BuildState::default();
+        state.set_target(Target::MacOs);
+        assert_eq!(state.target, Target::Linux);
+        state.set_target(Target::Linux);
+        assert_eq!(state.rev, 0);
     }
 
     #[test]

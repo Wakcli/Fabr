@@ -317,6 +317,9 @@ pub struct PhysicsBodySpec {
     /// Half extents of the axis-aligned collider.
     #[serde(default = "default_half_extents")]
     pub half_extents: [f32; 3],
+    /// Whether a player-controlled kinematic controller drives this body.
+    #[serde(default)]
+    pub controller: bool,
 }
 
 fn default_half_extents() -> [f32; 3] {
@@ -328,6 +331,7 @@ impl Default for PhysicsBodySpec {
         Self {
             dynamic: true,
             half_extents: default_half_extents(),
+            controller: false,
         }
     }
 }

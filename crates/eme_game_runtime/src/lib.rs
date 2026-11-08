@@ -25,7 +25,10 @@ pub use extensions::{load_for, Extension, ExtensionSet, PLUGINS_FILE};
 pub use nav::{
     NavAgent, NavGrid, NavGridSettings, NavPlugin, NavSet, refresh_nav_grid, step_nav_agents,
 };
-pub use physics::{step_physics, PhysicsBody, PhysicsSettings};
+pub use physics::{
+    step_controllers, step_physics, walkable, ControllerSettings, KinematicController, PhysicsBody,
+    PhysicsSettings,
+};
 
 /// The authored behaviour plus the transform it advances from.
 #[derive(Component, Clone, Copy, Debug)]
@@ -59,7 +62,11 @@ pub fn run_behaviours(
     time: Res<Time>,
     mut objects: Query<
         (&SceneBehaviour, &mut Transform),
-        (Without<PhysicsBody>, Without<NavAgent>),
+        (
+            Without<PhysicsBody>,
+            Without<NavAgent>,
+            Without<KinematicController>,
+        ),
     >,
 ) {
     let now = time.elapsed_secs();

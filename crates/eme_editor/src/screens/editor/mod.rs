@@ -240,6 +240,7 @@ impl Plugin for EditorPlugin {
         crate::shortcuts::install(app);
         crate::extensions::install(app);
         crate::profile::install(app);
+        crate::hud::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()

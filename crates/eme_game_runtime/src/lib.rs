@@ -21,7 +21,7 @@ pub mod nav;
 /// Optional engine extensions toggled by `fabr.plugins.ron`.
 pub mod extensions;
 
-pub use extensions::{load_for, Extension, ExtensionSet, PLUGINS_FILE};
+pub use extensions::{load_for, Extension, ExtensionSet, ExternalPlugin, PLUGINS_FILE};
 pub use nav::{
     NavAgent, NavGrid, NavGridSettings, NavPlugin, NavSet, refresh_nav_grid, step_nav_agents,
 };

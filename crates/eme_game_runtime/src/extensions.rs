@@ -62,18 +62,31 @@ impl Extension {
     }
 }
 
+/// One external plugin library listed in `fabr.plugins.ron`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ExternalPlugin {
+    /// Display name.
+    pub name: String,
+    /// Library path, absolute or relative to the project root.
+    pub library: String,
+}
+
 /// The project's enabled extension list.
 #[derive(Resource, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct ExtensionSet {
     /// Identifiers of enabled extensions.
     pub enabled: BTreeSet<String>,
+    /// External shared libraries loaded before the app starts.
+    #[serde(default)]
+    pub external: Vec<ExternalPlugin>,
 }
 
 impl Default for ExtensionSet {
     fn default() -> Self {
         Self {
             enabled: Extension::ALL.iter().map(|ext| ext.id().to_string()).collect(),
+            external: Vec::new(),
         }
     }
 }

@@ -97,6 +97,8 @@ pub struct FileTree {
     scan: Scan,
     expanded: HashSet<String>,
     index: Vec<IndexEntry>,
+    /// Whether the search index must be rebuilt before the next filtered view.
+    index_dirty: bool,
     index_sig: u64,
     selected: Option<String>,
     signature: Option<u64>,
@@ -134,6 +136,7 @@ impl FileTree {
             scan: Scan::default(),
             expanded: HashSet::new(),
             index: Vec::new(),
+            index_dirty: true,
             index_sig: 0,
             selected: None,
             signature: None,
@@ -147,14 +150,13 @@ impl FileTree {
     }
 
     /// Rescans the project folder, returning whether its signature changed.
+    ///
+    /// The search index is not built here: it costs a full tree walk and is
+    /// only useful while the filter has text. [`Self::ensure_index`] builds it
+    /// on demand.
     fn rescan(&mut self) -> bool {
         let scan = scan(&self.root, &self.expanded);
-        let (index, index_sig) = index_tree(&self.root);
-        if index_sig != self.index_sig {
-            self.index = index;
-            self.index_sig = index_sig;
-            self.rev = self.rev.wrapping_add(1);
-        }
+        self.index_dirty = true;
         if self.ready && self.signature == Some(scan.signature) {
             return false;
         }
@@ -163,6 +165,24 @@ impl FileTree {
         self.ready = true;
         self.rev = self.rev.wrapping_add(1);
         true
+    }
+
+    /// Builds the search index if a rescan happened since it was last built.
+    ///
+    /// Bumps the view revision only when the index content changed, so an
+    /// unchanged tree does not force the dock to rebuild its rows.
+    fn ensure_index(&mut self) {
+        if !self.index_dirty {
+            return;
+        }
+        self.index_dirty = false;
+        let (index, index_sig) = index_tree(&self.root);
+        if index_sig == self.index_sig {
+            return;
+        }
+        self.index = index;
+        self.index_sig = index_sig;
+        self.rev = self.rev.wrapping_add(1);
     }
 
     fn toggle(&mut self, rel: &str) {
@@ -672,6 +692,9 @@ pub fn sync_file_rows(
     };
     if !tree.ready {
         tree.rescan();
+    }
+    if !filter.query.trim().is_empty() {
+        tree.ensure_index();
     }
     let Ok(host) = hosts.single() else {
         return;
@@ -1242,6 +1265,90 @@ mod tests {
         let scan = scan(&tmp.0.join("absent"), &HashSet::new());
         assert!(scan.missing);
         assert_eq!(rows(&scan, &HashSet::new()), [Row::MissingRoot]);
+    }
+
+    /// Times a project rescan and the search-index walk it triggers.
+    ///
+    /// Run with `cargo test -p eme_editor --bin eme_editor bench_file_rescan -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_file_rescan() {
+        use std::io::Write;
+        let root = std::env::temp_dir()
+            .join(format!("fabr-files-bench-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for dir in 0..120 {
+            let path = root.join(format!("dir{dir:03}"));
+            std::fs::create_dir_all(&path).unwrap();
+            for file in 0..80 {
+                std::fs::write(path.join(format!("file{file:03}.ron")), b"x").unwrap();
+            }
+        }
+        let mut tree = FileTree::new(root.clone());
+        let runs = 10;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            tree.rescan();
+        }
+        let rescan_ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            tree.index_dirty = true;
+            tree.ensure_index();
+        }
+        let index_ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        let _ = writeln!(
+            std::io::stderr(),
+            "asset browser: 9600 files -> {rescan_ms:.2} ms/rescan, {index_ms:.2} ms index when a filter asks for it"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rescanning_does_not_build_the_search_index_until_it_is_needed() {
+        let root = std::env::temp_dir().join(format!(
+            "fabr-files-lazy-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("scenes/nested")).unwrap();
+        std::fs::write(root.join("scenes/nested/main.ember"), b"x").unwrap();
+        std::fs::write(root.join("notes.txt"), b"x").unwrap();
+
+        let mut tree = FileTree::new(root.clone());
+        tree.rescan();
+        assert!(tree.index_dirty);
+        assert!(tree.index.is_empty(), "no filter, no index walk");
+        assert!(!matching_rows(&tree.index, "main").iter().any(|row| {
+            matches!(row, Row::Match { rel, .. } if rel.ends_with("main.ember"))
+        }));
+
+        tree.ensure_index();
+        assert!(!tree.index_dirty);
+        assert!(tree.index.iter().any(|entry| entry.rel == "scenes/nested/main.ember"));
+        let rev = tree.rev;
+
+        tree.rescan();
+        assert!(
+            tree.index_dirty,
+            "a new scan invalidates the index for the next search"
+        );
+        tree.ensure_index();
+        assert_eq!(tree.rev, rev, "an unchanged index must not rebuild rows");
+
+        let sig = tree.signature;
+        std::fs::rename(
+            root.join("scenes/nested/main.ember"),
+            root.join("scenes/nested/level2.ember"),
+        )
+        .unwrap();
+        tree.rescan();
+        assert_eq!(tree.signature, sig, "the rename is below the collapsed root");
+        tree.ensure_index();
+        assert_ne!(tree.rev, rev, "a changed index must refresh the search");
+        assert!(tree.index.iter().any(|entry| entry.rel == "scenes/nested/level2.ember"));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     struct CubeFiles;

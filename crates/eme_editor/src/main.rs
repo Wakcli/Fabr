@@ -18,6 +18,7 @@ mod console;
 mod import;
 mod mixer;
 mod packages;
+mod shortcuts;
 mod orbit;
 mod persist;
 mod play;

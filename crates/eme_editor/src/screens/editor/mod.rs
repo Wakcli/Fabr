@@ -18,7 +18,7 @@ mod gizmo;
 pub(crate) mod icons;
 mod inspector;
 mod menu;
-mod palette;
+pub(crate) mod palette;
 pub(crate) mod tabs;
 mod viewport;
 
@@ -64,6 +64,8 @@ pub fn screen(layout: Layout) -> impl Scene {
             {crate::mixer::panel()}
             --
             {crate::packages::panel()}
+            --
+            {crate::shortcuts::panel()}
             --
             {palette::overlay()}
             --
@@ -227,6 +229,7 @@ impl Plugin for EditorPlugin {
         crate::settings::install(app);
         crate::mixer::install(app);
         crate::packages::install(app);
+        crate::shortcuts::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()
@@ -369,7 +372,6 @@ impl Plugin for EditorPlugin {
                     menu::style_menu_rows,
                     menu::close_on_teardown,
                     dock::sync,
-                    persist::scene_shortcuts,
                     persist::edit_shortcuts,
                     build::poll_build,
                     build_dialog::sync_modal,

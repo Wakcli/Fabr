@@ -1,0 +1,7 @@
+(
+    binds: {
+        "command_palette": "Ctrl+P",
+        "open_scene": "Ctrl+O",
+        "save_scene": "Ctrl+S",
+    },
+)

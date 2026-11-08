@@ -99,29 +99,6 @@ pub fn open_path_into(
     }
 }
 
-/// Ctrl+S saves the active tab, Ctrl+O reloads it from disk.
-pub fn scene_shortcuts(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut state: ResMut<SceneState>,
-    index: Res<ModelIndex>,
-    mut log: ResMut<ConsoleLog>,
-) {
-    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    if !ctrl {
-        return;
-    }
-    if keys.just_pressed(KeyCode::KeyS) {
-        let path = SCENE_PATH;
-        match save_to(&state.doc, path) {
-            Ok(path) => info!("saved scene to {}", path.display()),
-            Err(err) => error!("could not save {path}: {err}"),
-        }
-    }
-    if keys.just_pressed(KeyCode::KeyO) {
-        open_path_into(&mut state, SCENE_PATH, &index, &mut log);
-    }
-}
-
 /// Undo, redo, and the clipboard shortcuts.
 ///
 /// Runs only on the editor screen, and never while a text field owns the keyboard

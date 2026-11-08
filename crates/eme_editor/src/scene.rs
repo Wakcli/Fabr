@@ -18,7 +18,9 @@ use eme_editor_core::Selection;
 use eme_game_overrides::ModelOverrides;
 use eme_script::ScriptedObject;
 use eme_anim::AnimationSource;
-use eme_game_runtime::{GuidIndex, ModelImport, NodeKey, PhysicsBody, SceneBehaviour};
+use eme_game_runtime::{
+    GuidIndex, KinematicController, ModelImport, NodeKey, PhysicsBody, SceneBehaviour,
+};
 use eme_net::ReplicatedObject;
 use eme_game_scene::{Behaviour, ObjectKind, ObjectTransform, SceneDoc, SceneObject};
 
@@ -587,11 +589,19 @@ pub fn reconcile_scene(
                     }
                 }
                 match obj.physics.as_ref() {
+                    Some(spec) if spec.controller => {
+                        entity.remove::<PhysicsBody>();
+                        entity.insert(KinematicController::new(Vec3::from_array(
+                            spec.half_extents,
+                        )));
+                    }
                     Some(spec) => {
+                        entity.remove::<KinematicController>();
                         entity.insert(PhysicsBody::from_spec(spec));
                     }
                     None => {
                         entity.remove::<PhysicsBody>();
+                        entity.remove::<KinematicController>();
                     }
                 }
                 // the behaviour system owns the transform during an embedded
@@ -1029,9 +1039,17 @@ fn spawn_entity(
         });
     }
     if let Some(physics) = physics {
-        commands
-            .entity(entity)
-            .insert(PhysicsBody::from_spec(physics));
+        if physics.controller {
+            commands
+                .entity(entity)
+                .insert(KinematicController::new(Vec3::from_array(
+                    physics.half_extents,
+                )));
+        } else {
+            commands
+                .entity(entity)
+                .insert(PhysicsBody::from_spec(physics));
+        }
     }
     commands
         .entity(entity)

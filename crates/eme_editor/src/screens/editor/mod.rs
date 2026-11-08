@@ -234,6 +234,7 @@ impl Plugin for EditorPlugin {
             eme_game_runtime::NavSet.after(eme_script::update_scripts),
         );
         app.insert_resource(eme_script::ScriptRoot(crate::asset_root()));
+        app.init_resource::<eme_game_runtime::ControllerSettings>();
         crate::settings::install(app);
         crate::mixer::install(app);
         crate::packages::install(app);
@@ -314,6 +315,10 @@ impl Plugin for EditorPlugin {
                         crate::play::sync_button,
                         crate::play::autoplay,
                         eme_game_runtime::run_behaviours.run_if(crate::play::behaviours_active),
+                        eme_game_runtime::step_controllers
+                            .after(eme_script::update_scripts)
+                            .run_if(crate::play::behaviours_active)
+                            .run_if(extension_physics),
                         eme_game_runtime::step_physics
                             .after(eme_script::update_scripts)
                             .run_if(crate::play::behaviours_active)

@@ -10,6 +10,7 @@ keywords = ["fabr", "scripting", "lua", "runtime"]
 rust-version = "1.96.0"
 
 [dependencies]
+eme_anim = { path = "../eme_anim", version = "0.20.0-dev" }
 eme_app = { path = "../eme_app", version = "0.20.0-dev" }
 eme_asset = { path = "../eme_asset", version = "0.20.0-dev" }
 eme_audio = { path = "../eme_audio", version = "0.20.0-dev" }

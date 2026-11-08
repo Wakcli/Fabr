@@ -17,6 +17,7 @@ use eme_app::{App, Plugin, Update};
 use eme_asset::{AssetServer, Handle};
 use eme_audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use eme_ecs::prelude::*;
+use eme_anim::AnimationSet;
 use eme_game_runtime::PhysicsBody;
 use eme_game_scene::{ScriptRef, ScriptValue};
 use eme_input::prelude::*;
@@ -259,6 +260,12 @@ struct Instance {
     failed: bool,
 }
 
+#[derive(Clone, Debug)]
+enum AnimationOp {
+    Play(String),
+    Stop,
+}
+
 struct ApiState {
     self_entity: Entity,
     transforms: HashMap<Entity, (Vec3, Quat)>,
@@ -274,6 +281,10 @@ struct ApiState {
     velocities: HashMap<Entity, Vec3>,
     grounded: HashSet<Entity>,
     velocity_ops: Vec<(Entity, Vec3)>,
+    anim_clips: HashMap<Entity, Vec<String>>,
+    anim_selected: HashMap<Entity, Option<String>>,
+    anim_playing: HashSet<Entity>,
+    animation_ops: Vec<(Entity, AnimationOp)>,
     delta: f32,
     elapsed: f32,
     properties: BTreeMap<String, ScriptValue>,
@@ -296,6 +307,10 @@ impl Default for ApiState {
             velocities: HashMap::new(),
             grounded: HashSet::new(),
             velocity_ops: Vec::new(),
+            anim_clips: HashMap::new(),
+            anim_selected: HashMap::new(),
+            anim_playing: HashSet::new(),
+            animation_ops: Vec::new(),
             delta: 0.0,
             elapsed: 0.0,
             properties: BTreeMap::new(),
@@ -425,6 +440,54 @@ impl ScriptRuntime {
                 state.grounded.remove(&entity);
                 state.velocity_ops.retain(|(target, _)| *target != entity);
                 state.velocity_ops.push((entity, velocity));
+                Ok(())
+            })?,
+        )?;
+
+        let api_clips = api.clone();
+        self_table.set(
+            "animation_clips",
+            lua.create_function(move |lua, _self: Value| {
+                let state = api_clips.lock().unwrap();
+                let table = lua.create_table()?;
+                if let Some(clips) = state.anim_clips.get(&state.self_entity) {
+                    for (index, clip) in clips.iter().enumerate() {
+                        table.set(index + 1, clip.clone())?;
+                    }
+                }
+                Ok(table)
+            })?,
+        )?;
+        let api_play_anim = api.clone();
+        self_table.set(
+            "play_animation",
+            lua.create_function(move |_, (_self, name): (Value, String)| {
+                let mut state = api_play_anim.lock().unwrap();
+                let entity = state.self_entity;
+                let known = state
+                    .anim_clips
+                    .get(&entity)
+                    .is_some_and(|clips| clips.iter().any(|clip| clip == &name));
+                if !known {
+                    state.log.push(format!("animation: missing clip {name}"));
+                    return Ok(false);
+                }
+                state.anim_selected.insert(entity, Some(name.clone()));
+                state.anim_playing.insert(entity);
+                state
+                    .animation_ops
+                    .push((entity, AnimationOp::Play(name)));
+                Ok(true)
+            })?,
+        )?;
+        let api_stop_anim = api.clone();
+        self_table.set(
+            "stop_animation",
+            lua.create_function(move |_, _self: Value| {
+                let mut state = api_stop_anim.lock().unwrap();
+                let entity = state.self_entity;
+                state.anim_playing.remove(&entity);
+                state.animation_ops.push((entity, AnimationOp::Stop));
                 Ok(())
             })?,
         )?;
@@ -844,6 +907,7 @@ pub fn update_scripts(
     mut log: ResMut<ScriptLog>,
     mut transforms: Query<(Entity, &mut Transform)>,
     mut bodies: Query<(Entity, &mut PhysicsBody)>,
+    mut animations: Query<(Entity, &mut AnimationSet)>,
     names: Query<(Entity, &Name)>,
 ) {
     if !active.0 {
@@ -873,6 +937,16 @@ pub fn update_scripts(
         velocities.insert(entity, body.velocity);
         if body.grounded {
             grounded.insert(entity);
+        }
+    }
+    let mut anim_clips = HashMap::new();
+    let mut anim_selected = HashMap::new();
+    let mut anim_playing = HashSet::new();
+    for (entity, set) in &animations {
+        anim_clips.insert(entity, set.clips.clone());
+        anim_selected.insert(entity, set.selected.clone());
+        if set.playing {
+            anim_playing.insert(entity);
         }
     }
 
@@ -928,8 +1002,12 @@ pub fn update_scripts(
             api.mouse = mouse_pressed.clone();
             api.velocities = velocities.clone();
             api.grounded = grounded.clone();
+            api.anim_clips = anim_clips.clone();
+            api.anim_selected = anim_selected.clone();
+            api.anim_playing = anim_playing.clone();
             api.ops.clear();
             api.velocity_ops.clear();
+            api.animation_ops.clear();
         }
 
         let mut result = Ok(());
@@ -959,6 +1037,16 @@ pub fn update_scripts(
                 body.velocity = velocity;
                 if velocity.y > 0.0 {
                     body.grounded = false;
+                }
+            }
+        }
+        for (entity, op) in api.animation_ops.drain(..) {
+            if let Ok((_, mut set)) = animations.get_mut(entity) {
+                match op {
+                    AnimationOp::Play(name) => {
+                        set.play(&name);
+                    }
+                    AnimationOp::Stop => set.stop(),
                 }
             }
         }
@@ -1410,6 +1498,75 @@ return {
             .expect("body survives the script");
         assert_eq!(body.velocity, Vec3::new(0.0, 5.0, 0.0));
         assert!(!body.grounded);
+    }
+
+    fn animated(entity: Entity, world: &mut World) {
+        world.entity_mut(entity).insert(AnimationSet {
+            clips: vec!["Spin".into(), "Walk".into()],
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn a_script_lists_and_plays_animation_clips() {
+        let dir = scratch("animation");
+        std::fs::write(
+            dir.join("anim.lua"),
+            "return { on_start = function(self) fabr.log('clips=' .. #self:animation_clips() .. ' ok=' .. tostring(self:play_animation('Spin'))) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "anim.lua", BTreeMap::new());
+        animated(entity, &mut world);
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("clips=2 ok=true"), "{log}");
+        let set = world.get::<AnimationSet>(entity).unwrap();
+        assert_eq!(set.selected.as_deref(), Some("Spin"));
+        assert!(set.playing);
+    }
+
+    #[test]
+    fn a_script_reports_missing_animation_clips() {
+        let dir = scratch("animation-missing");
+        std::fs::write(
+            dir.join("anim.lua"),
+            "return { on_start = function(self) fabr.log('ok=' .. tostring(self:play_animation('Fly'))) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "anim.lua", BTreeMap::new());
+        animated(entity, &mut world);
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("ok=false"), "{log}");
+        assert!(log.contains("missing clip Fly"), "{log}");
+        let set = world.get::<AnimationSet>(entity).unwrap();
+        assert!(!set.playing);
+    }
+
+    #[test]
+    fn a_script_stops_animation() {
+        let dir = scratch("animation-stop");
+        std::fs::write(
+            dir.join("anim.lua"),
+            "return { on_start = function(self) self:stop_animation() end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "anim.lua", BTreeMap::new());
+        world.entity_mut(entity).insert(AnimationSet {
+            clips: vec!["Spin".into()],
+            selected: Some("Spin".into()),
+            playing: true,
+            error: None,
+        });
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let set = world.get::<AnimationSet>(entity).unwrap();
+        assert!(!set.playing);
     }
 
     #[test]

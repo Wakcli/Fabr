@@ -18,7 +18,7 @@ use eme_asset::{AssetServer, Handle};
 use eme_audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use eme_ecs::prelude::*;
 use eme_anim::AnimationSet;
-use eme_game_runtime::PhysicsBody;
+use eme_game_runtime::{NavAgent, NavGrid, PhysicsBody};
 use eme_game_scene::{ScriptRef, ScriptValue};
 use eme_input::prelude::*;
 use eme_math::prelude::*;
@@ -266,6 +266,12 @@ enum AnimationOp {
     Stop,
 }
 
+#[derive(Clone, Debug)]
+enum NavOp {
+    Go { goal: Vec3, speed: f32 },
+    Stop,
+}
+
 struct ApiState {
     self_entity: Entity,
     transforms: HashMap<Entity, (Vec3, Quat)>,
@@ -285,6 +291,8 @@ struct ApiState {
     anim_selected: HashMap<Entity, Option<String>>,
     anim_playing: HashSet<Entity>,
     animation_ops: Vec<(Entity, AnimationOp)>,
+    nav: Option<Arc<NavGrid>>,
+    nav_ops: Vec<(Entity, NavOp)>,
     delta: f32,
     elapsed: f32,
     properties: BTreeMap<String, ScriptValue>,
@@ -311,6 +319,8 @@ impl Default for ApiState {
             anim_selected: HashMap::new(),
             anim_playing: HashSet::new(),
             animation_ops: Vec::new(),
+            nav: None,
+            nav_ops: Vec::new(),
             delta: 0.0,
             elapsed: 0.0,
             properties: BTreeMap::new(),
@@ -492,6 +502,36 @@ impl ScriptRuntime {
             })?,
         )?;
 
+        let api_move = api.clone();
+        self_table.set(
+            "move_to",
+            lua.create_function(
+                move |_, (_self, x, y, z, speed): (Value, f32, f32, f32, Option<f32>)| {
+                    let mut state = api_move.lock().unwrap();
+                    let entity = state.self_entity;
+                    let speed = speed.filter(|speed| speed.is_finite()).unwrap_or(3.0);
+                    state.nav_ops.push((
+                        entity,
+                        NavOp::Go {
+                            goal: Vec3::new(x, y, z),
+                            speed: speed.clamp(0.1, 50.0),
+                        },
+                    ));
+                    Ok(())
+                },
+            )?,
+        )?;
+        let api_stop_move = api.clone();
+        self_table.set(
+            "stop_moving",
+            lua.create_function(move |_, _self: Value| {
+                let mut state = api_stop_move.lock().unwrap();
+                let entity = state.self_entity;
+                state.nav_ops.push((entity, NavOp::Stop));
+                Ok(())
+            })?,
+        )?;
+
         let fabr = lua.create_table()?;
         let api_log = api.clone();
         fabr.set("log", lua.create_function(move |_, value: Value| {
@@ -565,6 +605,35 @@ impl ScriptRuntime {
         })?)?;
         fabr.set("input", input)?;
         fabr.set("audio", audio)?;
+        let api_nav = api.clone();
+        let nav = lua.create_table()?;
+        nav.set(
+            "find_path",
+            lua.create_function(
+                move |lua, (x1, y1, z1, x2, y2, z2): (f32, f32, f32, f32, f32, f32)| {
+                    let state = api_nav.lock().unwrap();
+                    let table = lua.create_table()?;
+                    let Some(grid) = &state.nav else {
+                        return Ok(table);
+                    };
+                    let Some(path) = grid.find_path(
+                        Vec3::new(x1, y1, z1),
+                        Vec3::new(x2, y2, z2),
+                    ) else {
+                        return Ok(table);
+                    };
+                    for (index, point) in path.iter().enumerate() {
+                        let entry = lua.create_table()?;
+                        entry.set("x", point.x)?;
+                        entry.set("y", point.y)?;
+                        entry.set("z", point.z)?;
+                        table.set(index + 1, entry)?;
+                    }
+                    Ok(table)
+                },
+            )?,
+        )?;
+        fabr.set("nav", nav)?;
 
         let api_find = api.clone();
         let find_names = names.clone();
@@ -908,6 +977,9 @@ pub fn update_scripts(
     mut transforms: Query<(Entity, &mut Transform)>,
     mut bodies: Query<(Entity, &mut PhysicsBody)>,
     mut animations: Query<(Entity, &mut AnimationSet)>,
+    mut agents: Query<(Entity, &mut NavAgent)>,
+    grid: Res<NavGrid>,
+    mut commands: Commands,
     names: Query<(Entity, &Name)>,
 ) {
     if !active.0 {
@@ -939,6 +1011,7 @@ pub fn update_scripts(
             grounded.insert(entity);
         }
     }
+    let nav = Arc::new(grid.clone());
     let mut anim_clips = HashMap::new();
     let mut anim_selected = HashMap::new();
     let mut anim_playing = HashSet::new();
@@ -1008,6 +1081,8 @@ pub fn update_scripts(
             api.ops.clear();
             api.velocity_ops.clear();
             api.animation_ops.clear();
+            api.nav = Some(nav.clone());
+            api.nav_ops.clear();
         }
 
         let mut result = Ok(());
@@ -1047,6 +1122,26 @@ pub fn update_scripts(
                         set.play(&name);
                     }
                     AnimationOp::Stop => set.stop(),
+                }
+            }
+        }
+        for (entity, op) in api.nav_ops.drain(..) {
+            match op {
+                NavOp::Go { goal, speed } => {
+                    if let Ok((_, mut agent)) = agents.get_mut(entity) {
+                        agent.speed = speed;
+                        agent.go_to(goal);
+                    } else {
+                        let mut agent = NavAgent::default();
+                        agent.speed = speed;
+                        agent.go_to(goal);
+                        commands.entity(entity).insert(agent);
+                    }
+                }
+                NavOp::Stop => {
+                    if let Ok((_, mut agent)) = agents.get_mut(entity) {
+                        agent.stop();
+                    }
                 }
             }
         }
@@ -1142,6 +1237,7 @@ mod tests {
         world.insert_resource(ScriptReload::default());
         world.insert_resource(InputActions::default());
         world.insert_resource(ScriptAudio::default());
+        world.insert_resource(NavGrid::default());
         world.insert_resource(AudioMix::default());
         world.insert_resource(ScriptRuntime::default());
         world.insert_resource(Time::<()>::default());
@@ -1567,6 +1663,46 @@ return {
         world.run_system_once(update_scripts).unwrap();
         let set = world.get::<AnimationSet>(entity).unwrap();
         assert!(!set.playing);
+    }
+
+    #[test]
+    fn a_script_finds_a_path_on_the_nav_grid() {
+        let dir = scratch("nav-path");
+        std::fs::write(
+            dir.join("nav.lua"),
+            "return { on_start = function(self) local p = fabr.nav.find_path(-5, 0, 0, 5, 0, 0) fabr.log('points=' .. #p .. ' first=' .. tostring(p[1].x)) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        scripted(&mut world, "nav.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let log = world.resource::<ScriptLog>().lines().join("\n");
+        assert!(log.contains("points="), "{log}");
+        assert!(!log.contains("points=0"), "expected a path: {log}");
+    }
+
+    #[test]
+    fn a_script_moves_an_agent_and_stops_it() {
+        let dir = scratch("nav-agent");
+        std::fs::write(
+            dir.join("walk.lua"),
+            "return { on_start = function(self) self:move_to(4, 0, 0, 6) end, on_update = function(self, dt) if self.t then self:stop_moving() end self.t = (self.t or 0) + 1 end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "walk.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let agent = world
+            .get::<NavAgent>(entity)
+            .expect("move_to inserts a NavAgent");
+        assert_eq!(agent.goal, Some(Vec3::new(4.0, 0.0, 0.0)));
+        assert!((agent.speed - 6.0).abs() < 1e-6);
+
+        world.run_system_once(update_scripts).unwrap();
+        let agent = world.get::<NavAgent>(entity).unwrap();
+        assert_eq!(agent.goal, None, "stop_moving clears the goal");
     }
 
     #[test]

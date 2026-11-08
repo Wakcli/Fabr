@@ -17,6 +17,8 @@ eme = { path = "../..", version = "0.20.0-dev", default-features = false, featur
   "eme_feathers",
   "eme_dev_tools",
   "render_dev_tools",
+  "audio",
+  "wav",
 ] }
 eme_editor_core = { path = "../eme_editor_core", version = "0.20.0-dev" }
 eme_game_overrides = { path = "../eme_game_overrides", version = "0.20.0-dev" }

@@ -409,8 +409,11 @@ struct ApiState {
     mouse: HashSet<u8>,
     audio: Vec<AudioRequest>,
     velocities: HashMap<Entity, Vec3>,
+    angular: HashMap<Entity, Vec3>,
     grounded: HashSet<Entity>,
     velocity_ops: Vec<(Entity, Vec3)>,
+    angular_ops: Vec<(Entity, Vec3)>,
+    spin_ops: Vec<(Entity, Vec3)>,
     anim_clips: HashMap<Entity, Vec<String>>,
     anim_selected: HashMap<Entity, Option<String>>,
     anim_playing: HashSet<Entity>,
@@ -441,8 +444,11 @@ impl Default for ApiState {
             mouse: HashSet::new(),
             audio: Vec::new(),
             velocities: HashMap::new(),
+            angular: HashMap::new(),
             grounded: HashSet::new(),
             velocity_ops: Vec::new(),
+            angular_ops: Vec::new(),
+            spin_ops: Vec::new(),
             anim_clips: HashMap::new(),
             anim_selected: HashMap::new(),
             anim_playing: HashSet::new(),
@@ -591,6 +597,40 @@ impl ScriptRuntime {
                 state.grounded.remove(&entity);
                 state.velocity_ops.retain(|(target, _)| *target != entity);
                 state.velocity_ops.push((entity, velocity));
+                Ok(())
+            })?,
+        )?;
+
+        let api_set_spin = api.clone();
+        self_table.set(
+            "set_angular_velocity",
+            lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
+                let mut state = api_set_spin.lock().unwrap();
+                let entity = state.self_entity;
+                state.angular_ops.push((entity, Vec3::new(x, y, z)));
+                Ok(())
+            })?,
+        )?;
+        let api_get_spin = api.clone();
+        self_table.set(
+            "get_angular_velocity",
+            lua.create_function(move |_, _self: Value| {
+                let state = api_get_spin.lock().unwrap();
+                let spin = state
+                    .angular
+                    .get(&state.self_entity)
+                    .copied()
+                    .unwrap_or_default();
+                Ok((spin.x, spin.y, spin.z))
+            })?,
+        )?;
+        let api_add_spin = api.clone();
+        self_table.set(
+            "add_spin",
+            lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
+                let mut state = api_add_spin.lock().unwrap();
+                let entity = state.self_entity;
+                state.spin_ops.push((entity, Vec3::new(x, y, z)));
                 Ok(())
             })?,
         )?;
@@ -1249,9 +1289,11 @@ pub fn update_scripts(
         }
     }
     let mut velocities = HashMap::new();
+    let mut angular = HashMap::new();
     let mut grounded = HashSet::new();
     for (entity, body) in &bodies {
         velocities.insert(entity, body.velocity);
+        angular.insert(entity, body.angular_velocity);
         if body.grounded {
             grounded.insert(entity);
         }
@@ -1319,12 +1361,15 @@ pub fn update_scripts(
             api.actions_down = action_down.clone();
             api.mouse = mouse_pressed.clone();
             api.velocities = velocities.clone();
+            api.angular = angular.clone();
             api.grounded = grounded.clone();
             api.anim_clips = anim_clips.clone();
             api.anim_selected = anim_selected.clone();
             api.anim_playing = anim_playing.clone();
             api.ops.clear();
             api.velocity_ops.clear();
+            api.angular_ops.clear();
+            api.spin_ops.clear();
             api.animation_ops.clear();
             api.nav = Some(nav.clone());
             api.nav_ops.clear();
@@ -1362,6 +1407,16 @@ pub fn update_scripts(
                 if velocity.y > 0.0 {
                     body.grounded = false;
                 }
+            }
+        }
+        for (target, angular) in api.angular_ops.drain(..) {
+            if let Ok((_, mut body)) = bodies.get_mut(target) {
+                body.angular_velocity = angular;
+            }
+        }
+        for (target, impulse) in api.spin_ops.drain(..) {
+            if let Ok((_, mut body)) = bodies.get_mut(target) {
+                body.apply_angular_impulse(impulse, 1.0);
             }
         }
         for (entity, op) in api.animation_ops.drain(..) {
@@ -1871,6 +1926,7 @@ return {
             dynamic: true,
             half_extents: Vec3::splat(0.5),
             velocity: Vec3::new(0.0, -3.0, 0.0),
+            angular_velocity: Vec3::ZERO,
             grounded: true,
         });
         world.run_system_once(sync_scripts).unwrap();
@@ -1894,6 +1950,7 @@ return {
             dynamic: true,
             half_extents: Vec3::splat(0.5),
             velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
             grounded: true,
         });
         world.run_system_once(sync_scripts).unwrap();
@@ -2116,6 +2173,30 @@ return {
         assert!(log.contains("additive load requested"), "{log}");
         assert!(log.contains("unload requested"), "{log}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_script_sets_and_reads_angular_velocity() {
+        let dir = scratch("spin-api");
+        std::fs::write(
+            dir.join("spin.lua"),
+            "return { on_start = function(self) self:set_angular_velocity(0, 2, 0) self:add_spin(0, 3, 0) end, on_update = function(self) local x, y, z = self:get_angular_velocity() fabr.log(string.format('spin %.2f %.2f %.2f', x, y, z)) end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let entity = scripted(&mut world, "spin.lua", BTreeMap::new());
+        world.entity_mut(entity).insert(PhysicsBody {
+            dynamic: true,
+            half_extents: Vec3::splat(0.5),
+            velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
+            grounded: false,
+        });
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        let body = world.get::<PhysicsBody>(entity).unwrap();
+        // 2 rad/s from the setter plus 3 / (1/6) rad/s from the impulse
+        assert!((body.angular_velocity.y - 20.0).abs() < 1e-3, "{:?}", body.angular_velocity);
     }
 
     #[test]

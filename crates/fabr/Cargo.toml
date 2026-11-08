@@ -1,0 +1,18 @@
+[package]
+name = "fabr"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Fabr game SDK: scene, scripting, input and project settings"
+homepage = "https://eme.org"
+repository = "https://github.com/bevyengine/eme"
+license = "MIT OR Apache-2.0"
+keywords = ["fabr", "game-engine", "sdk", "scripting"]
+rust-version = "1.96.0"
+
+[dependencies]
+eme_editor_project = { path = "../eme_editor_project", version = "0.20.0-dev" }
+eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }
+eme_script = { path = "../eme_script", version = "0.20.0-dev" }
+
+[lints]
+workspace = true

@@ -13,10 +13,9 @@ rust-version = "1.96.0"
 eme = { path = "../..", version = "0.20.0-dev", default-features = false, features = [
   "3d",
 ] }
+fabr = { path = "../fabr", version = "0.20.0-dev" }
 eme_game_overrides = { path = "../eme_game_overrides", version = "0.20.0-dev" }
-eme_editor_project = { path = "../eme_editor_project", version = "0.20.0-dev" }
 eme_game_runtime = { path = "../eme_game_runtime", version = "0.20.0-dev" }
-eme_script = { path = "../eme_script", version = "0.20.0-dev" }
 eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }
 
 [lints]

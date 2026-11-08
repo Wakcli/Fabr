@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use eme::prelude::*;
 use eme_game_overrides::ModelOverrides;
 use eme_game_runtime::{GuidIndex, ModelImport, SceneBehaviour};
-use eme_script::ScriptedObject;
+use fabr::ScriptedObject;
 use eme_game_scene::{
     Behaviour, BehaviourKind, ObjectKind, ObjectTransform, SceneDoc, SceneObject,
 };

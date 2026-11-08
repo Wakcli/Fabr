@@ -51,17 +51,12 @@ fn main() {
     }
 
     let loaded = scene::load(args.scene.as_deref()).unwrap_or_else(|err| die(err));
-    let settings = eme_editor_project::ProjectSettings::load_or_default(Path::new(
-        eme_editor_project::SETTINGS_FILE,
-    ))
-    .unwrap_or_else(|err| {
+    let config = fabr::FabrConfig::load(Path::new(".")).unwrap_or_else(|err| {
         let _ = writeln!(std::io::stderr(), "fabr settings: {err}; using defaults");
-        eme_editor_project::ProjectSettings::default()
+        fabr::FabrConfig::default()
     });
-    let actions = eme_script::InputActions::from_names(&settings.input.actions).unwrap_or_else(|err| {
-        let _ = writeln!(std::io::stderr(), "fabr input: {err}; actions disabled");
-        eme_script::InputActions::default()
-    });
+    let settings = &config.settings;
+    let actions = config.input.clone();
     let title = if loaded.doc.objects.is_empty() {
         format!("{} (empty scene)", settings.player.title)
     } else {
@@ -83,9 +78,9 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins(eme_script::ScriptPlugin)
-        .insert_resource(eme_script::ScriptsActive(true))
-        .insert_resource(eme_script::ScriptRoot(PathBuf::from("assets")))
+        .add_plugins(fabr::ScriptPlugin)
+        .insert_resource(fabr::ScriptsActive(true))
+        .insert_resource(fabr::ScriptRoot(PathBuf::from("assets")))
         .insert_resource(actions)
         .insert_resource(loaded)
         .add_systems(Startup, (scene::announce, scene::spawn_scene))
@@ -132,7 +127,7 @@ fn write_demo() {
     say(&format!("wrote {DEMO_PATH}"));
 }
 
-fn log_script_lines(mut log: ResMut<eme_script::ScriptLog>, mut seen: Local<u64>) {
+fn log_script_lines(mut log: ResMut<fabr::ScriptLog>, mut seen: Local<u64>) {
     if log.rev() == *seen {
         return;
     }

@@ -1,0 +1,23 @@
+[package]
+name = "eme_test_plugin"
+version = "0.20.0-dev"
+edition = "2024"
+description = "Test plugin proving Fabr's external plugin ABI"
+license = "MIT OR Apache-2.0"
+rust-version = "1.96.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+eme = { path = "../..", default-features = false, features = [
+  "3d",
+  "dynamic_linking",
+  "ui",
+  "audio",
+  "wav",
+] }
+eme_plugin = { path = "../eme_plugin", version = "0.20.0-dev" }
+
+[lints]
+workspace = true

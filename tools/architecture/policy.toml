@@ -70,6 +70,7 @@
 "eme_picking" = 12
 "eme_platform" = 1
 "eme_player" = 22
+"eme_plugin" = 1
 "eme_post_process" = 15
 "eme_ptr" = 1
 "eme_reflect" = 3
@@ -80,6 +81,7 @@
 "eme_render_macros" = 3
 "eme_scene" = 9
 "eme_script" = 16
+"eme_test_plugin" = 22
 "eme_scene_macros" = 3
 "eme_shader" = 9
 "eme_shape" = 5

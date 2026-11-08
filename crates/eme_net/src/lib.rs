@@ -43,6 +43,8 @@ pub struct NetworkConfig {
     pub role: NetworkRole,
     /// Seconds of buffering before a snapshot is rendered, smoothing motion.
     pub interpolation_delay: f32,
+    /// Shared session token; a server requires it and a client presents it.
+    pub auth_token: Option<String>,
 }
 
 impl Default for NetworkConfig {
@@ -50,6 +52,7 @@ impl Default for NetworkConfig {
         Self {
             role: NetworkRole::Offline,
             interpolation_delay: 0.1,
+            auth_token: None,
         }
     }
 }
@@ -109,6 +112,12 @@ pub struct TransformState {
 /// Wire message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
+    /// Client greeting; carries the shared token, empty when none is configured.
+    Hello(String),
+    /// Server reply: the token was accepted and replication follows.
+    Welcome,
+    /// Server reply: the handshake failed; the payload is the reason.
+    Rejected(String),
     /// Replicated objects that started existing.
     Spawn(Vec<SpawnState>),
     /// Object ids that stopped existing.
@@ -143,8 +152,18 @@ impl NetworkStatus {
 pub struct NetworkServer {
     listener: Option<TcpListener>,
     clients: Vec<TcpStream>,
+    pending: Vec<PendingClient>,
     last_ids: std::collections::HashSet<u64>,
 }
+
+/// A connection waiting for its [`Message::Hello`].
+struct PendingClient {
+    stream: TcpStream,
+    reader: FrameReader,
+}
+
+/// Unauthenticated connections waiting for a handshake.
+const MAX_PENDING: usize = 32;
 
 /// Snapshot history used to interpolate client motion.
 #[derive(Resource, Default)]
@@ -223,6 +242,8 @@ pub fn lerp_state(a: &TransformState, b: &TransformState, f: f32) -> TransformSt
 pub struct NetworkClient {
     stream: Option<TcpStream>,
     reader: FrameReader,
+    /// Whether the server accepted the token and replication may be applied.
+    pub authenticated: bool,
     /// Messages ready to apply to the world.
     pub inbox: Vec<Message>,
 }
@@ -275,22 +296,30 @@ impl NetworkServer {
         Ok(())
     }
 
-    /// Accepts pending clients, sends `spawns` to newcomers, then broadcasts `message`.
+    /// Accepts pending clients, completes their handshake, then broadcasts `message`.
+    ///
+    /// A client only joins after sending [`Message::Hello`] with the token the
+    /// server expects; every newcomer first receives [`Message::Welcome`] and a
+    /// spawn catch-up, then the regular snapshots.
     pub fn pump(
         &mut self,
         message: &Message,
         spawns: &[SpawnState],
+        token: Option<&str>,
         status: &mut NetworkStatus,
     ) {
         if let Some(listener) = &self.listener {
             loop {
                 match listener.accept() {
-                    Ok((mut stream, _)) => {
+                    Ok((stream, _)) => {
                         let _ = stream.set_nodelay(true);
-                        // late joiners get the existing objects before snapshots
-                        let catch_up = encode_message(&Message::Spawn(spawns.to_vec()));
-                        let _ = stream.write_all(&catch_up);
-                        self.clients.push(stream);
+                        let _ = stream.set_nonblocking(true);
+                        if self.pending.len() < MAX_PENDING {
+                            self.pending.push(PendingClient {
+                                stream,
+                                reader: FrameReader::default(),
+                            });
+                        }
                     }
                     Err(err) if err.kind() == ErrorKind::WouldBlock => break,
                     Err(err) => {
@@ -300,6 +329,69 @@ impl NetworkServer {
                 }
             }
         }
+
+        let mut index = 0;
+        while index < self.pending.len() {
+            let mut accepted = false;
+            let mut drop_client = false;
+            {
+                let pending = &mut self.pending[index];
+                let mut buf = [0u8; 4096];
+                loop {
+                    match pending.stream.read(&mut buf) {
+                        Ok(0) => {
+                            drop_client = true;
+                            break;
+                        }
+                        Ok(n) => pending.reader.feed(&buf[..n]),
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            drop_client = true;
+                            break;
+                        }
+                    }
+                }
+                if !drop_client
+                    && let Some(reply) = pending.reader.next_message()
+                {
+                    match reply {
+                        Message::Hello(got) => {
+                            let allowed =
+                                token.is_none_or(|expected| expected == got.as_str());
+                            if allowed {
+                                let _ = pending
+                                    .stream
+                                    .write_all(&encode_message(&Message::Welcome));
+                                let _ = pending
+                                    .stream
+                                    .write_all(&encode_message(&Message::Spawn(spawns.to_vec())));
+                                accepted = true;
+                            } else {
+                                let _ = pending.stream.write_all(&encode_message(
+                                    &Message::Rejected("invalid token".into()),
+                                ));
+                                drop_client = true;
+                            }
+                        }
+                        _ => {
+                            let _ = pending.stream.write_all(&encode_message(
+                                &Message::Rejected("expected hello".into()),
+                            ));
+                            drop_client = true;
+                        }
+                    }
+                }
+            }
+            if accepted {
+                let pending = self.pending.remove(index);
+                self.clients.push(pending.stream);
+            } else if drop_client {
+                self.pending.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+
         let bytes = encode_message(message);
         let before = self.clients.len();
         self.clients
@@ -314,14 +406,19 @@ impl NetworkServer {
 
 /// Client connection and incoming messages.
 impl NetworkClient {
-    /// Connects to `addr`.
-    pub fn connect(&mut self, addr: &str) -> Result<(), String> {
-        let stream = TcpStream::connect(addr).map_err(|err| err.to_string())?;
+    /// Connects to `addr` and presents `token` in the handshake.
+    pub fn connect(&mut self, addr: &str, token: Option<&str>) -> Result<(), String> {
+        let mut stream = TcpStream::connect(addr).map_err(|err| err.to_string())?;
         stream
             .set_nonblocking(true)
             .map_err(|err| err.to_string())?;
         let _ = stream.set_nodelay(true);
+        let hello = encode_message(&Message::Hello(token.unwrap_or_default().to_owned()));
+        stream
+            .write_all(&hello)
+            .map_err(|err| format!("handshake: {err}"))?;
         self.stream = Some(stream);
+        self.authenticated = false;
         Ok(())
     }
 
@@ -349,10 +446,19 @@ impl NetworkClient {
         }
         let mut messages = Vec::new();
         while let Some(message) = self.reader.next_message() {
-            messages.push(message);
-        }
-        if !messages.is_empty() && status.peers != 1 {
-            status.update(1, None);
+            match message {
+                Message::Welcome => {
+                    self.authenticated = true;
+                    status.update(1, None);
+                }
+                Message::Rejected(reason) => {
+                    self.stream = None;
+                    self.authenticated = false;
+                    status.update(0, Some(format!("rejected: {reason}")));
+                    return Vec::new();
+                }
+                other => messages.push(other),
+            }
         }
         messages
     }
@@ -417,8 +523,8 @@ pub fn start_network(
             Ok(()) => status.update(0, None),
             Err(err) => status.update(0, Some(err)),
         },
-        NetworkRole::Client { addr } => match client.connect(addr) {
-            Ok(()) => status.update(1, None),
+        NetworkRole::Client { addr } => match client.connect(addr, config.auth_token.as_deref()) {
+            Ok(()) => status.update(0, None),
             Err(err) => status.update(0, Some(err)),
         },
     }
@@ -458,7 +564,12 @@ pub fn send_snapshots(
     }
     let (added, removed) = diff(&server.last_ids, &spawns);
     if !removed.is_empty() {
-        server.pump(&Message::Despawn(removed), &spawns, &mut status);
+        server.pump(
+            &Message::Despawn(removed),
+            &spawns,
+            config.auth_token.as_deref(),
+            &mut status,
+        );
     }
     if !added.is_empty() {
         let new_spawns: Vec<SpawnState> = spawns
@@ -466,10 +577,20 @@ pub fn send_snapshots(
             .filter(|state| added.contains(&state.id))
             .cloned()
             .collect();
-        server.pump(&Message::Spawn(new_spawns), &spawns, &mut status);
+        server.pump(
+            &Message::Spawn(new_spawns),
+            &spawns,
+            config.auth_token.as_deref(),
+            &mut status,
+        );
     }
     server.last_ids = ids;
-    server.pump(&Message::Snapshot(snapshot), &spawns, &mut status);
+    server.pump(
+        &Message::Snapshot(snapshot),
+        &spawns,
+        config.auth_token.as_deref(),
+        &mut status,
+    );
 }
 
 /// Ids added and removed between two sets, both sorted.
@@ -538,6 +659,7 @@ pub fn apply_inbox(
                     }
                 }
             }
+            Message::Hello(_) | Message::Welcome | Message::Rejected(_) => {}
             Message::Snapshot(states) => {
                 let at = time.elapsed_secs_f64();
                 for state in states {
@@ -587,11 +709,16 @@ mod tests {
         std::thread::spawn(move || {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
             stream.set_nonblocking(true).unwrap();
+            let _ = stream.write_all(&encode_message(&Message::Hello(String::new())));
             let mut reader = FrameReader::default();
             let mut buf = [0u8; 4096];
             let mut messages = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(2);
-            while messages.len() < 2 && Instant::now() < deadline {
+            while !messages
+                .iter()
+                .any(|message| matches!(message, Message::Snapshot(_)))
+                && Instant::now() < deadline
+            {
                 match stream.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => reader.feed(&buf[..n]),
@@ -610,7 +737,12 @@ mod tests {
         let mut status = NetworkStatus::default();
         let deadline = Instant::now() + Duration::from_secs(2);
         while status.peers == 0 && Instant::now() < deadline {
-            server.pump(&Message::Snapshot(vec![state()]), &[], &mut status);
+            server.pump(
+                &Message::Snapshot(vec![state()]),
+                &[],
+                None,
+                &mut status,
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(status.peers, 1);
@@ -619,14 +751,14 @@ mod tests {
 
         // A client that has gone away is dropped without stopping the server.
         server.clients.clear();
-        server.pump(&Message::Snapshot(vec![]), &[], &mut status);
+        server.pump(&Message::Snapshot(vec![]), &[], None, &mut status);
         assert_eq!(status.peers, 0);
     }
 
     #[test]
     fn connecting_to_a_missing_peer_reports_an_error() {
         let mut client = NetworkClient::default();
-        assert!(client.connect("127.0.0.1:1").is_err());
+        assert!(client.connect("127.0.0.1:1", None).is_err());
         let mut status = NetworkStatus::default();
         assert!(client.pump(&mut status).is_empty());
     }
@@ -676,23 +808,139 @@ mod tests {
         let mut status = NetworkStatus::default();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.set_nonblocking(true).unwrap();
+            let _ = stream.write_all(&encode_message(&Message::Hello(String::new())));
             let mut reader = FrameReader::default();
-            stream.set_nonblocking(false).unwrap();
             let mut buf = [0u8; 4096];
-            let read = stream.peek(&mut buf).unwrap_or(0);
-            if read > 0 {
-                reader.feed(&buf[..read]);
-                tx.send(reader.next_message()).ok();
+            let mut messages = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while messages.len() < 2 && Instant::now() < deadline {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => reader.feed(&buf[..n]),
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+                while let Some(message) = reader.next_message() {
+                    messages.push(message);
+                }
             }
+            tx.send(messages).ok();
         });
         let deadline = Instant::now() + Duration::from_secs(2);
         while status.peers == 0 && Instant::now() < deadline {
-            server.pump(&Message::Snapshot(vec![]), &spawns, &mut status);
+            server.pump(&Message::Snapshot(vec![]), &spawns, None, &mut status);
             std::thread::sleep(Duration::from_millis(10));
         }
-        let first = rx.recv_timeout(Duration::from_secs(2)).ok().flatten();
-        assert_eq!(first, Some(Message::Spawn(spawns)));
+        let messages = rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+        assert_eq!(
+            messages.first(),
+            Some(&Message::Welcome),
+            "welcome must arrive first: {messages:?}"
+        );
+        assert_eq!(
+            messages.get(1),
+            Some(&Message::Spawn(spawns)),
+            "spawn catch-up must follow the welcome: {messages:?}"
+        );
+    }
+
+    fn handshake(
+        server: &mut NetworkServer,
+        token: Option<&str>,
+        client: &mut NetworkClient,
+        status: &mut NetworkStatus,
+    ) -> NetworkStatus {
+        let mut server_status = NetworkStatus::default();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while status.peers == 0 && status.error.is_none() && Instant::now() < deadline {
+            server.pump(&Message::Snapshot(vec![]), &[], token, &mut server_status);
+            client.pump(status);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        server_status
+    }
+
+    fn connect_pair(
+        token: Option<&str>,
+        client_token: Option<&str>,
+    ) -> (NetworkServer, NetworkClient, NetworkStatus, NetworkStatus) {
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let mut server = NetworkServer::default();
+        server.listen(port).unwrap();
+        let mut client = NetworkClient::default();
+        client
+            .connect(&format!("127.0.0.1:{port}"), client_token)
+            .unwrap();
+        let mut status = NetworkStatus::default();
+        let server_status = handshake(&mut server, token, &mut client, &mut status);
+        (server, client, status, server_status)
+    }
+
+    #[test]
+    fn a_client_with_the_matching_token_is_accepted() {
+        let (mut server, mut client, mut status, mut server_status) =
+            connect_pair(Some("secret"), Some("secret"));
+        assert_eq!(status.error, None);
+        assert_eq!(status.peers, 1);
+        assert_eq!(server_status.peers, 1);
+        assert!(client.authenticated);
+        server.pump(
+            &Message::Snapshot(vec![state()]),
+            &[],
+            Some("secret"),
+            &mut server_status,
+        );
+        let messages = client.pump(&mut status);
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::Snapshot(_))),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrong_token_is_rejected() {
+        let (_server, client, status, _) = connect_pair(Some("secret"), Some("guess"));
+        assert!(status.error.as_deref().is_some_and(|err| err.contains("rejected")));
+        assert_eq!(status.peers, 0);
+        assert!(!client.authenticated);
+    }
+
+    #[test]
+    fn a_missing_token_is_rejected_when_the_server_requires_one() {
+        let (_server, _client, status, _) = connect_pair(Some("secret"), None);
+        assert!(status.error.as_deref().is_some_and(|err| err.contains("rejected")));
+        assert_eq!(status.peers, 0);
+    }
+
+    #[test]
+    fn a_server_without_a_token_accepts_any_client() {
+        let (_server, client, status, _) = connect_pair(None, None);
+        assert_eq!(status.error, None);
+        assert_eq!(status.peers, 1);
+        assert!(client.authenticated);
+    }
+
+    #[test]
+    fn handshake_messages_round_trip() {
+        for message in [
+            Message::Hello("secret".into()),
+            Message::Welcome,
+            Message::Rejected("invalid token".into()),
+        ] {
+            let bytes = encode_message(&message);
+            let mut reader = FrameReader::default();
+            reader.feed(&bytes);
+            assert_eq!(reader.next_message(), Some(message));
+        }
     }
 
     #[test]
@@ -705,6 +953,7 @@ mod tests {
                 addr: "127.0.0.1:1".into(),
             },
             interpolation_delay: 0.1,
+            auth_token: None,
         });
         world.insert_resource(Time::<()>::default());
         world.insert_resource(NetworkClient::default());

@@ -938,6 +938,10 @@ pub struct ImportChoice(pub String);
 #[derive(Component, Clone, Default)]
 pub struct OpenModelPicker;
 
+/// Opens the Project Settings window.
+#[derive(Component, Clone, Default)]
+pub struct OpenProjectSettings;
+
 /// Marks the import menu's root node.
 #[derive(Component, Clone, Copy, Default)]
 pub struct ImportMenuRoot;
@@ -962,7 +966,12 @@ pub fn open_folder_menu(
 }
 
 /// Opens the same menu from the Project entry in the menu bar.
-pub fn open_project_menu(_: On<Activate>, mut menu: ResMut<ImportMenu>) {
+pub fn open_project_menu(
+    _: On<Activate>,
+    mut menu: ResMut<ImportMenu>,
+    mut top: ResMut<super::menu::TopMenu>,
+) {
+    top.open = None;
     menu.at = Some(Vec2::new(8.0, 34.0));
     menu.folder = None;
     menu.stage = ImportMenuStage::Root;
@@ -1067,6 +1076,20 @@ pub fn sync_import_menu(
             Children [ {text("Import glTF…", FONT_SIZE, tokens::TEXT)} ]
             on(open_model_picker)
         });
+        commands.spawn_scene(bsn! {
+            Node {
+                height: px(TREE_ROW_H),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(10)),
+            }
+            Button
+            OpenProjectSettings
+            ChildOf(host)
+            Children [ {text("Project Settings…", FONT_SIZE, tokens::TEXT)} ]
+            on(open_project_settings)
+        });
         return;
     }
     if menu.choices.is_empty() {
@@ -1106,6 +1129,16 @@ pub fn sync_import_menu(
                 on(choose_import)
             });
     }
+}
+
+/// Opens the project settings window from the Project menu.
+fn open_project_settings(
+    _: On<Activate>,
+    mut menu: ResMut<ImportMenu>,
+    mut settings: ResMut<crate::settings::ProjectSettingsState>,
+) {
+    menu.at = None;
+    crate::settings::open(&mut settings);
 }
 
 /// Opens import options for a model picked from the Project menu.

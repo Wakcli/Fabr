@@ -38,6 +38,12 @@ impl ConsoleLog {
     pub fn rev(&self) -> u64 {
         self.rev
     }
+
+    /// Drops every line.
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.rev = self.rev.wrapping_add(1);
+    }
 }
 
 /// Host inside the console panel whose children mirror [`ConsoleLog`].

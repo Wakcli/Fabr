@@ -56,6 +56,10 @@ pub fn screen(layout: Layout) -> impl Scene {
             --
             {crate::import::panel()}
             --
+            {menu::top_menu()}
+            --
+            {crate::settings::panel()}
+            --
             {inspector::script_picker()}
             --
             {files::import_menu()}
@@ -85,7 +89,23 @@ fn top_bar() -> Part {
                 on(files::open_project_menu)
             }) as Part);
         } else {
-            left.push(menu_item(item));
+            let kind = match item {
+                "Scene" => menu::TopKind::Scene,
+                "Debug" => menu::TopKind::Debug,
+                "Editor" => menu::TopKind::Editor,
+                _ => menu::TopKind::Help,
+            };
+            left.push(Box::new(bsn! {
+                Node {
+                    height: px(27),
+                    display: Display::Flex,
+                    align_items: AlignItems::Center,
+                }
+                Button
+                menu::TopMenuButton(kind)
+                Children [ {menu_item(item)} ]
+                on(menu::open_top_menu)
+            }) as Part);
         }
     }
 
@@ -191,6 +211,7 @@ impl Plugin for EditorPlugin {
         dock::plugins(app);
         app.add_plugins(eme_script::ScriptPlugin);
         app.insert_resource(eme_script::ScriptRoot(crate::asset_root()));
+        crate::settings::install(app);
         app.init_resource::<scene::SceneState>()
             .init_resource::<scene::SceneAssets>()
             .init_resource::<undo::Undo>()
@@ -205,6 +226,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<orbit::FlyMove>()
             .init_resource::<orbit::ViewMode>()
             .init_resource::<menu::MenuState>()
+            .init_resource::<menu::TopMenu>()
             .init_resource::<menu::RightPress>()
             .init_resource::<build::BuildState>()
             .init_resource::<files::FileTree>()
@@ -216,6 +238,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::script_watch::ScriptWatcher>()
             .init_resource::<inspector::ReattachState>()
             .init_resource::<inspector::ScriptPicker>()
+            .init_resource::<docks::EditorStats>()
             .init_resource::<files::ImportMenu>()
             .init_resource::<files::AssetDrag>()
             .init_resource::<crate::import::OptionsPanel>()
@@ -286,6 +309,10 @@ impl Plugin for EditorPlugin {
             )
             .add_systems(
                 Update,
+                (docks::update_stats, docks::sync_stats, docks::sync_outline),
+            )
+            .add_systems(
+                Update,
                 (
                     scene::respawn_model_roots,
                     (scene::sync_model_overrides, eme_game_overrides::sync_model_nodes).chain(),
@@ -294,6 +321,8 @@ impl Plugin for EditorPlugin {
             .add_systems(
                 Update,
                 (
+                    menu::sync_top_menu,
+                    menu::close_top_menu,
                     menu::seed_rename,
                     menu::rename_keys,
                     menu::sync_menu,

@@ -17,6 +17,7 @@ use eme_game_scene::ObjectKind;
 use super::chrome::*;
 use super::icons;
 use crate::clipboard::{self, Clipboard};
+use crate::console::ConsoleLog;
 use crate::persist;
 use crate::scene::{self, SceneState};
 use crate::tokens;
@@ -548,7 +549,7 @@ fn activate_row(
     mut clip: ResMut<Clipboard>,
     mut undo: ResMut<Undo>,
     index: Res<scene::ModelIndex>,
-    mut log: ResMut<crate::console::ConsoleLog>,
+    mut log: ResMut<ConsoleLog>,
 ) {
     let Ok(MenuRow(act)) = rows.get(activate.entity) else {
         return;
@@ -746,6 +747,241 @@ pub fn close_on_teardown(
         menu.open = None;
         menu.rename = None;
     }
+}
+
+/// Top-level menu the user can open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TopKind {
+    /// Scene commands.
+    #[default]
+    Scene,
+    /// Debug commands.
+    Debug,
+    /// Editor commands.
+    Editor,
+    /// Help commands.
+    Help,
+}
+
+/// Open top-level menu state.
+#[derive(Resource, Clone, Default)]
+pub struct TopMenu {
+    /// Which menu is open, if any.
+    pub open: Option<TopKind>,
+    /// Window position.
+    pub at: Vec2,
+}
+
+/// Button in the menu bar that opens a top-level menu.
+#[derive(Component, Clone, Copy, Default)]
+pub struct TopMenuButton(pub TopKind);
+
+/// Root of the top-level menu overlay.
+#[derive(Component, Clone, Copy, Default)]
+pub struct TopMenuRoot;
+
+/// Host for rebuilt menu rows.
+#[derive(Component, Clone, Copy, Default)]
+pub struct TopMenuRows;
+
+/// One command in a top-level menu.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TopAction {
+    /// Save the current scene.
+    SaveScene,
+    /// Open `scenes/main.ember`.
+    OpenScene,
+    /// Add one cube.
+    AddCube,
+    /// Add an empty object.
+    AddEmpty,
+    /// Clear the console.
+    ClearConsole,
+    /// Reload all Lua scripts.
+    ReloadScripts,
+    /// Open project settings.
+    ProjectSettings,
+    /// Today's build, in the console.
+    About,
+}
+
+/// Opens a top-level menu under its button.
+pub fn open_top_menu(
+    activate: On<Activate>,
+    buttons: Query<&TopMenuButton>,
+    mut menu: ResMut<TopMenu>,
+    mut import: ResMut<crate::screens::editor::files::ImportMenu>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    let x = match button.0 {
+        TopKind::Scene => 72.0,
+        TopKind::Debug => 190.0,
+        TopKind::Editor => 260.0,
+        TopKind::Help => 330.0,
+    };
+    menu.open = Some(button.0);
+    menu.at = Vec2::new(x, 34.0);
+    import.at = None;
+}
+
+/// Shows or hides the overlay and rebuilds its rows.
+pub fn sync_top_menu(
+    menu: Res<TopMenu>,
+    mut roots: Query<&mut Node, With<TopMenuRoot>>,
+    hosts: Query<Entity, With<TopMenuRows>>,
+    mut commands: Commands,
+    mut shown: Local<Option<(Entity, Option<TopKind>, Vec2)>>,
+) {
+    for mut node in &mut roots {
+        let display = if menu.open.is_some() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != display {
+            node.display = display;
+        }
+        node.left = px(menu.at.x);
+        node.top = px(menu.at.y);
+    }
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    let signature = (host, menu.open, menu.at);
+    if shown.as_ref() == Some(&signature) {
+        return;
+    }
+    *shown = Some(signature);
+    commands.entity(host).despawn_children();
+    let Some(kind) = menu.open else {
+        return;
+    };
+    let entries: &[(&str, TopAction)] = match kind {
+        TopKind::Scene => &[
+            ("Save Scene", TopAction::SaveScene),
+            ("Open Scene", TopAction::OpenScene),
+            ("Add Cube", TopAction::AddCube),
+            ("Add Empty", TopAction::AddEmpty),
+        ],
+        TopKind::Debug => &[
+            ("Clear Console", TopAction::ClearConsole),
+            ("Reload Scripts", TopAction::ReloadScripts),
+        ],
+        TopKind::Editor => &[("Project Settings…", TopAction::ProjectSettings)],
+        TopKind::Help => &[("About Fabr", TopAction::About)],
+    };
+    for (label, action) in entries {
+        let label = text(*label, FONT_SIZE, tokens::TEXT);
+        commands
+            .spawn_scene(bsn! {
+                Node {
+                    height: px(24),
+                    display: Display::Flex,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(px(10)),
+                    min_width: px(180),
+                }
+                Button
+                ThemeBackgroundColor(tokens::PANEL)
+                ChildOf(host)
+                Children [ {label} ]
+            })
+            .insert(*action)
+            .observe(run_top_action);
+    }
+}
+
+/// Runs one top-level menu command and closes the menu.
+pub fn run_top_action(
+    activate: On<Activate>,
+    actions: Query<&TopAction>,
+    mut menu: ResMut<TopMenu>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut log: ResMut<ConsoleLog>,
+    mut settings: ResMut<crate::settings::ProjectSettingsState>,
+    mut reload: ResMut<eme_script::ScriptReload>,
+    index: Res<scene::ModelIndex>,
+) {
+    let Ok(action) = actions.get(activate.entity) else {
+        return;
+    };
+    menu.open = None;
+    match action {
+        TopAction::SaveScene => {
+            match persist::save_to(&state.doc, persist::SCENE_PATH) {
+                Ok(path) => log.push(format!("saved scene to {}", path.display())),
+                Err(err) => log.push(format!("could not save scene: {err}")),
+            }
+        }
+        TopAction::OpenScene => {
+            persist::open_path_into(&mut state, persist::SCENE_PATH, &index, &mut log);
+            undo.clear();
+        }
+        TopAction::AddCube => {
+            undo.checkpoint(&state, "Add Cube");
+            let id = state.spawn(ObjectKind::Cube);
+            state.select_only(id);
+            state.touch();
+        }
+        TopAction::AddEmpty => {
+            undo.checkpoint(&state, "Add Empty");
+            let id = state.spawn(ObjectKind::Empty);
+            state.select_only(id);
+            state.touch();
+        }
+        TopAction::ClearConsole => log.clear(),
+        TopAction::ReloadScripts => {
+            for path in eme_script::script_files(&crate::asset_root()) {
+                reload.request(path);
+            }
+            log.push("reload requested for all scripts".to_string());
+        }
+        TopAction::ProjectSettings => crate::settings::open(&mut settings),
+        TopAction::About => log.push(format!(
+            "Fabr {} — built on the Eme engine",
+            env!("CARGO_PKG_VERSION")
+        )),
+    }
+}
+
+/// Closes the top-level menu on Escape.
+pub fn close_top_menu(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<TopMenu>) {
+    if keys.just_pressed(KeyCode::Escape) {
+        menu.open = None;
+    }
+}
+
+/// The top-level menu overlay.
+pub fn top_menu() -> Part {
+    Box::new(bsn! {
+        Node {
+            position_type: PositionType::Absolute,
+            display: Display::None,
+            left: px(0),
+            top: px(0),
+            min_width: px(180),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            border: px(1),
+            border_radius: px(4),
+            padding: px(2),
+        }
+        TopMenuRoot
+        GlobalZIndex(310)
+        ThemeBackgroundColor(tokens::WINDOW)
+        ThemeBorderColor(tokens::BORDER)
+        Children [
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+            }
+            TopMenuRows
+        ]
+    })
 }
 
 #[cfg(test)]

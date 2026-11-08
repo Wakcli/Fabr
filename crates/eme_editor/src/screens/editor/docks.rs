@@ -7,7 +7,7 @@ use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColo
 use eme::math::Rect;
 use eme::prelude::*;
 use eme::scene::bsn;
-use eme::ui_widgets::{Activate, Button};
+use eme::ui_widgets::{Activate, Button, ScrollArea};
 use eme::window::{PrimaryWindow, Window};
 use eme_game_overrides::{ModelNodeCatalog, ModelNodeInfo};
 use eme_game_scene::{NodeKey, ObjectKind, OverrideOp, SceneDoc};
@@ -16,6 +16,8 @@ use super::chrome::*;
 use super::icons;
 use super::menu::{self, MenuState};
 use crate::scene::{ModelOwner, NodeSelection, ReloadModel, SceneState};
+use eme::ecs::entity::Entities;
+use eme::time::Time;
 use crate::tokens;
 use crate::undo::Undo;
 
@@ -1026,6 +1028,241 @@ pub fn history() -> Part {
     });
 
     dock_frame(tabs, tail, body, tokens::WINDOW)
+}
+
+/// Live editor statistics sampled a few times per second.
+#[derive(Resource, Clone, Copy, Default)]
+pub struct EditorStats {
+    /// Frames per second, rounded.
+    pub fps: u32,
+    /// Last frame time in milliseconds.
+    pub frame_ms: f32,
+    /// Live entity count.
+    pub entities: u32,
+    /// Bumped after each sample.
+    pub rev: u64,
+}
+
+/// Host for the Stats rows.
+#[derive(Component, Clone, Copy, Default)]
+pub struct StatsRows;
+
+/// Samples frame time and entity count without rebuilding every frame.
+pub fn update_stats(
+    time: Res<Time>,
+    entities: &Entities,
+    mut stats: ResMut<EditorStats>,
+    mut elapsed: Local<f32>,
+) {
+    *elapsed += time.delta_secs();
+    if *elapsed < 0.25 {
+        return;
+    }
+    *elapsed = 0.0;
+    let delta = time.delta_secs().max(0.000_001);
+    stats.fps = (1.0 / delta).round() as u32;
+    stats.frame_ms = delta * 1000.0;
+    stats.entities = entities.len();
+    stats.rev = stats.rev.wrapping_add(1);
+}
+
+/// Stats dock body.
+pub fn stats() -> Part {
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            min_height: px(0),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: px(2),
+        }
+        ThemeBackgroundColor(tokens::PANEL)
+        Children [
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                padding: UiRect::all(px(8)),
+                row_gap: px(3),
+            }
+            StatsRows
+        ]
+    })
+}
+
+/// Rebuilds the Stats rows when a new sample arrives.
+pub fn sync_stats(
+    stats: Res<EditorStats>,
+    hosts: Query<Entity, With<StatsRows>>,
+    mut commands: Commands,
+    mut shown: Local<Option<(Entity, u64)>>,
+) {
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    if shown.as_ref() == Some(&(host, stats.rev)) {
+        return;
+    }
+    *shown = Some((host, stats.rev));
+    commands.entity(host).despawn_children();
+    for (label, value) in [
+        ("FPS", format!("{}", stats.fps)),
+        ("Frame", format!("{:.2} ms", stats.frame_ms)),
+        ("Entities", format!("{}", stats.entities)),
+    ] {
+        let label = text(label, FONT_SIZE, tokens::TEXT_DIM);
+        let value = text(value, FONT_SIZE, tokens::TEXT);
+        commands.spawn_scene(bsn! {
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                height: px(22),
+            }
+            ChildOf(host)
+            Children [ {label} -- {spacer()} -- {value} ]
+        });
+    }
+}
+
+/// Host for the Outline rows.
+#[derive(Component, Clone, Copy, Default)]
+pub struct OutlineRows;
+
+/// A row that selects one object.
+#[derive(Component, Clone, Copy, Default)]
+pub struct OutlineRow(pub u64);
+
+/// Outline dock body.
+pub fn outline() -> Part {
+    Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            min_height: px(0),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            overflow: Overflow::clip(),
+        }
+        ThemeBackgroundColor(tokens::PANEL)
+        Children [
+            Node {
+                flex_grow: 1.0,
+                min_height: px(0),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                overflow: Overflow::scroll_y(),
+            }
+            ScrollArea
+            OutlineRows
+        ]
+    })
+}
+
+/// Rebuilds the Outline from the document and selection.
+pub fn sync_outline(
+    state: Res<SceneState>,
+    hosts: Query<Entity, With<OutlineRows>>,
+    mut commands: Commands,
+    mut shown: Local<Option<(Entity, u64, u64)>>,
+) {
+    let Ok(host) = hosts.single() else {
+        return;
+    };
+    let selection: Vec<u64> = state.selection.items.clone();
+    let signature = (
+        host,
+        state.rev,
+        selection.iter().fold(0u64, |acc, id| acc.wrapping_add(*id)),
+    );
+    if shown.as_ref() == Some(&signature) {
+        return;
+    }
+    *shown = Some(signature);
+    commands.entity(host).despawn_children();
+
+    let mut counts: alloc::collections::BTreeMap<&'static str, usize> = Default::default();
+    for obj in &state.doc.objects {
+        *counts.entry(obj.kind.label()).or_default() += 1;
+    }
+    let heading = text(
+        format!("{} objects", state.doc.len()),
+        FONT_SIZE,
+        tokens::TEXT_DIM,
+    );
+    commands.spawn_scene(bsn! {
+        Node { padding: UiRect::horizontal(px(8)), height: px(20), display: Display::Flex, align_items: AlignItems::Center }
+        ChildOf(host)
+        Children [ {heading} ]
+    });
+    for (kind, count) in counts {
+        let label = text(format!("{kind}  x{count}"), FONT_SIZE, tokens::TEXT);
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)), height: px(20), display: Display::Flex, align_items: AlignItems::Center }
+            ChildOf(host)
+            Children [ {label} ]
+        });
+    }
+
+    let heading = text("Selection", FONT_SIZE, tokens::TEXT_DIM);
+    commands.spawn_scene(bsn! {
+        Node {
+            padding: UiRect { left: px(8), right: px(8), top: px(4), bottom: px(2) },
+            height: px(22),
+            display: Display::Flex,
+            align_items: AlignItems::Center,
+            border: UiRect { top: px(1) },
+        }
+        ThemeBorderColor(tokens::BORDER)
+        ChildOf(host)
+        Children [ {heading} ]
+    });
+    if selection.is_empty() {
+        let empty = text("No selection", FONT_SIZE, tokens::TEXT_DIM);
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)), height: px(20), display: Display::Flex, align_items: AlignItems::Center }
+            ChildOf(host)
+            Children [ {empty} ]
+        });
+        return;
+    }
+    for id in selection {
+        let Some(obj) = state.doc.get(id) else {
+            continue;
+        };
+        let label = text(
+            format!("{}  {}", obj.kind.label(), obj.name),
+            FONT_SIZE,
+            tokens::TEXT,
+        );
+        commands
+            .spawn_scene(bsn! {
+                Node {
+                    padding: UiRect::horizontal(px(8)),
+                    height: px(22),
+                    display: Display::Flex,
+                    align_items: AlignItems::Center,
+                }
+                Button
+                OutlineRow(id)
+                ChildOf(host)
+                Children [ {label} ]
+            })
+            .observe(select_outline_row);
+    }
+}
+
+fn select_outline_row(
+    activate: On<Activate>,
+    rows: Query<&OutlineRow>,
+    mut state: ResMut<SceneState>,
+) {
+    let Ok(row) = rows.get(activate.entity) else {
+        return;
+    };
+    state.select_only(row.0);
 }
 
 #[cfg(test)]

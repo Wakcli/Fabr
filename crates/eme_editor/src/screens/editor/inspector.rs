@@ -1269,6 +1269,7 @@ pub fn sync_script_rows(
     mut commands: Commands,
     hosts: Query<Entity, With<ScriptRows>>,
     mut shown: Local<Option<(Entity, String)>>,
+    mut base_seen: Local<Option<(Entity, u64, String, u64)>>,
 ) {
     let Ok(host) = hosts.single() else {
         return;
@@ -1289,6 +1290,16 @@ pub fn sync_script_rows(
     };
 
     let path = obj.script.as_ref().map(|script| script.path.clone());
+    let base = (
+        host,
+        obj.id,
+        path.clone().unwrap_or_default(),
+        state.rev,
+    );
+    if base_seen.as_ref() == Some(&base) {
+        return;
+    }
+    *base_seen = Some(base);
     let defaults = path.as_deref().map(|path| {
         eme_script::script_property_defaults(&crate::asset_root(), path)
     });

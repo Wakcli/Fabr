@@ -1109,6 +1109,8 @@ fn body(kind: &PanelKind) -> Part {
         PanelKind::Project => files::body(),
         PanelKind::Console => docks::console(),
         PanelKind::Custom(name) if name == HISTORY => docks::history(),
+        PanelKind::Custom(name) if name == "Stats" => docks::stats(),
+        PanelKind::Custom(name) if name == "Outline" => docks::outline(),
         PanelKind::Custom(_) => placeholder(),
     }
 }

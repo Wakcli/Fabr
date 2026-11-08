@@ -1,5 +1,7 @@
 //! Fabr editor shell.
 
+extern crate alloc;
+
 use std::path::PathBuf;
 
 use eme::asset::AssetPlugin;
@@ -19,6 +21,7 @@ mod persist;
 mod play;
 mod scene;
 mod script_watch;
+mod settings;
 mod screens;
 mod selection_outline;
 mod theme_bridge;

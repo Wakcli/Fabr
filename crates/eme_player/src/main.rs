@@ -1,5 +1,6 @@
 //! Emberrly runtime player: loads an exported scene document and renders it.
 
+mod hud;
 mod scene;
 
 use std::io::Write;
@@ -174,6 +175,7 @@ fn main() {
     if extensions.enabled(eme_game_runtime::Extension::Networking) {
         app.add_plugins(eme_net::NetworkPlugin);
     }
+    hud::install(&mut app);
     app.run();
 }
 

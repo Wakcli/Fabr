@@ -199,6 +199,14 @@ pub struct TransformGizmoState {
     pub gizmo_origin: Vec3,
 }
 
+/// Pointer position override in the focused camera's viewport coordinates.
+///
+/// Offscreen viewports (render-to-image) need this because the window cursor and
+/// the camera viewport use different coordinate spaces.
+#[derive(Resource, Default, Clone, Copy, Debug, Reflect)]
+#[reflect(Resource, Default)]
+pub struct TransformGizmoCursor(pub Option<Vec2>);
+
 /// System set for the transform gizmo. All transform gizmo systems run in [`PostUpdate`]
 /// within this set.
 ///
@@ -233,10 +241,12 @@ impl Plugin for TransformGizmoPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TransformGizmoSettings>()
             .init_resource::<TransformGizmoState>()
+            .init_resource::<TransformGizmoCursor>()
             .register_type::<TransformGizmoFocus>()
             .register_type::<TransformGizmoCamera>()
             .register_type::<TransformGizmoSettings>()
             .register_type::<TransformGizmoState>()
+            .register_type::<TransformGizmoCursor>()
             .configure_sets(PostUpdate, TransformGizmoSystems)
             .add_systems(
                 PostUpdate,
@@ -291,6 +301,7 @@ fn transform_gizmo_hover(
     all_cameras: Query<(&Camera, &GlobalTransform)>,
     window: Single<&Window, With<PrimaryWindow>>,
     settings: Res<TransformGizmoSettings>,
+    cursor: Res<TransformGizmoCursor>,
     mut state: ResMut<TransformGizmoState>,
 ) {
     state.hovered_axis = None;
@@ -305,7 +316,7 @@ fn transform_gizmo_hover(
     let Some((camera, cam_tf)) = resolve_gizmo_camera!(marked_cameras, all_cameras) else {
         return;
     };
-    let Some(cursor_pos) = window.cursor_position() else {
+    let Some(cursor_pos) = cursor.0.or_else(|| window.cursor_position()) else {
         return;
     };
 
@@ -412,6 +423,7 @@ fn transform_gizmo_drag(
     primary_window: Single<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
     mouse: Res<ButtonInput<MouseButton>>,
     settings: Res<TransformGizmoSettings>,
+    cursor: Res<TransformGizmoCursor>,
     mut state: ResMut<TransformGizmoState>,
     mut saved_grab_mode: Local<CursorGrabMode>,
 ) {
@@ -419,7 +431,7 @@ fn transform_gizmo_drag(
         return;
     };
     let (window, mut cursor_opts) = primary_window.into_inner();
-    let Some(cursor_pos) = window.cursor_position() else {
+    let Some(cursor_pos) = cursor.0.or_else(|| window.cursor_position()) else {
         return;
     };
 

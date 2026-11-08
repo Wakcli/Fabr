@@ -72,9 +72,9 @@ pub mod prelude {
 
     #[doc(hidden)]
     pub use crate::transform_gizmo::{
-        TransformGizmoAxis, TransformGizmoCamera, TransformGizmoFocus, TransformGizmoMode,
-        TransformGizmoPlugin, TransformGizmoSettings, TransformGizmoSpace, TransformGizmoState,
-        TransformGizmoSystems,
+        TransformGizmoAxis, TransformGizmoCamera, TransformGizmoCursor, TransformGizmoFocus,
+        TransformGizmoMode, TransformGizmoPlugin, TransformGizmoSettings, TransformGizmoSpace,
+        TransformGizmoState, TransformGizmoSystems,
     };
 }
 
@@ -91,10 +91,10 @@ use eme_reflect::TypePath;
 
 use crate::{config::ErasedGizmoConfigGroup, gizmos::GizmoBuffer};
 
-use eme_time::Fixed;
-use eme_utils::TypeIdIndexMap;
 use config::{DefaultGizmoConfigGroup, GizmoConfig, GizmoConfigGroup, GizmoConfigStore};
 use core::{any::TypeId, marker::PhantomData, mem};
+use eme_time::Fixed;
+use eme_utils::TypeIdIndexMap;
 use gizmos::{GizmoStorage, Swap};
 
 #[cfg(feature = "eme_mesh")]

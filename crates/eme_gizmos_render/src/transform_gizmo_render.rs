@@ -7,11 +7,12 @@ use eme_app::{App, Plugin, PostUpdate, Startup};
 use eme_asset::{Assets, Handle};
 use eme_camera::{
     visibility::{RenderLayers, Visibility},
-    Camera, Camera3d,
+    Camera, Camera3d, ClearColorConfig, Projection, RenderTarget,
 };
 use eme_color::Color;
 use eme_ecs::{
     component::Component,
+    entity::Entity,
     hierarchy::ChildOf,
     query::{Or, With, Without},
     resource::Resource,
@@ -355,10 +356,13 @@ fn spawn_gizmo_meshes(
     // --- Overlay camera ---
     // This camera renders only the gizmo layer, after the main camera (order: 1),
     // without clearing the color buffer — so gizmo meshes appear on top of everything.
+    // Its target and viewport are replaced with the marked camera's every frame in
+    // `update_gizmo_meshes`, which is what lets it draw into an offscreen viewport.
     commands.spawn((
         Camera3d::default(),
         Camera {
             order: 1,
+            clear_color: ClearColorConfig::None,
             ..Default::default()
         },
         GizmoOverlayCamera,
@@ -372,7 +376,7 @@ fn spawn_gizmo_meshes(
 fn update_gizmo_meshes(
     focus: Option<eme_ecs::system::Single<&GlobalTransform, With<TransformGizmoFocus>>>,
     marked_cameras: Query<
-        (&GlobalTransform, &Camera),
+        (Entity, &GlobalTransform, &Camera),
         (
             With<TransformGizmoCamera>,
             With<Camera>,
@@ -380,13 +384,14 @@ fn update_gizmo_meshes(
         ),
     >,
     all_cameras: Query<
-        (&GlobalTransform, &Camera),
+        (Entity, &GlobalTransform, &Camera),
         (
             Without<GizmoOverlayCamera>,
             Without<TransformGizmoRoot>,
             With<Camera>,
         ),
     >,
+    marked_targets: Query<(&RenderTarget, &Projection), Without<GizmoOverlayCamera>>,
     settings: Option<Res<TransformGizmoSettings>>,
     state: Option<Res<TransformGizmoState>>,
     materials_res: Option<Res<TransformGizmoMaterials>>,
@@ -404,7 +409,12 @@ fn update_gizmo_meshes(
     >,
     mut std_materials: ResMut<Assets<StandardMaterial>>,
     mut overlay_cam: Query<
-        (&mut Transform, &mut Camera),
+        (
+            &mut Transform,
+            &mut Camera,
+            &mut RenderTarget,
+            &mut Projection,
+        ),
         (
             With<GizmoOverlayCamera>,
             Without<TransformGizmoRoot>,
@@ -425,16 +435,25 @@ fn update_gizmo_meshes(
         *root_vis = Visibility::Hidden;
         return;
     };
-    let Some((cam_tf, cam)) = eme_gizmos::resolve_gizmo_camera!(marked_cameras, all_cameras)
+    let Some((cam_entity, cam_tf, cam)) =
+        eme_gizmos::resolve_gizmo_camera!(marked_cameras, all_cameras)
     else {
         *root_vis = Visibility::Hidden;
         return;
     };
 
-    // Copy main camera transform to overlay camera
-    if let Ok((mut overlay_tf, mut overlay_cam)) = overlay_cam.single_mut() {
+    // Follow the camera the gizmo projects through: same pose, same render target,
+    // same viewport, same projection. A window camera keeps the overlay on the
+    // window; an offscreen viewport camera pulls the overlay into its image.
+    if let Ok((mut overlay_tf, mut overlay_cam, mut overlay_target, mut overlay_proj)) =
+        overlay_cam.single_mut()
+    {
         *overlay_tf = cam_tf.compute_transform();
         overlay_cam.viewport = cam.viewport.clone();
+        if let Ok((target, projection)) = marked_targets.get(cam_entity) {
+            *overlay_target = target.clone();
+            *overlay_proj = projection.clone();
+        }
     }
 
     *root_vis = Visibility::Inherited;

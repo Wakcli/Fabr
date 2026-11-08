@@ -12,6 +12,7 @@ rust-version = "1.96.0"
 [dependencies]
 eme_app = { path = "../eme_app", version = "0.20.0-dev" }
 eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_input = { path = "../eme_input", version = "0.20.0-dev", features = ["keyboard"] }
 eme_math = { path = "../eme_math", version = "0.20.0-dev" }
 eme_time = { path = "../eme_time", version = "0.20.0-dev" }
 eme_transform = { path = "../eme_transform", version = "0.20.0-dev" }

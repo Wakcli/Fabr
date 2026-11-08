@@ -10,6 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use eme_app::{App, Plugin, Startup, Update};
 use eme_ecs::prelude::*;
 use eme_math::prelude::*;
+use eme_input::prelude::*;
 use eme_time::Time;
 use eme_transform::prelude::Transform;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,10 @@ pub struct NetworkConfig {
     pub interpolation_delay: f32,
     /// Shared session token; a server requires it and a client presents it.
     pub auth_token: Option<String>,
+    /// Object a client asks to own on connect.
+    pub claim: Option<u64>,
+    /// Walk speed the server announces for client-side prediction.
+    pub walk_speed: f32,
 }
 
 impl Default for NetworkConfig {
@@ -53,6 +58,8 @@ impl Default for NetworkConfig {
             role: NetworkRole::Offline,
             interpolation_delay: 0.1,
             auth_token: None,
+            claim: None,
+            walk_speed: 4.0,
         }
     }
 }
@@ -114,10 +121,42 @@ pub struct TransformState {
 pub enum Message {
     /// Client greeting; carries the shared token, empty when none is configured.
     Hello(String),
-    /// Server reply: the token was accepted and replication follows.
-    Welcome,
+    /// Server reply: the token was accepted; carries the client id and walk speed.
+    Welcome {
+        /// Id assigned to this client, used in ownership messages.
+        client: u64,
+        /// Walk speed the server simulates controllers with.
+        walk_speed: f32,
+    },
     /// Server reply: the handshake failed; the payload is the reason.
     Rejected(String),
+    /// Client asks to own an object.
+    Claim(u64),
+    /// Ownership granted; broadcast to every client.
+    Owner {
+        /// Object id.
+        id: u64,
+        /// Client that now owns it.
+        owner: u64,
+    },
+    /// A claim was refused.
+    Denied(u64),
+    /// Client input for the object it owns.
+    Input {
+        /// Monotonic sequence number.
+        seq: u32,
+        /// Walk direction on XZ, already normalised by the client.
+        walk: [f32; 2],
+        /// Whether a jump was requested.
+        jump: bool,
+    },
+    /// Server acknowledges that input `seq` was applied for `client`.
+    Ack {
+        /// Client the acknowledgement belongs to.
+        client: u64,
+        /// Last applied input sequence.
+        seq: u32,
+    },
     /// Replicated objects that started existing.
     Spawn(Vec<SpawnState>),
     /// Object ids that stopped existing.
@@ -151,13 +190,36 @@ impl NetworkStatus {
 #[derive(Resource, Default)]
 pub struct NetworkServer {
     listener: Option<TcpListener>,
-    clients: Vec<TcpStream>,
+    clients: Vec<ClientConn>,
     pending: Vec<PendingClient>,
     last_ids: std::collections::HashSet<u64>,
+    next_client: u64,
+    owners: std::collections::HashMap<u64, u64>,
+    claims: std::collections::HashMap<u64, u64>,
+    inputs: std::collections::HashMap<u64, InputState>,
+}
+
+/// One authenticated client connection.
+struct ClientConn {
+    id: u64,
+    stream: TcpStream,
+    reader: FrameReader,
+}
+
+/// Latest input received from a client.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InputState {
+    /// Input sequence number.
+    pub seq: u32,
+    /// Walk direction on XZ.
+    pub walk: [f32; 2],
+    /// Jump requested.
+    pub jump: bool,
 }
 
 /// A connection waiting for its [`Message::Hello`].
 struct PendingClient {
+    id: u64,
     stream: TcpStream,
     reader: FrameReader,
 }
@@ -244,6 +306,18 @@ pub struct NetworkClient {
     reader: FrameReader,
     /// Whether the server accepted the token and replication may be applied.
     pub authenticated: bool,
+    /// Id the server assigned to this client.
+    pub client_id: u64,
+    /// Object-to-owner map announced by the server.
+    pub owners: std::collections::HashMap<u64, u64>,
+    /// Objects this client owns.
+    pub owned: std::collections::HashSet<u64>,
+    /// Object requested on connect, sent once the welcome arrives.
+    pub pending_claim: Option<u64>,
+    /// Last input sequence the server acknowledged.
+    pub last_ack: u32,
+    /// Walk speed the server reported.
+    pub walk_speed: f32,
     /// Messages ready to apply to the world.
     pub inbox: Vec<Message>,
 }
@@ -296,7 +370,8 @@ impl NetworkServer {
         Ok(())
     }
 
-    /// Accepts pending clients, completes their handshake, then broadcasts `message`.
+    /// Accepts pending clients, completes their handshake, handles their
+    /// claims and inputs, then broadcasts `message`.
     ///
     /// A client only joins after sending [`Message::Hello`] with the token the
     /// server expects; every newcomer first receives [`Message::Welcome`] and a
@@ -306,6 +381,7 @@ impl NetworkServer {
         message: &Message,
         spawns: &[SpawnState],
         token: Option<&str>,
+        walk_speed: f32,
         status: &mut NetworkStatus,
     ) {
         if let Some(listener) = &self.listener {
@@ -315,7 +391,10 @@ impl NetworkServer {
                         let _ = stream.set_nodelay(true);
                         let _ = stream.set_nonblocking(true);
                         if self.pending.len() < MAX_PENDING {
+                            let id = self.next_client;
+                            self.next_client = self.next_client.wrapping_add(1);
                             self.pending.push(PendingClient {
+                                id,
                                 stream,
                                 reader: FrameReader::default(),
                             });
@@ -359,9 +438,11 @@ impl NetworkServer {
                             let allowed =
                                 token.is_none_or(|expected| expected == got.as_str());
                             if allowed {
-                                let _ = pending
-                                    .stream
-                                    .write_all(&encode_message(&Message::Welcome));
+                                let welcome = Message::Welcome {
+                                    client: pending.id,
+                                    walk_speed,
+                                };
+                                let _ = pending.stream.write_all(&encode_message(&welcome));
                                 let _ = pending
                                     .stream
                                     .write_all(&encode_message(&Message::Spawn(spawns.to_vec())));
@@ -384,7 +465,11 @@ impl NetworkServer {
             }
             if accepted {
                 let pending = self.pending.remove(index);
-                self.clients.push(pending.stream);
+                self.clients.push(ClientConn {
+                    id: pending.id,
+                    stream: pending.stream,
+                    reader: pending.reader,
+                });
             } else if drop_client {
                 self.pending.remove(index);
             } else {
@@ -392,22 +477,114 @@ impl NetworkServer {
             }
         }
 
+        let mut index = 0;
+        while index < self.clients.len() {
+            let mut closed = false;
+            let mut inbound = Vec::new();
+            {
+                let client = &mut self.clients[index];
+                let mut buf = [0u8; 4096];
+                loop {
+                    match client.stream.read(&mut buf) {
+                        Ok(0) => {
+                            closed = true;
+                            break;
+                        }
+                        Ok(n) => client.reader.feed(&buf[..n]),
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+                if !closed {
+                    while let Some(message) = client.reader.next_message() {
+                        inbound.push(message);
+                    }
+                }
+            }
+            if closed {
+                let client = self.clients.remove(index);
+                self.owners.retain(|_, owner| *owner != client.id);
+                self.claims.remove(&client.id);
+                self.inputs.remove(&client.id);
+                continue;
+            }
+            let id = self.clients[index].id;
+            let mut outbound = Vec::new();
+            for message in inbound {
+                match message {
+                    Message::Claim(object) => {
+                        if self.claims.get(&id).is_some_and(|owned| *owned != object) {
+                            outbound.push(Message::Denied(object));
+                            continue;
+                        }
+                        match self.owners.get(&object).copied() {
+                            None => {
+                                self.owners.insert(object, id);
+                                self.claims.insert(id, object);
+                                self.inputs.remove(&id);
+                                let notice = Message::Owner { id: object, owner: id };
+                                for client in &mut self.clients {
+                                    let _ = client.stream.write_all(&encode_message(&notice));
+                                }
+                            }
+                            Some(owner) if owner == id => {}
+                            Some(_) => outbound.push(Message::Denied(object)),
+                        }
+                    }
+                    Message::Input { seq, walk, jump } if self.claims.contains_key(&id) => {
+                        self.inputs.insert(
+                            id,
+                            InputState {
+                                seq,
+                                walk,
+                                jump,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            for message in &outbound {
+                let _ = self.clients[index]
+                    .stream
+                    .write_all(&encode_message(message));
+            }
+            index += 1;
+        }
+
         let bytes = encode_message(message);
-        let before = self.clients.len();
-        self.clients
-            .retain_mut(|client| client.write_all(&bytes).is_ok());
-        if self.clients.len() != before {
+        let mut dead = Vec::new();
+        self.clients.retain_mut(|client| {
+            if client.stream.write_all(&bytes).is_ok() {
+                true
+            } else {
+                dead.push(client.id);
+                false
+            }
+        });
+        for id in dead {
+            self.owners.retain(|_, owner| *owner != id);
+            self.claims.remove(&id);
+            self.inputs.remove(&id);
+        }
+        if status.peers != self.clients.len() {
             status.update(self.clients.len(), status.error.clone());
-        } else if status.peers != self.clients.len() {
-            status.update(self.clients.len(), None);
         }
     }
 }
 
 /// Client connection and incoming messages.
 impl NetworkClient {
-    /// Connects to `addr` and presents `token` in the handshake.
-    pub fn connect(&mut self, addr: &str, token: Option<&str>) -> Result<(), String> {
+    /// Connects to `addr`, presents `token` and asks for `claim` once accepted.
+    pub fn connect(
+        &mut self,
+        addr: &str,
+        token: Option<&str>,
+        claim: Option<u64>,
+    ) -> Result<(), String> {
         let mut stream = TcpStream::connect(addr).map_err(|err| err.to_string())?;
         stream
             .set_nonblocking(true)
@@ -419,49 +596,295 @@ impl NetworkClient {
             .map_err(|err| format!("handshake: {err}"))?;
         self.stream = Some(stream);
         self.authenticated = false;
+        self.client_id = 0;
+        self.owners.clear();
+        self.owned.clear();
+        self.pending_claim = claim;
+        self.last_ack = 0;
+        self.walk_speed = 4.0;
         Ok(())
     }
 
-    /// Reads pending bytes and returns every complete message.
-    pub fn pump(&mut self, status: &mut NetworkStatus) -> Vec<Message> {
+    /// Writes one message to the server.
+    pub fn send(&mut self, message: &Message) -> bool {
         let Some(stream) = &mut self.stream else {
-            return Vec::new();
+            return false;
         };
-        let mut buf = [0u8; 8192];
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => {
-                    self.stream = None;
-                    status.update(0, Some("server closed the connection".into()));
-                    break;
-                }
-                Ok(n) => self.reader.feed(&buf[..n]),
-                Err(err) if err.kind() == ErrorKind::WouldBlock => break,
-                Err(err) => {
-                    self.stream = None;
-                    status.update(0, Some(err.to_string()));
-                    break;
+        stream.write_all(&encode_message(message)).is_ok()
+    }
+
+    /// Reads pending bytes and handles the session messages it understands.
+    pub fn pump(&mut self, status: &mut NetworkStatus) -> Vec<Message> {
+        if self.stream.is_none() {
+            return Vec::new();
+        }
+        let mut closed = false;
+        let mut read_error = None;
+        {
+            let stream = self.stream.as_mut().expect("checked above");
+            let mut buf = [0u8; 8192];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => {
+                        closed = true;
+                        break;
+                    }
+                    Ok(n) => self.reader.feed(&buf[..n]),
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                    Err(err) => {
+                        read_error = Some(err.to_string());
+                        break;
+                    }
                 }
             }
         }
         let mut messages = Vec::new();
+        let mut rejected = false;
         while let Some(message) = self.reader.next_message() {
             match message {
-                Message::Welcome => {
+                Message::Welcome { client, walk_speed } => {
+                    self.client_id = client;
+                    self.walk_speed = walk_speed;
                     self.authenticated = true;
                     status.update(1, None);
+                    if let Some(object) = self.pending_claim.take() {
+                        self.send(&Message::Claim(object));
+                    }
+                }
+                Message::Owner { id, owner } => {
+                    self.owners.insert(id, owner);
+                    if owner == self.client_id {
+                        self.owned.insert(id);
+                    } else {
+                        self.owned.remove(&id);
+                    }
+                }
+                Message::Denied(id) => {
+                    self.pending_claim = None;
+                    let peers = status.peers;
+                    status.update(peers, Some(format!("claim denied for object {id}")));
+                }
+                Message::Ack { client, seq } => {
+                    if client == self.client_id {
+                        self.last_ack = self.last_ack.max(seq);
+                    }
                 }
                 Message::Rejected(reason) => {
+                    rejected = true;
                     self.stream = None;
                     self.authenticated = false;
                     status.update(0, Some(format!("rejected: {reason}")));
-                    return Vec::new();
                 }
                 other => messages.push(other),
             }
         }
+        // The server may reject and close in the same read; report the peer
+        // message rather than "closed" when one arrived first.
+        if !rejected && (closed || read_error.is_some()) {
+            self.stream = None;
+            self.authenticated = false;
+            let reason = read_error.unwrap_or_else(|| "server closed the connection".into());
+            status.update(0, Some(reason));
+        }
         messages
     }
+}
+
+impl NetworkServer {
+    /// Drains the latest input per client with the object that client owns.
+    pub fn take_inputs(&mut self) -> Vec<(u64, u64, InputState)> {
+        let mut out = Vec::new();
+        for (client, input) in self.inputs.drain() {
+            if let Some(object) = self.claims.get(&client).copied() {
+                out.push((client, object, input));
+            }
+        }
+        out
+    }
+
+    /// Sends one message to a client, when it is still connected.
+    pub fn send_to(&mut self, client: u64, message: &Message) {
+        if let Some(conn) = self.clients.iter_mut().find(|conn| conn.id == client) {
+            let _ = conn.stream.write_all(&encode_message(message));
+        }
+    }
+}
+
+/// One input the client sent and may need to replay.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PendingInput {
+    /// Sequence number sent to the server.
+    pub seq: u32,
+    /// Walk direction on XZ.
+    pub walk: [f32; 2],
+    /// Frame time used when the input was predicted.
+    pub dt: f32,
+}
+
+/// Client-side prediction state for the owned object.
+#[derive(Resource, Default, Debug)]
+pub struct Prediction {
+    /// Object this client owns and predicts.
+    pub object: Option<u64>,
+    /// Predicted world position.
+    pub position: Vec3,
+    /// Last input sequence sent.
+    pub seq: u32,
+    /// Last acknowledged sequence.
+    pub last_ack: u32,
+    /// Inputs the server has not acknowledged yet.
+    pub history: Vec<PendingInput>,
+    /// How many times a correction was applied.
+    pub corrections: u32,
+    /// Whether [`position`](Self::position) holds a real value.
+    pub initialized: bool,
+}
+
+impl Prediction {
+    /// Applies one walk input to `position`.
+    pub fn step(position: Vec3, walk: [f32; 2], dt: f32, speed: f32) -> Vec3 {
+        Vec3::new(
+            position.x + walk[0] * speed * dt,
+            position.y,
+            position.z + walk[1] * speed * dt,
+        )
+    }
+
+    /// Drops inputs the server acknowledged.
+    pub fn prune(&mut self, ack: u32) {
+        self.history.retain(|input| input.seq > ack);
+        self.last_ack = ack;
+    }
+
+    /// Replays every unacknowledged input starting from `authoritative`.
+    pub fn replay(&self, authoritative: Vec3, speed: f32) -> Vec3 {
+        self.history.iter().fold(authoritative, |position, input| {
+            Self::step(position, input.walk, input.dt, speed)
+        })
+    }
+}
+
+/// Sends local movement for the owned object and predicts its position.
+pub fn predict_owned(
+    config: Res<NetworkConfig>,
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut client: ResMut<NetworkClient>,
+    mut prediction: ResMut<Prediction>,
+    mut objects: Query<(&ReplicatedObject, &mut Transform)>,
+) {
+    if !matches!(config.role, NetworkRole::Client { .. }) || !client.authenticated {
+        return;
+    }
+    let object = prediction
+        .object
+        .or_else(|| client.owned.iter().next().copied());
+    let Some(object) = object else {
+        return;
+    };
+    prediction.object = Some(object);
+    let Some((_, mut transform)) = objects
+        .iter_mut()
+        .find(|(replicated, _)| replicated.0 == object)
+    else {
+        return;
+    };
+    if !prediction.initialized {
+        prediction.position = transform.translation;
+        prediction.initialized = true;
+        prediction.last_ack = client.last_ack;
+    }
+    prediction.prune(client.last_ack);
+
+    let mut walk = [0.0f32; 2];
+    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+        walk[1] -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+        walk[1] += 1.0;
+    }
+    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+        walk[0] -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+        walk[0] += 1.0;
+    }
+    let length = (walk[0] * walk[0] + walk[1] * walk[1]).sqrt();
+    if length > 0.0 {
+        walk[0] /= length;
+        walk[1] /= length;
+    }
+    let dt = time.delta_secs().clamp(0.0, 0.05);
+    if dt <= 0.0 {
+        return;
+    }
+    let jump = keys.just_pressed(KeyCode::Space);
+    let speed = client.walk_speed.max(0.1);
+    prediction.seq = prediction.seq.wrapping_add(1);
+    let seq = prediction.seq;
+    prediction.history.push(PendingInput { seq, walk, dt });
+    if prediction.history.len() > 256 {
+        prediction.history.remove(0);
+    }
+    prediction.position = Prediction::step(prediction.position, walk, dt, speed);
+    transform.translation.x = prediction.position.x;
+    transform.translation.z = prediction.position.z;
+    client.send(&Message::Input {
+        seq: prediction.seq,
+        walk,
+        jump,
+    });
+}
+
+/// Compares the predicted position with the authoritative snapshot and replays
+/// the inputs the server has not acknowledged yet.
+pub fn reconcile_owned(
+    config: Res<NetworkConfig>,
+    client: Res<NetworkClient>,
+    mut prediction: ResMut<Prediction>,
+    buffer: Res<SnapshotBuffer>,
+    mut objects: Query<(&ReplicatedObject, &mut Transform)>,
+) {
+    if !matches!(config.role, NetworkRole::Client { .. }) {
+        return;
+    }
+    let Some(object) = prediction.object else {
+        return;
+    };
+    let Some(authoritative) = buffer
+        .samples
+        .get(&object)
+        .and_then(|samples| samples.last())
+    else {
+        return;
+    };
+    let auth = Vec3::from_array(authoritative.1.translation);
+    prediction.prune(client.last_ack);
+    let speed = client.walk_speed.max(0.1);
+    let deviation = Vec3::new(
+        prediction.position.x - auth.x,
+        0.0,
+        prediction.position.z - auth.z,
+    )
+    .length();
+    if deviation > 0.25 {
+        prediction.corrections = prediction.corrections.wrapping_add(1);
+        prediction.position = prediction.replay(auth, speed);
+        if let Some((_, mut transform)) = objects
+            .iter_mut()
+            .find(|(replicated, _)| replicated.0 == object)
+        {
+            transform.translation.x = prediction.position.x;
+            transform.translation.z = prediction.position.z;
+            transform.translation.y = auth.y;
+        }
+    } else if let Some((_, mut transform)) = objects
+        .iter_mut()
+        .find(|(replicated, _)| replicated.0 == object)
+    {
+        transform.translation.y = auth.y;
+    }
+    prediction.position.y = auth.y;
 }
 
 /// Systems that transport snapshots; order them after local simulation.
@@ -472,6 +895,7 @@ pub struct NetworkSet;
 pub fn interpolate_snapshots(
     config: Res<NetworkConfig>,
     time: Res<Time>,
+    client: Res<NetworkClient>,
     mut buffer: ResMut<SnapshotBuffer>,
     mut objects: Query<(&ReplicatedObject, &mut Transform)>,
 ) {
@@ -482,6 +906,9 @@ pub fn interpolate_snapshots(
     let render = time.elapsed_secs_f64() - delay;
     buffer.prune(render - 2.0);
     for (object, mut transform) in &mut objects {
+        if client.owned.contains(&object.0) {
+            continue;
+        }
         let Some(samples) = buffer.samples.get(&object.0) else {
             continue;
         };
@@ -503,10 +930,19 @@ impl Plugin for NetworkPlugin {
             .init_resource::<NetworkServer>()
             .init_resource::<NetworkClient>()
             .init_resource::<SnapshotBuffer>()
+            .init_resource::<Prediction>()
             .add_systems(Startup, start_network)
-            .add_systems(Update, (send_snapshots, receive_messages, (apply_inbox, interpolate_snapshots).chain())
-                .chain()
-                .in_set(NetworkSet));
+            .add_systems(
+                Update,
+                (
+                    send_snapshots,
+                    receive_messages,
+                    (apply_inbox, interpolate_snapshots).chain(),
+                    predict_owned.after(receive_messages),
+                    reconcile_owned.after(apply_inbox),
+                )
+                    .in_set(NetworkSet),
+            );
     }
 }
 
@@ -523,7 +959,7 @@ pub fn start_network(
             Ok(()) => status.update(0, None),
             Err(err) => status.update(0, Some(err)),
         },
-        NetworkRole::Client { addr } => match client.connect(addr, config.auth_token.as_deref()) {
+        NetworkRole::Client { addr } => match client.connect(addr, config.auth_token.as_deref(), config.claim) {
             Ok(()) => status.update(0, None),
             Err(err) => status.update(0, Some(err)),
         },
@@ -568,6 +1004,7 @@ pub fn send_snapshots(
             &Message::Despawn(removed),
             &spawns,
             config.auth_token.as_deref(),
+            config.walk_speed,
             &mut status,
         );
     }
@@ -581,6 +1018,7 @@ pub fn send_snapshots(
             &Message::Spawn(new_spawns),
             &spawns,
             config.auth_token.as_deref(),
+            config.walk_speed,
             &mut status,
         );
     }
@@ -589,6 +1027,7 @@ pub fn send_snapshots(
         &Message::Snapshot(snapshot),
         &spawns,
         config.auth_token.as_deref(),
+        config.walk_speed,
         &mut status,
     );
 }
@@ -659,7 +1098,14 @@ pub fn apply_inbox(
                     }
                 }
             }
-            Message::Hello(_) | Message::Welcome | Message::Rejected(_) => {}
+            Message::Hello(_)
+            | Message::Welcome { .. }
+            | Message::Rejected(_)
+            | Message::Claim(_)
+            | Message::Owner { .. }
+            | Message::Denied(_)
+            | Message::Input { .. }
+            | Message::Ack { .. } => {}
             Message::Snapshot(states) => {
                 let at = time.elapsed_secs_f64();
                 for state in states {
@@ -741,6 +1187,7 @@ mod tests {
                 &Message::Snapshot(vec![state()]),
                 &[],
                 None,
+                4.0,
                 &mut status,
             );
             std::thread::sleep(Duration::from_millis(10));
@@ -751,14 +1198,14 @@ mod tests {
 
         // A client that has gone away is dropped without stopping the server.
         server.clients.clear();
-        server.pump(&Message::Snapshot(vec![]), &[], None, &mut status);
+        server.pump(&Message::Snapshot(vec![]), &[], None, 4.0, &mut status);
         assert_eq!(status.peers, 0);
     }
 
     #[test]
     fn connecting_to_a_missing_peer_reports_an_error() {
         let mut client = NetworkClient::default();
-        assert!(client.connect("127.0.0.1:1", None).is_err());
+        assert!(client.connect("127.0.0.1:1", None, None).is_err());
         let mut status = NetworkStatus::default();
         assert!(client.pump(&mut status).is_empty());
     }
@@ -833,13 +1280,13 @@ mod tests {
         });
         let deadline = Instant::now() + Duration::from_secs(2);
         while status.peers == 0 && Instant::now() < deadline {
-            server.pump(&Message::Snapshot(vec![]), &spawns, None, &mut status);
+            server.pump(&Message::Snapshot(vec![]), &spawns, None, 4.0, &mut status);
             std::thread::sleep(Duration::from_millis(10));
         }
         let messages = rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
         assert_eq!(
             messages.first(),
-            Some(&Message::Welcome),
+            Some(&Message::Welcome { client: 0, walk_speed: 4.0 }),
             "welcome must arrive first: {messages:?}"
         );
         assert_eq!(
@@ -858,7 +1305,7 @@ mod tests {
         let mut server_status = NetworkStatus::default();
         let deadline = Instant::now() + Duration::from_secs(2);
         while status.peers == 0 && status.error.is_none() && Instant::now() < deadline {
-            server.pump(&Message::Snapshot(vec![]), &[], token, &mut server_status);
+            server.pump(&Message::Snapshot(vec![]), &[], token, 4.0, &mut server_status);
             client.pump(status);
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -876,7 +1323,7 @@ mod tests {
         server.listen(port).unwrap();
         let mut client = NetworkClient::default();
         client
-            .connect(&format!("127.0.0.1:{port}"), client_token)
+            .connect(&format!("127.0.0.1:{port}"), client_token, None)
             .unwrap();
         let mut status = NetworkStatus::default();
         let server_status = handshake(&mut server, token, &mut client, &mut status);
@@ -895,6 +1342,7 @@ mod tests {
             &Message::Snapshot(vec![state()]),
             &[],
             Some("secret"),
+            4.0,
             &mut server_status,
         );
         let messages = client.pump(&mut status);
@@ -909,7 +1357,13 @@ mod tests {
     #[test]
     fn a_wrong_token_is_rejected() {
         let (_server, client, status, _) = connect_pair(Some("secret"), Some("guess"));
-        assert!(status.error.as_deref().is_some_and(|err| err.contains("rejected")));
+        assert!(
+            status.error.as_deref().is_some_and(|err| err.contains("rejected")),
+            "error={:?} peers={} authenticated={}",
+            status.error,
+            status.peers,
+            client.authenticated
+        );
         assert_eq!(status.peers, 0);
         assert!(!client.authenticated);
     }
@@ -917,7 +1371,12 @@ mod tests {
     #[test]
     fn a_missing_token_is_rejected_when_the_server_requires_one() {
         let (_server, _client, status, _) = connect_pair(Some("secret"), None);
-        assert!(status.error.as_deref().is_some_and(|err| err.contains("rejected")));
+        assert!(
+            status.error.as_deref().is_some_and(|err| err.contains("rejected")),
+            "error={:?} peers={}",
+            status.error,
+            status.peers
+        );
         assert_eq!(status.peers, 0);
     }
 
@@ -929,12 +1388,132 @@ mod tests {
         assert!(client.authenticated);
     }
 
+    fn listening_server() -> (NetworkServer, String) {
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let mut server = NetworkServer::default();
+        server.listen(port).unwrap();
+        (server, format!("127.0.0.1:{port}"))
+    }
+
+    #[test]
+    fn ownership_is_granted_to_one_client_and_denied_to_another() {
+        let (mut server, addr) = listening_server();
+        let mut first = NetworkClient::default();
+        first.connect(&addr, None, Some(1)).unwrap();
+        let mut srv = NetworkStatus::default();
+        let mut s1 = NetworkStatus::default();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while first.owned.is_empty() && Instant::now() < deadline {
+            server.pump(&Message::Snapshot(vec![]), &[], None, 4.0, &mut srv);
+            first.pump(&mut s1);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(first.owned.contains(&1), "first claimant owns the object");
+
+        let mut second = NetworkClient::default();
+        second.connect(&addr, None, Some(1)).unwrap();
+        let mut s2 = NetworkStatus::default();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while s2.error.is_none() && Instant::now() < deadline {
+            server.pump(&Message::Snapshot(vec![]), &[], None, 4.0, &mut srv);
+            first.pump(&mut s1);
+            second.pump(&mut s2);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(second.owned.is_empty());
+        assert!(
+            s2.error.as_deref().is_some_and(|err| err.contains("claim denied")),
+            "{:?}",
+            s2.error
+        );
+        assert_eq!(srv.peers, 2);
+    }
+
+    #[test]
+    fn inputs_are_stored_for_the_owned_object() {
+        let (mut server, addr) = listening_server();
+        let mut client = NetworkClient::default();
+        client.connect(&addr, None, Some(7)).unwrap();
+        let mut srv = NetworkStatus::default();
+        let mut status = NetworkStatus::default();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while client.owned.is_empty() && Instant::now() < deadline {
+            server.pump(&Message::Snapshot(vec![]), &[], None, 4.0, &mut srv);
+            client.pump(&mut status);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(client.owned.contains(&7));
+        client.send(&Message::Input {
+            seq: 5,
+            walk: [1.0, 0.0],
+            jump: true,
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut received = Vec::new();
+        while received.is_empty() && Instant::now() < deadline {
+            server.pump(&Message::Snapshot(vec![]), &[], None, 4.0, &mut srv);
+            client.pump(&mut status);
+            received = server.take_inputs();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(received.len(), 1, "{received:?}");
+        let (owner, object, input) = received[0];
+        assert_eq!(owner, client.client_id);
+        assert_eq!(object, 7);
+        assert_eq!(input.seq, 5);
+        assert_eq!(input.walk, [1.0, 0.0]);
+        assert!(input.jump);
+    }
+
+    #[test]
+    fn prediction_replays_only_unacknowledged_inputs() {
+        let mut prediction = Prediction {
+            history: vec![
+                PendingInput {
+                    seq: 1,
+                    walk: [1.0, 0.0],
+                    dt: 0.1,
+                },
+                PendingInput {
+                    seq: 2,
+                    walk: [1.0, 0.0],
+                    dt: 0.1,
+                },
+                PendingInput {
+                    seq: 3,
+                    walk: [0.0, 1.0],
+                    dt: 0.1,
+                },
+            ],
+            ..Default::default()
+        };
+        prediction.prune(1);
+        assert_eq!(prediction.history.len(), 2);
+        let corrected = prediction.replay(Vec3::new(1.0, 0.0, 0.0), 4.0);
+        assert!((corrected.x - 1.4).abs() < 1e-5, "{corrected:?}");
+        assert!((corrected.z - 0.4).abs() < 1e-5, "{corrected:?}");
+    }
+
     #[test]
     fn handshake_messages_round_trip() {
         for message in [
             Message::Hello("secret".into()),
-            Message::Welcome,
+            Message::Welcome {
+                client: 3,
+                walk_speed: 4.0,
+            },
             Message::Rejected("invalid token".into()),
+            Message::Claim(4),
+            Message::Owner { id: 4, owner: 2 },
+            Message::Denied(4),
+            Message::Input {
+                seq: 9,
+                walk: [0.5, -0.5],
+                jump: true,
+            },
+            Message::Ack { client: 2, seq: 9 },
         ] {
             let bytes = encode_message(&message);
             let mut reader = FrameReader::default();
@@ -954,6 +1533,8 @@ mod tests {
             },
             interpolation_delay: 0.1,
             auth_token: None,
+            claim: None,
+            walk_speed: 4.0,
         });
         world.insert_resource(Time::<()>::default());
         world.insert_resource(NetworkClient::default());

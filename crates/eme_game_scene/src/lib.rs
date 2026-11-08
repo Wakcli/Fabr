@@ -332,6 +332,24 @@ impl Default for PhysicsBodySpec {
     }
 }
 
+/// Authored light tint and brightness.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LightSpec {
+    /// Linear RGB tint.
+    pub color: [f32; 3],
+    /// Multiplier on the kind's default brightness, 0 to 8.
+    pub intensity: f32,
+}
+
+impl Default for LightSpec {
+    fn default() -> Self {
+        Self {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+        }
+    }
+}
+
 /// Animation selection authored on a model object.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct AnimationRef {
@@ -394,6 +412,9 @@ pub struct SceneObject {
     /// Optional animation selection for imported models.
     #[serde(default)]
     pub animation: Option<AnimationRef>,
+    /// Optional light tint and brightness for sun and point lights.
+    #[serde(default)]
+    pub light: Option<LightSpec>,
 }
 
 /// Offset applied on top of an imported node's transform.
@@ -575,6 +596,8 @@ impl SceneDoc {
             script: None,
             physics: None,
             animation: None,
+            light: matches!(kind, ObjectKind::Sun | ObjectKind::PointLight)
+                .then(LightSpec::default),
         });
         id
     }
@@ -680,6 +703,23 @@ impl SceneDoc {
             }
             None => false,
         }
+    }
+
+    /// The light authored on `id`, if any.
+    pub fn light(&self, id: u64) -> Option<LightSpec> {
+        self.get(id).and_then(|obj| obj.light)
+    }
+
+    /// Sets or clears the light tint and brightness on `id`.
+    pub fn set_light(&mut self, id: u64, light: Option<LightSpec>) -> bool {
+        let Some(obj) = self.get_mut(id) else {
+            return false;
+        };
+        if obj.light == light {
+            return false;
+        }
+        obj.light = light;
+        true
     }
 
     /// The animation selection authored on `id`, if any.
@@ -1311,6 +1351,24 @@ mod tests {
         assert!(doc.set_color(id, Some([0.8, 0.1, 0.2, 1.0])));
         let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
         assert_eq!(back.get(id).unwrap().color, Some([0.8, 0.1, 0.2, 1.0]));
+    }
+
+    #[test]
+    fn a_new_light_gets_a_spec_and_round_trips() {
+        let mut doc = SceneDoc::new();
+        let sun = doc.add(ObjectKind::Sun, "Sun", ObjectTransform::default());
+        assert_eq!(doc.light(sun), Some(LightSpec::default()));
+
+        let tinted = LightSpec {
+            color: [0.9, 0.4, 0.1],
+            intensity: 2.5,
+        };
+        assert!(doc.set_light(sun, Some(tinted)));
+        let back = SceneDoc::from_ron(&doc.to_ron().unwrap()).unwrap();
+        assert_eq!(back.light(sun), Some(tinted));
+
+        let cube = doc.add(ObjectKind::Cube, "Cube", ObjectTransform::default());
+        assert_eq!(doc.light(cube), None);
     }
 
     #[test]

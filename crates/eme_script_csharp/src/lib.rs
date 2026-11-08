@@ -81,6 +81,44 @@ pub struct FabrApi {
     pub get_translation: unsafe extern "C" fn(*mut c_void, u64, *mut f32) -> i32,
 }
 
+/// The three lifecycle entry points a C# script class exports.
+#[derive(Clone, Copy)]
+pub struct ScriptEntryPoints {
+    start: unsafe extern "C" fn(*mut FabrApi, u64),
+    update: unsafe extern "C" fn(*mut FabrApi, u64, f32),
+    stop: unsafe extern "C" fn(*mut FabrApi, u64),
+}
+
+impl ScriptEntryPoints {
+    /// Calls `on_start` for `entity`.
+    ///
+    /// # Safety
+    /// `api` must be the live callback table and `entity` a handle the managed
+    /// side can use with the callbacks.
+    pub unsafe fn start(&self, api: &mut FabrApi, entity: u64) {
+        // SAFETY: the entry point and table come from the validated host.
+        unsafe { (self.start)(api, entity) };
+    }
+
+    /// Calls `on_update` for `entity`.
+    ///
+    /// # Safety
+    /// Same requirements as [`Self::start`].
+    pub unsafe fn update(&self, api: &mut FabrApi, entity: u64, dt: f32) {
+        // SAFETY: the entry point and table come from the validated host.
+        unsafe { (self.update)(api, entity, dt) };
+    }
+
+    /// Calls `on_stop` for `entity`.
+    ///
+    /// # Safety
+    /// Same requirements as [`Self::start`].
+    pub unsafe fn stop(&self, api: &mut FabrApi, entity: u64) {
+        // SAFETY: the entry point and table come from the validated host.
+        unsafe { (self.stop)(api, entity) };
+    }
+}
+
 /// Where the .NET installation lives.
 pub fn dotnet_root() -> Option<PathBuf> {
     if let Some(root) = std::env::var_os("DOTNET_ROOT") {
@@ -193,6 +231,29 @@ impl DotnetHost {
         Ok(function)
     }
 
+    /// Resolves the three lifecycle entry points of a C# script class.
+    pub fn script(
+        &self,
+        assembly: &Path,
+        type_name: &str,
+    ) -> Result<ScriptEntryPoints, HostError> {
+        let start = self.entry_point(assembly, type_name, "Start")?;
+        let update = self.entry_point(assembly, type_name, "Update")?;
+        let stop = self.entry_point(assembly, type_name, "Stop")?;
+        type Start = unsafe extern "C" fn(*mut FabrApi, u64);
+        type Update = unsafe extern "C" fn(*mut FabrApi, u64, f32);
+        type Stop = unsafe extern "C" fn(*mut FabrApi, u64);
+        // SAFETY: the managed contract fixes these signatures for the three
+        // [UnmanagedCallersOnly] methods, resolved from validated exports.
+        Ok(unsafe {
+            ScriptEntryPoints {
+                start: std::mem::transmute::<*mut c_void, Start>(start),
+                update: std::mem::transmute::<*mut c_void, Update>(update),
+                stop: std::mem::transmute::<*mut c_void, Stop>(stop),
+            }
+        })
+    }
+
     /// Adds the hostfxr library to the loaded set for the process lifetime.
     pub fn keep_alive(&self) -> &Library {
         &self.library
@@ -262,6 +323,38 @@ public static class Script
             api->Log(api->Context, text);
         }
         api->SetTranslation(api->Context, 7, 1.5f, 2.0f, -3.0f);
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void Start(FabrApi* api, ulong entity)
+    {
+        byte[] message = System.Text.Encoding.UTF8.GetBytes("start\0");
+        fixed (byte* text = message)
+        {
+            api->Log(api->Context, text);
+        }
+        api->SetTranslation(api->Context, entity, 0.0f, 0.0f, 0.0f);
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void Update(FabrApi* api, ulong entity, float dt)
+    {
+        float* position = stackalloc float[3];
+        if (api->GetTranslation(api->Context, entity, position) == 0)
+        {
+            return;
+        }
+        api->SetTranslation(api->Context, entity, position[0] + dt, position[1], position[2]);
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void Stop(FabrApi* api, ulong entity)
+    {
+        byte[] message = System.Text.Encoding.UTF8.GetBytes("stop\0");
+        fixed (byte* text = message)
+        {
+            api->Log(api->Context, text);
+        }
     }
 }
 "#,
@@ -358,7 +451,7 @@ public static class Script
             logs: Vec::new(),
             transforms: std::collections::HashMap::new(),
         };
-        let api = FabrApi {
+        let mut api = FabrApi {
             context: std::ptr::from_mut(&mut context).cast::<c_void>(),
             log,
             set_translation,
@@ -373,6 +466,19 @@ public static class Script
         unsafe { run(std::ptr::from_ref(&api).cast_mut()) };
         assert_eq!(context.logs, ["hello from C#"]);
         assert_eq!(context.transforms.get(&7), Some(&[1.5, 2.0, -3.0]));
+
+        let script = host
+            .script(&out.join("Host.dll"), "FabrTest.Script, Host")
+            .expect("lifecycle entry points resolve");
+        // SAFETY: the callbacks and context live for the whole sequence.
+        unsafe {
+            script.start(&mut api, 11);
+            script.update(&mut api, 11, 0.25);
+            script.update(&mut api, 11, 0.25);
+            script.stop(&mut api, 11);
+        }
+        assert_eq!(context.logs, ["hello from C#", "start", "stop"]);
+        assert_eq!(context.transforms.get(&11), Some(&[0.5, 0.0, 0.0]));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

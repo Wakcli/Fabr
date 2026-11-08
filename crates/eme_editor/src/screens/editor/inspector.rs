@@ -5,6 +5,7 @@ use eme::feathers::theme::{ThemeBackgroundColor, ThemeBorderColor, ThemeTextColo
 use eme::input::keyboard::KeyboardInput;
 use eme::input_focus::tab_navigation::TabIndex;
 use eme::input_focus::{FocusCause, FocusLost, FocusedInput, InputFocus};
+use eme::picking::hover::Hovered;
 use eme::prelude::*;
 use eme::scene::bsn;
 use eme::text::{
@@ -16,7 +17,7 @@ use eme_anim::AnimationSet;
 use eme_game_overrides::{ModelNodeCatalog, ModelOverrideStatus, OrphanReason};
 use eme_game_scene::{
     AnimationRef, Behaviour, BehaviourKind, NodeKey, ObjectKind, ObjectTransform, OverrideOp,
-    PhysicsBodySpec, ScriptRef, ScriptValue, TransformDelta,
+    PhysicsBodySpec, ScriptLanguage, ScriptRef, ScriptValue, TransformDelta,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -2424,7 +2425,7 @@ pub fn sync_script_rows(
     mut commands: Commands,
     hosts: Query<Entity, With<ScriptRows>>,
     mut shown: Local<Option<(Entity, String)>>,
-    mut base_seen: Local<Option<(Entity, u64, String, u64)>>,
+    mut base_seen: Local<Option<(Entity, u64, String, ScriptLanguage, Option<String>, u64)>>,
 ) {
     let Ok(host) = hosts.single() else {
         return;
@@ -2444,26 +2445,46 @@ pub fn sync_script_rows(
         return;
     };
 
-    let path = obj.script.as_ref().map(|script| script.path.clone());
+    let script = obj.script.clone();
+    let language = script
+        .as_ref()
+        .map_or(ScriptLanguage::Lua, |script| script.language);
+    let path = script
+        .as_ref()
+        .map(|script| script.path.clone())
+        .filter(|path| !path.is_empty());
+    let class = script.as_ref().and_then(|script| script.class.clone());
+
     let base = (
         host,
         obj.id,
         path.clone().unwrap_or_default(),
+        language,
+        class.clone(),
         state.rev,
     );
     if base_seen.as_ref() == Some(&base) {
         return;
     }
     *base_seen = Some(base);
-    let defaults = path.as_deref().map(|path| {
-        eme_script::script_property_defaults(&crate::asset_root(), path)
-    });
-    let mut signature = format!("{}|{}", obj.id, path.clone().unwrap_or_default());
+
+    let defaults = if language == ScriptLanguage::Lua {
+        path.as_deref()
+            .map(|path| eme_script::script_property_defaults(&crate::asset_root(), path))
+    } else {
+        None
+    };
+    let mut signature = format!(
+        "{}|{}|{}|{:?}",
+        obj.id,
+        language.label(),
+        path.clone().unwrap_or_default(),
+        class
+    );
     if let Some(Ok(defaults)) = &defaults {
         for (key, value) in defaults {
             signature.push_str(&format!("|{key}={value:?}"));
-            if let Some(over) = obj
-                .script
+            if let Some(over) = script
                 .as_ref()
                 .and_then(|script| script.properties.get(key))
             {
@@ -2481,8 +2502,10 @@ pub fn sync_script_rows(
     despawn_children(&mut commands, host);
 
     let object = obj.id;
+    spawn_language_row(&mut commands, host, language);
+
     let label = text("Script", FONT_SIZE, tokens::TEXT);
-    let value = text_clipped(
+    let clipped = text_clipped(
         path.clone().unwrap_or_else(|| "None".into()),
         FONT_SIZE,
         if path.is_some() {
@@ -2491,16 +2514,32 @@ pub fn sync_script_rows(
             tokens::TEXT_DIM
         },
     );
+    let value = Box::new(bsn! {
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            min_width: px(0),
+            display: Display::Flex,
+            justify_content: JustifyContent::FlexStart,
+            overflow: Overflow::clip(),
+        }
+        Children [ {clipped} ]
+    }) as Part;
     let row = commands.spawn_scene(bsn! {
         Node {
             display: Display::Flex,
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            padding: UiRect::horizontal(px(8)),
+            padding: UiRect {
+                left: px(8),
+                right: px(2),
+                top: px(0),
+                bottom: px(0),
+            },
             column_gap: px(4),
         }
         ChildOf(host)
-        Children [ {label} -- {spacer()} -- {value} ]
+        Children [ {label} -- {value} ]
     }).id();
     commands
         .entity(row)
@@ -2509,53 +2548,59 @@ pub fn sync_script_rows(
         .spawn_scene(bsn! {
             Node {
                 height: px(22),
+                flex_shrink: 0.0,
                 display: Display::Flex,
                 align_items: AlignItems::Center,
-                padding: UiRect::horizontal(px(6)),
+                padding: UiRect::horizontal(px(1)),
             }
             Button
             ChildOf(row)
             Children [ {text("Choose…", FONT_SIZE, tokens::TEXT)} ]
         })
-        .insert(OpenScriptPicker(object))
+        .insert(OpenScriptPicker(object, language))
         .observe(open_script_picker);
 
+    if language == ScriptLanguage::CSharp {
+        spawn_class_row(&mut commands, host, object, class.as_deref());
+        if class.is_none() {
+            spawn_hint(
+                &mut commands,
+                host,
+                "Set the class name to run this script.",
+            );
+        }
+        if path.is_none() {
+            spawn_hint(&mut commands, host, script_hint(language));
+            return;
+        }
+        spawn_hint(
+            &mut commands,
+            host,
+            "Properties are declared by the C# class.",
+        );
+        return;
+    }
+
     let Some(path) = path else {
-        let hint = text("Select a .lua script to run in Play.", FONT_SIZE, tokens::TEXT_DIM);
-        commands.spawn_scene(bsn! {
-            Node { padding: UiRect::horizontal(px(8)) }
-            ChildOf(host)
-            Children [ {hint} ]
-        });
+        spawn_hint(&mut commands, host, script_hint(language));
         return;
     };
 
     let defaults = match defaults {
         Some(Ok(defaults)) => defaults,
         Some(Err(err)) => {
-            let line = text(err, FONT_SIZE, tokens::TEXT_DIM);
-            commands.spawn_scene(bsn! {
-                Node { padding: UiRect::horizontal(px(8)) }
-                ChildOf(host)
-                Children [ {line} ]
-            });
+            spawn_hint(&mut commands, host, err);
             return;
         }
         None => return,
     };
     if defaults.is_empty() {
-        let hint = text("No exposed properties.", FONT_SIZE, tokens::TEXT_DIM);
-        commands.spawn_scene(bsn! {
-            Node { padding: UiRect::horizontal(px(8)) }
-            ChildOf(host)
-            Children [ {hint} ]
-        });
+        spawn_hint(&mut commands, host, "No exposed properties.");
         return;
     }
 
     for (key, default) in defaults {
-        let current = obj
-            .script
+        let current = script
             .as_ref()
             .and_then(|script| script.properties.get(&key))
             .cloned()
@@ -2614,13 +2659,162 @@ pub fn sync_script_rows(
     let _ = path;
 }
 
+/// Hint shown under the path row when a script still needs choosing.
+fn script_hint(language: ScriptLanguage) -> &'static str {
+    match language {
+        ScriptLanguage::Lua => "Select a .lua script to run in Play.",
+        ScriptLanguage::CSharp => "Select a .NET assembly to run in Play.",
+    }
+}
+
+/// Applies a language switch to a script, keeping only what survives it.
+fn script_with_language(script: Option<&ScriptRef>, language: ScriptLanguage) -> ScriptRef {
+    let mut next = script.cloned().unwrap_or_default();
+    next.language = language;
+    next.path.clear();
+    if language == ScriptLanguage::Lua {
+        next.class = None;
+    }
+    next
+}
+
+fn spawn_hint(commands: &mut Commands, host: Entity, hint: impl Into<String>) {
+    let hint = text(hint.into(), FONT_SIZE, tokens::TEXT_DIM);
+    commands.spawn_scene(bsn! {
+        Node { padding: UiRect::horizontal(px(8)) }
+        ChildOf(host)
+        Children [ {hint} ]
+    });
+}
+
+fn spawn_language_row(commands: &mut Commands, host: Entity, language: ScriptLanguage) {
+    let row = commands
+        .spawn_scene(bsn! {
+            Node {
+                height: px(24),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(8)),
+                column_gap: px(6),
+            }
+            ChildOf(host)
+            Children [ {text("Language", FONT_SIZE, tokens::TEXT)} -- {spacer()} ]
+        })
+        .id();
+    let segments = commands
+        .spawn_scene(bsn! {
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: px(1),
+                padding: px(1),
+                border_radius: px(3),
+            }
+            ThemeBackgroundColor(tokens::FIELD)
+            ChildOf(row)
+        })
+        .id();
+    for choice in [ScriptLanguage::Lua, ScriptLanguage::CSharp] {
+        let active = choice == language;
+        let (fill, fg) = if active {
+            (tokens::SELECT, tokens::TEXT)
+        } else {
+            (tokens::CLEAR, tokens::TEXT_MEDIUM)
+        };
+        commands
+            .spawn_scene(bsn! {
+                Node {
+                    height: px(18),
+                    display: Display::Flex,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(px(9)),
+                    border_radius: px(2),
+                }
+                ThemeBackgroundColor(fill)
+                Button
+                Hovered
+                ChildOf(segments)
+                Children [ {text(choice.label(), FONT_SIZE, fg)} ]
+                on(set_script_language)
+                on(hover_script_language)
+            })
+            .insert(ScriptLanguageChoice {
+                language: choice,
+                active,
+            });
+    }
+}
+
+fn spawn_class_row(commands: &mut Commands, host: Entity, object: u64, class: Option<&str>) {
+    let shown = class.unwrap_or("None").to_string();
+    let color = if class.is_some() {
+        tokens::TEXT
+    } else {
+        tokens::TEXT_DIM
+    };
+    let row = commands
+        .spawn_scene(bsn! {
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(8)),
+                column_gap: px(6),
+            }
+            ChildOf(host)
+            Children [ {text("Class", FONT_SIZE, tokens::TEXT)} -- {spacer()} ]
+        })
+        .id();
+    commands
+        .spawn_scene(bsn! {
+            Node {
+                flex_grow: 1.0,
+                flex_basis: px(0),
+                height: px(20),
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(4)),
+                overflow: Overflow::clip(),
+            }
+            ThemeBackgroundColor(tokens::FIELD)
+            EditableText::new(shown)
+            TextInput
+            TabIndex(0)
+            TextLayout {
+                linebreak: LineBreak::NoWrap,
+            }
+            TextFont {
+                font: FontSourceTemplate::Handle(fonts::REGULAR),
+                font_size: FontSize::Px(FONT_SIZE),
+                weight: FontWeight::NORMAL,
+            }
+            ThemeTextColor(color)
+            ChildOf(row)
+        })
+        .insert(ScriptClassField(object))
+        .observe(focus_script_class)
+        .observe(blur_script_class)
+        .observe(script_class_key);
+}
+
 /// Marks the dynamic Script section host.
 #[derive(Component, Clone, Default)]
 pub struct ScriptRows;
 
 /// Button that opens the script picker for an object.
 #[derive(Component, Clone, Copy, Default)]
-pub struct OpenScriptPicker(pub u64);
+pub struct OpenScriptPicker(pub u64, pub ScriptLanguage);
+
+/// One option in the Script language segmented control.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ScriptLanguageChoice {
+    /// Language this segment selects.
+    pub language: ScriptLanguage,
+    /// Whether this segment is the current choice.
+    pub active: bool,
+}
 
 /// One editable script property.
 #[derive(Component, Clone, Default)]
@@ -2630,6 +2824,14 @@ pub struct ScriptField(pub u64, pub String, pub ScriptValue);
 #[derive(Component, Clone, Default)]
 pub struct ScriptFieldEdit;
 
+/// The C# class name field.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ScriptClassField(pub u64);
+
+/// Focused class name edit.
+#[derive(Component, Clone, Copy, Default)]
+pub struct ScriptClassEdit;
+
 /// Script picker overlay state.
 #[derive(Resource, Clone, Default)]
 pub struct ScriptPicker {
@@ -2637,6 +2839,8 @@ pub struct ScriptPicker {
     pub at: Option<Vec2>,
     /// Object the chosen script is attached to.
     pub object: Option<u64>,
+    /// Language the picker lists artifacts for.
+    pub language: ScriptLanguage,
     /// Script files under assets.
     pub choices: Vec<String>,
 }
@@ -2700,7 +2904,8 @@ fn open_script_picker(
     };
     picker.at = Some(Vec2::new(420.0, 240.0));
     picker.object = Some(button.0);
-    picker.choices = eme_script::script_files(&crate::asset_root());
+    picker.language = button.1;
+    picker.choices = eme_script::script_files_for(&crate::asset_root(), button.1);
 }
 
 /// Rebuilds the picker rows.
@@ -2709,7 +2914,7 @@ pub fn sync_script_picker(
     mut commands: Commands,
     mut roots: Query<&mut Node, With<ScriptPickerRoot>>,
     hosts: Query<Entity, With<ScriptPickerRows>>,
-    mut shown: Local<Option<(Entity, usize, Vec2)>>,
+    mut shown: Local<Option<(Entity, ScriptLanguage, usize, Vec2)>>,
 ) {
     for mut node in &mut roots {
         let display = if picker.at.is_some() {
@@ -2732,7 +2937,7 @@ pub fn sync_script_picker(
         *shown = None;
         return;
     };
-    let signature = (host, picker.choices.len(), at);
+    let signature = (host, picker.language, picker.choices.len(), at);
     if shown.as_ref() == Some(&signature) {
         return;
     }
@@ -2780,16 +2985,166 @@ fn choose_script(
     if choice.1.is_empty() {
         state.doc.set_script(choice.0, None);
     } else {
+        let class = state
+            .doc
+            .script(choice.0)
+            .and_then(|script| script.class.clone());
         state.doc.set_script(
             choice.0,
             Some(ScriptRef {
                 path: choice.1.clone(),
                 properties: Default::default(),
+                language: picker.language,
+                class: if picker.language == ScriptLanguage::CSharp {
+                    class
+                } else {
+                    None
+                },
             }),
         );
     }
     state.touch();
     picker.at = None;
+}
+
+fn set_script_language(
+    activate: On<Activate>,
+    choices: Query<&ScriptLanguageChoice>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+) {
+    let Ok(choice) = choices.get(activate.entity) else {
+        return;
+    };
+    let Some(id) = state.primary() else {
+        return;
+    };
+    let current = state.doc.script(id);
+    if current.is_some_and(|script| script.language == choice.language) {
+        return;
+    }
+    let next = script_with_language(current, choice.language);
+    undo.checkpoint(&state, "Script Language");
+    state.doc.set_script(id, Some(next));
+    state.touch();
+}
+
+fn hover_script_language(
+    insert: On<Insert<Hovered>>,
+    choices: Query<(&ScriptLanguageChoice, &Hovered)>,
+    mut commands: Commands,
+) {
+    let entity = insert.event_target();
+    let Ok((choice, hovered)) = choices.get(entity) else {
+        return;
+    };
+    if choice.active {
+        return;
+    }
+    let fill = if hovered.0 {
+        tokens::LABEL_STRIP
+    } else {
+        tokens::CLEAR
+    };
+    commands.entity(entity).insert(ThemeBackgroundColor(fill));
+}
+
+fn focus_script_class(
+    press: On<PointerPress>,
+    fields: Query<&ScriptClassField>,
+    mut values: Query<&mut EditableText>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    if press.button != PointerButton::Primary || !fields.contains(press.entity) {
+        return;
+    }
+    commands.entity(press.entity).insert(ScriptClassEdit);
+    if let Ok(mut value) = values.get_mut(press.entity) {
+        value.queue_edit(TextEdit::SelectAll);
+    }
+    focus.set(press.entity, FocusCause::Pressed);
+}
+
+fn script_class_key(
+    key: On<FocusedInput<KeyboardInput>>,
+    fields: Query<(&ScriptClassField, &EditableText)>,
+    edits: Query<&ScriptClassEdit>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut focus: ResMut<InputFocus>,
+    mut commands: Commands,
+) {
+    let input = &key.input;
+    if !input.state.is_pressed() || input.repeat {
+        return;
+    }
+    let entity = key.focused_entity;
+    let Ok((field, value)) = fields.get(entity) else {
+        return;
+    };
+    if input.key_code == KeyCode::Escape {
+        commands.entity(entity).remove::<ScriptClassEdit>();
+        return;
+    }
+    if input.key_code != KeyCode::Enter {
+        return;
+    }
+    if edits.contains(entity) {
+        commit_script_class(
+            &mut state,
+            &mut undo,
+            field.0,
+            value.value().to_string().as_str(),
+        );
+    }
+    commands.entity(entity).remove::<ScriptClassEdit>();
+    focus.clear();
+}
+
+fn blur_script_class(
+    lost: On<FocusLost>,
+    edits: Query<&ScriptClassEdit>,
+    fields: Query<(&ScriptClassField, &EditableText)>,
+    mut state: ResMut<SceneState>,
+    mut undo: ResMut<Undo>,
+    mut commands: Commands,
+) {
+    let entity = lost.event_target();
+    if !edits.contains(entity) {
+        return;
+    }
+    commands.entity(entity).remove::<ScriptClassEdit>();
+    let Ok((field, value)) = fields.get(entity) else {
+        return;
+    };
+    commit_script_class(
+        &mut state,
+        &mut undo,
+        field.0,
+        value.value().to_string().as_str(),
+    );
+}
+
+fn commit_script_class(state: &mut SceneState, undo: &mut Undo, object: u64, raw: &str) -> bool {
+    let Some(current) = state.doc.script(object).cloned() else {
+        return false;
+    };
+    let mut next = current.clone();
+    let text = raw.trim();
+    // the field shows "None" while unset, so committing it untouched must not store that word
+    next.class = if text.is_empty() || (text == "None" && current.class.is_none()) {
+        None
+    } else {
+        Some(text.to_owned())
+    };
+    if next == current {
+        return false;
+    }
+    undo.checkpoint(state, "Script Class");
+    state.doc.set_script(object, Some(next));
+    state.touch();
+    true
 }
 
 fn focus_script_field(
@@ -3530,6 +3885,7 @@ mod tests {
             Some(ScriptRef {
                 path: "scripts/spin.lua".into(),
                 properties: Default::default(),
+                ..Default::default()
             }),
         );
         let mut undo = Undo::default();
@@ -3541,6 +3897,65 @@ mod tests {
         );
         assert!(undo.can_undo());
         assert!(!commit_script_field(&mut state, &mut undo, &field, "nope"));
+    }
+
+    #[test]
+    fn switching_script_language_clears_the_path_and_keeps_properties() {
+        let mut lua = ScriptRef {
+            path: "scripts/spin.lua".into(),
+            language: ScriptLanguage::Lua,
+            ..Default::default()
+        };
+        lua.properties
+            .insert("speed".into(), ScriptValue::Number(2.5));
+
+        let sharp = script_with_language(Some(&lua), ScriptLanguage::CSharp);
+        assert_eq!(sharp.language, ScriptLanguage::CSharp);
+        assert!(sharp.path.is_empty());
+        assert_eq!(sharp.properties, lua.properties);
+        assert_eq!(sharp.class, None);
+
+        let mut typed = sharp.clone();
+        typed.class = Some("Game.Spin".into());
+        let back = script_with_language(Some(&typed), ScriptLanguage::Lua);
+        assert_eq!(back.language, ScriptLanguage::Lua);
+        assert!(back.path.is_empty());
+        assert_eq!(back.properties, lua.properties);
+        assert_eq!(back.class, None);
+
+        let attached = script_with_language(None, ScriptLanguage::CSharp);
+        assert_eq!(attached.language, ScriptLanguage::CSharp);
+        assert!(attached.path.is_empty());
+        assert!(attached.properties.is_empty());
+        assert_eq!(attached.class, None);
+    }
+
+    #[test]
+    fn committing_a_csharp_class_keeps_the_rest_of_the_script() {
+        let mut state = SceneState::default();
+        let id = state.spawn(ObjectKind::Cube);
+        let mut script = ScriptRef {
+            path: "scripts/managed/Game.dll".into(),
+            language: ScriptLanguage::CSharp,
+            ..Default::default()
+        };
+        script
+            .properties
+            .insert("speed".into(), ScriptValue::Number(1.5));
+        state.doc.set_script(id, Some(script.clone()));
+        let mut undo = Undo::default();
+
+        assert!(commit_script_class(&mut state, &mut undo, id, " Game.Spin "));
+        let stored = state.doc.script(id).unwrap();
+        assert_eq!(stored.class.as_deref(), Some("Game.Spin"));
+        assert_eq!(stored.language, ScriptLanguage::CSharp);
+        assert_eq!(stored.path, "scripts/managed/Game.dll");
+        assert_eq!(stored.properties, script.properties);
+        assert!(undo.can_undo());
+
+        assert!(commit_script_class(&mut state, &mut undo, id, ""));
+        assert_eq!(state.doc.script(id).unwrap().class, None);
+        assert!(!commit_script_class(&mut state, &mut undo, id, "None"));
     }
     use super::*;
     use eme_game_scene::ObjectKind;

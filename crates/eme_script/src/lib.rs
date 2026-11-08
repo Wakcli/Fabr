@@ -76,6 +76,83 @@ impl ScriptLog {
     }
 }
 
+/// Named input actions shared by scripts and gameplay code.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct InputActions {
+    /// Action name to parsed key bindings.
+    pub map: BTreeMap<String, Vec<KeyCode>>,
+}
+
+impl InputActions {
+    /// Builds an action map from key names, rejecting unknown key names.
+    pub fn from_names(names: &BTreeMap<String, Vec<String>>) -> Result<Self, String> {
+        let mut map = BTreeMap::new();
+        for (action, keys) in names {
+            let mut parsed = Vec::new();
+            for key in keys {
+                let Some(code) = key_binding(key) else {
+                    return Err(format!("unknown key `{key}` in action `{action}`"));
+                };
+                parsed.push(code);
+            }
+            map.insert(action.clone(), parsed);
+        }
+        Ok(Self { map })
+    }
+}
+
+/// Parses a display key name used by project settings and scripts.
+pub fn key_binding(name: &str) -> Option<KeyCode> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "space" => Some(KeyCode::Space),
+        "enter" => Some(KeyCode::Enter),
+        "escape" => Some(KeyCode::Escape),
+        "shift" | "shiftleft" => Some(KeyCode::ShiftLeft),
+        "control" | "ctrl" | "controlleft" => Some(KeyCode::ControlLeft),
+        "up" | "arrowup" => Some(KeyCode::ArrowUp),
+        "down" | "arrowdown" => Some(KeyCode::ArrowDown),
+        "left" | "arrowleft" => Some(KeyCode::ArrowLeft),
+        "right" | "arrowright" => Some(KeyCode::ArrowRight),
+        "a" => Some(KeyCode::KeyA),
+        "b" => Some(KeyCode::KeyB),
+        "c" => Some(KeyCode::KeyC),
+        "d" => Some(KeyCode::KeyD),
+        "e" => Some(KeyCode::KeyE),
+        "f" => Some(KeyCode::KeyF),
+        "g" => Some(KeyCode::KeyG),
+        "h" => Some(KeyCode::KeyH),
+        "i" => Some(KeyCode::KeyI),
+        "j" => Some(KeyCode::KeyJ),
+        "k" => Some(KeyCode::KeyK),
+        "l" => Some(KeyCode::KeyL),
+        "m" => Some(KeyCode::KeyM),
+        "n" => Some(KeyCode::KeyN),
+        "o" => Some(KeyCode::KeyO),
+        "p" => Some(KeyCode::KeyP),
+        "q" => Some(KeyCode::KeyQ),
+        "r" => Some(KeyCode::KeyR),
+        "s" => Some(KeyCode::KeyS),
+        "t" => Some(KeyCode::KeyT),
+        "u" => Some(KeyCode::KeyU),
+        "v" => Some(KeyCode::KeyV),
+        "w" => Some(KeyCode::KeyW),
+        "x" => Some(KeyCode::KeyX),
+        "y" => Some(KeyCode::KeyY),
+        "z" => Some(KeyCode::KeyZ),
+        "0" => Some(KeyCode::Digit0),
+        "1" => Some(KeyCode::Digit1),
+        "2" => Some(KeyCode::Digit2),
+        "3" => Some(KeyCode::Digit3),
+        "4" => Some(KeyCode::Digit4),
+        "5" => Some(KeyCode::Digit5),
+        "6" => Some(KeyCode::Digit6),
+        "7" => Some(KeyCode::Digit7),
+        "8" => Some(KeyCode::Digit8),
+        "9" => Some(KeyCode::Digit9),
+        _ => None,
+    }
+}
+
 /// Paths (relative to [`ScriptRoot`]) the editor wants reloaded.
 #[derive(Resource, Default, Debug)]
 pub struct ScriptReload {
@@ -108,6 +185,8 @@ struct ApiState {
     log: Vec<String>,
     keys: HashSet<String>,
     keys_down: HashSet<String>,
+    actions: HashMap<String, bool>,
+    actions_down: HashMap<String, bool>,
     mouse: HashSet<u8>,
     delta: f32,
     elapsed: f32,
@@ -124,6 +203,8 @@ impl Default for ApiState {
             log: Vec::new(),
             keys: HashSet::new(),
             keys_down: HashSet::new(),
+            actions: HashMap::new(),
+            actions_down: HashMap::new(),
             mouse: HashSet::new(),
             delta: 0.0,
             elapsed: 0.0,
@@ -262,6 +343,20 @@ impl ScriptRuntime {
         })?)?;
         input.set("mouse_pressed", lua.create_function(move |_, button: u8| {
             Ok(api_mouse.lock().unwrap().mouse.contains(&button))
+        })?)?;
+        let api_action = api.clone();
+        input.set("action", lua.create_function(move |_, name: String| {
+            Ok(api_action.lock().unwrap().actions.get(&name).copied().unwrap_or(false))
+        })?)?;
+        let api_action_down = api.clone();
+        input.set("action_down", lua.create_function(move |_, name: String| {
+            Ok(api_action_down
+                .lock()
+                .unwrap()
+                .actions_down
+                .get(&name)
+                .copied()
+                .unwrap_or(false))
         })?)?;
         fabr.set("input", input)?;
 
@@ -603,6 +698,7 @@ pub fn update_scripts(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    actions: Res<InputActions>,
     mut runtime: ResMut<ScriptRuntime>,
     mut log: ResMut<ScriptLog>,
     mut transforms: Query<(Entity, &mut Transform)>,
@@ -640,6 +736,12 @@ pub fn update_scripts(
         .map(|key| format!("{key:?}").to_ascii_lowercase())
         .map(|key| key.strip_prefix("key").map_or(key.clone(), str::to_owned))
         .collect();
+    let mut action_state = HashMap::new();
+    let mut action_down = HashMap::new();
+    for (name, bindings) in &actions.map {
+        action_state.insert(name.clone(), bindings.iter().any(|key| keys.pressed(*key)));
+        action_down.insert(name.clone(), bindings.iter().any(|key| keys.just_pressed(*key)));
+    }
     let mouse_pressed: HashSet<u8> = [
         (MouseButton::Left, 1u8),
         (MouseButton::Right, 2),
@@ -671,6 +773,8 @@ pub fn update_scripts(
             api.elapsed = time.elapsed_secs();
             api.keys = pressed.clone();
             api.keys_down = down.clone();
+            api.actions = action_state.clone();
+            api.actions_down = action_down.clone();
             api.mouse = mouse_pressed.clone();
             api.ops.clear();
         }
@@ -715,6 +819,7 @@ impl Plugin for ScriptPlugin {
             .init_resource::<ScriptRoot>()
             .init_resource::<ScriptLog>()
             .init_resource::<ScriptReload>()
+            .init_resource::<InputActions>()
             .init_resource::<ScriptRuntime>()
             .add_systems(Update, sync_scripts)
             .add_systems(
@@ -742,6 +847,7 @@ mod tests {
         world.insert_resource(ScriptRoot(root.to_path_buf()));
         world.insert_resource(ScriptLog::default());
         world.insert_resource(ScriptReload::default());
+        world.insert_resource(InputActions::default());
         world.insert_resource(ScriptRuntime::default());
         world.insert_resource(Time::<()>::default());
         world.insert_resource(ButtonInput::<KeyCode>::default());
@@ -855,6 +961,32 @@ mod tests {
         world.resource_mut::<Time>().advance_by(core::time::Duration::from_secs_f32(0.5));
         world.run_system_once(update_scripts).unwrap();
         assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 2.0);
+    }
+
+    #[test]
+    fn input_actions_reach_scripts() {
+        let dir = scratch("actions");
+        std::fs::write(
+            dir.join("act.lua"),
+            "return { on_update = function(self, dt) if fabr.input.action('jump') then self:translate(1.0, 0, 0) end end }",
+        )
+        .unwrap();
+        let mut world = world(&dir);
+        let mut names = BTreeMap::new();
+        names.insert("jump".to_string(), vec!["Space".to_string()]);
+        world.insert_resource(InputActions::from_names(&names).unwrap());
+        world.resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Space);
+        let entity = scripted(&mut world, "act.lua", BTreeMap::new());
+        world.run_system_once(sync_scripts).unwrap();
+        world.run_system_once(update_scripts).unwrap();
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 1.0);
+    }
+
+    #[test]
+    fn unknown_action_keys_are_rejected() {
+        let mut names = BTreeMap::new();
+        names.insert("jump".to_string(), vec!["Banana".to_string()]);
+        assert!(InputActions::from_names(&names).is_err());
     }
 
     #[test]

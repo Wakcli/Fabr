@@ -307,6 +307,13 @@ fn stage(
         }
         None => say(tx, Level::Step, "no assets/ folder to copy"),
     }
+
+    let settings = workspace_dir().join(eme_editor_project::SETTINGS_FILE);
+    if settings.is_file() {
+        std::fs::copy(&settings, out.join(eme_editor_project::SETTINGS_FILE))
+            .map_err(|err| io(&settings, err))?;
+        say(tx, Level::Step, "copied project settings");
+    }
     Ok(())
 }
 

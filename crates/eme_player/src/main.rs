@@ -3,15 +3,12 @@
 mod scene;
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eme::prelude::*;
 use eme::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
-use eme::window::WindowResolution;
+use eme::window::{PresentMode, WindowResolution};
 
-const TITLE: &str = "Emberrly Game";
-const WIDTH: u32 = 1280;
-const HEIGHT: u32 = 720;
 const DEMO_PATH: &str = "scenes/player-demo.ember";
 const SHOT_FRAME: u32 = 40;
 
@@ -54,17 +51,34 @@ fn main() {
     }
 
     let loaded = scene::load(args.scene.as_deref()).unwrap_or_else(|err| die(err));
+    let settings = eme_editor_project::ProjectSettings::load_or_default(Path::new(
+        eme_editor_project::SETTINGS_FILE,
+    ))
+    .unwrap_or_else(|err| {
+        let _ = writeln!(std::io::stderr(), "fabr settings: {err}; using defaults");
+        eme_editor_project::ProjectSettings::default()
+    });
+    let actions = eme_script::InputActions::from_names(&settings.input.actions).unwrap_or_else(|err| {
+        let _ = writeln!(std::io::stderr(), "fabr input: {err}; actions disabled");
+        eme_script::InputActions::default()
+    });
     let title = if loaded.doc.objects.is_empty() {
-        format!("{TITLE} (empty scene)")
+        format!("{} (empty scene)", settings.player.title)
     } else {
-        TITLE.to_string()
+        settings.player.title.clone()
+    };
+    let present_mode = if settings.player.vsync {
+        PresentMode::AutoVsync
+    } else {
+        PresentMode::AutoNoVsync
     };
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: title.clone(),
-                resolution: WindowResolution::new(WIDTH, HEIGHT),
+                resolution: WindowResolution::new(settings.player.width, settings.player.height),
+                present_mode,
                 ..default()
             }),
             ..default()
@@ -72,6 +86,7 @@ fn main() {
         .add_plugins(eme_script::ScriptPlugin)
         .insert_resource(eme_script::ScriptsActive(true))
         .insert_resource(eme_script::ScriptRoot(PathBuf::from("assets")))
+        .insert_resource(actions)
         .insert_resource(loaded)
         .add_systems(Startup, (scene::announce, scene::spawn_scene))
         .add_systems(
@@ -176,7 +191,7 @@ mod tests {
         let a = args(&["--scene", "build/game.ember"]).unwrap();
         assert_eq!(
             a.scene.as_deref(),
-            Some(std::path::Path::new("build/game.ember"))
+            Some(Path::new("build/game.ember"))
         );
         assert!(!a.write_demo);
         assert!(!a.help);

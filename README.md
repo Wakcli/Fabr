@@ -1,6 +1,8 @@
 
 ![Logo](https://i.imgur.com/XmLFET2.png)
 
+--
+
 [![License](https://img.shields.io/badge/license-MIT%2FApache-blue.svg)](https://github.com/Wakcli/Fabr#license)
 [![Crates.io](https://img.shields.io/crates/v/bevy.svg)](https://github.com/Wakcli/Fabr)
 [![Downloads](https://img.shields.io/crates/d/bevy.svg)](https://github.com/Wakcli/Fabr)

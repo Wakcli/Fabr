@@ -12,63 +12,70 @@
 
 ![The Fabr editor: hierarchy, viewport, inspector and file browser in one window](docs/images/editor.png)
 
-## What is Fabr?
+Fabr is a desktop game engine with a dockable editor, gameplay scripting in Lua, C# and Rust, and a
+build panel that packages a game into a native binary. Scenes are plain text, so they diff and
+merge like any other source file, and scripts reload while the game is running.
 
-Fabr is a game engine you can open, drag things around in, script, and export to a binary.
-
-It is a fork of [Bevy](https://bevy.org). Bevy gives you a very good ECS, renderer and asset
-pipeline with no editor attached — you write Rust, run `cargo`, and build your own tooling around
-it. Fabr keeps that engine and adds the layer on top: a dockable editor, gameplay scripts in
-three languages, and a build step that produces something you can hand to a friend.
-
-It is pre-1.0, it is Linux-first, and it is one person's work in progress. What follows is what
-exists, including the parts that don't work yet.
+The engine underneath is [Bevy](https://bevy.org). Fabr is a fork: the ECS, renderer, asset
+pipeline, audio and reflection come from upstream, and the editor, scripting hosts, player and
+export pipeline are Fabr's. Rendering and ECS behaviour will be familiar to anyone who has used it.
 
 ## Editor
 
-Panels for hierarchy, inspector, viewport, file browser, console and stats. Split them, drag
-them into new tabs, and the layout is saved per project.
+Dockable panels for hierarchy, inspector, viewport, file system, console and stats. Panels split,
+drag into tabs, and the layout is stored per project.
 
 - Move, rotate and scale gizmos
-- Undo and redo through the scene
-- Scenes are plain-text `.ember` files, so they diff and merge like any other source file
+- Undo and redo across the scene
 - glTF import with per-instance material overrides
-- Stats panel with live frame time
+- Live frame time and draw counts in the stats panel
 
 ## Scripting
 
-Pick a language per object. All three sit behind the same interface.
+Pick a language per object. All three sit behind the same interface, and script properties appear
+in the inspector.
 
-- **Lua** — a nine-line file gets an object spinning. No build step, no boilerplate.
-- **C#** — real .NET through a `FabrScript` base class, loaded in a collectible context so
-  reloads don't leak
-- **Rust** — the `fabr` crate, compiled into the game
+```lua
+return {
+    properties = { speed = 1.0 },
+    on_start = function(self)
+        fabr.log("spin started on " .. self.name)
+    end,
+    on_update = function(self, dt)
+        self:rotate_y(self.properties.speed * dt)
+    end,
+}
+```
 
-Lua and C# reload the moment you save. No restart, no lost play state. Rust is compiled into the
-host and needs a rebuild — it is not hot-reloaded, and the docs won't pretend otherwise.
+That is the whole script. Lua and C# reload the moment the file is saved, with no restart and no
+lost play state. C# is real .NET, loaded through a collectible context so reloads do not leak.
+Rust gameplay is compiled into the host with the `fabr` crate, so it needs a rebuild — it is not
+hot-reloaded.
 
 ## Export
 
-Build panel, pick a target, get a binary.
+The build panel stages the player, the scenes and the assets for a target platform.
 
 - Linux and Windows targets
-- The release player is about 5 MB before your assets
+- Release player is about 5 MB before assets
 - The player reads the same `.ember` scenes the editor writes, so there is no editor-only format
+- macOS appears in the panel but requires a macOS host to build
 
 ## Engine
 
-The engine underneath is Bevy: ECS, renderer, asset pipeline, UI, audio and reflection.
+The engine is Bevy: ECS, renderer, asset pipeline, UI, audio and reflection.
 
+- 2D sprites and 3D PBR rendering
 - Physics with broadphase collision
 - Navigation meshes
 - Animation graphs and transitions
-- Client/server networking over TCP
-- 2D sprites and 3D PBR rendering
+- Client and server networking over TCP
 
 ## Extensibility
 
-- A `fabr` plugin API for adding systems to a running game
-- An editor extension API for adding panels and tools without forking the editor
+- The `fabr` crate for gameplay code that needs to run inside the engine
+- Plugin API for adding systems to a running game
+- Editor extensions for adding panels and tools without forking the editor
 - Packages install from folders
 
 ## Getting started
@@ -79,11 +86,10 @@ cd Fabr
 cargo run -p eme_editor
 ```
 
-Needs a recent stable Rust toolchain and a Vulkan or DX12 capable GPU. Linux is the supported
-host; the editor builds on Windows, but nobody has used it there for long enough to promise it
-works.
+Requires Rust 1.96 or newer and a Vulkan or DX12 capable GPU. Linux is the supported host; the
+editor builds on Windows but has not been used there for long enough to call it supported.
 
-To run the player on its own:
+To run the player without the editor:
 
 ```sh
 cargo run -p eme_player -- scenes/main.ember
@@ -91,14 +97,17 @@ cargo run -p eme_player -- scenes/main.ember
 
 ## Status
 
-- No macOS and no mobile targets
-- The Windows export builds, but has never been run on Windows hardware
-- The C# loader needs the matching .NET reference assemblies on the host
-- Asset registries resolve from folders only; there is no HTTP registry client
-- The demo scene references a managed assembly that isn't checked in, so it logs a load error
-  until you build one
+Fabr is pre-1.0 and Linux-first. This is the current state, not a roadmap.
 
-If something on this list should not be on it, that is worth an issue.
+| Works today | Not yet |
+|:--|:--|
+| Editor, Lua and C# on Linux | macOS and mobile targets |
+| Windows export builds | untested on Windows hardware |
+| Text scenes, glTF import, undo and redo | asset registries are folders only, no HTTP client |
+| Lua and C# hot reload | Rust gameplay needs a rebuild |
+
+The demo scene references a managed assembly that is not checked in, so its C# object logs a load
+error until you build one. If something on this list looks wrong, open an issue.
 
 ## Contributing
 
@@ -113,7 +122,7 @@ The most useful things right now, roughly in order:
 Open an issue before a large change so nobody builds the same thing twice. Small fixes can go
 straight to a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-There is a Discord: **https://discord.gg/EWb5w2TcnF**. Work in progress gets shown there first.
+Work in progress is shown first on Discord: **https://discord.gg/EWb5w2TcnF**.
 
 ## License
 

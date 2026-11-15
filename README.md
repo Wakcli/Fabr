@@ -1,4 +1,3 @@
-<div align="center">
 
 # ![Fabr Logo](https://i.imgur.com/XmLFET2.png)
 
@@ -9,7 +8,6 @@
 [![Docs](https://img.shields.io/badge/docs-not%20available-grey.svg)](https://docs.rs/)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/EWb5w2TcnF)
 
-</div>
 
 ---
 

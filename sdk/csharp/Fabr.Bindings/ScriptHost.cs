@@ -26,6 +26,13 @@ public static unsafe class ScriptHost
     [UnmanagedCallersOnly]
     public static int Load(FabrApi* api, ulong handle, byte* assemblyPath, byte* typeName)
     {
+        if (api->Version < Fabr.AbiVersion || api->Size < (uint)sizeof(FabrApi))
+        {
+            Console.Error.WriteLine(
+                $"Fabr.Bindings needs engine ABI {Fabr.AbiVersion} and a {sizeof(FabrApi)}-byte table, " +
+                $"engine provides {api->Version} and {api->Size} bytes");
+            return Fabr.AbiMismatch;
+        }
         try
         {
             string path = Marshal.PtrToStringUTF8((IntPtr)assemblyPath) ?? throw new ArgumentException("missing assembly path");

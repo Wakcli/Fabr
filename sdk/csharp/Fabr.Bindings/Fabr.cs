@@ -7,6 +7,8 @@ namespace Fabr.Bindings;
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct FabrApi
 {
+    public uint Version;
+    public uint Size;
     public void* Context;
     public delegate* unmanaged[Cdecl]<void*, byte*, void> Log;
     public delegate* unmanaged[Cdecl]<void*, ulong, float, float, float, int> SetTranslation;
@@ -15,6 +17,10 @@ public unsafe struct FabrApi
 
 public static unsafe class Fabr
 {
+    public const uint AbiVersion = 1;
+
+    public const int AbiMismatch = 2;
+
     public static void Log(FabrApi* api, string message)
     {
         byte[] bytes = Encoding.UTF8.GetBytes(message + "\0");

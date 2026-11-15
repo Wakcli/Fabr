@@ -20,7 +20,7 @@ use std::path::Path;
 use alloc::sync::Arc;
 use eme_ecs::prelude::*;
 use eme_math::prelude::*;
-use eme_script_csharp::{FabrApi, shared_host};
+use eme_script_csharp::{ABI_VERSION, FabrApi, shared_host};
 use eme_transform::prelude::Transform;
 
 use crate::ScriptLog;
@@ -94,6 +94,8 @@ pub(crate) fn load(
         log: Vec::new(),
     });
     let mut api = FabrApi {
+        version: ABI_VERSION,
+        size: size_of::<FabrApi>() as u32,
         context: std::ptr::from_mut(&mut *context).cast::<c_void>(),
         log: api_log,
         set_translation: api_set_translation,
@@ -113,7 +115,13 @@ pub(crate) fn load(
         )
     };
     if code != 0 {
-        return Err(failure(&mut context, "load"));
+        return Err(if code == eme_script_csharp::ABI_MISMATCH {
+            format!(
+                "csharp load failed: the managed SDK was built for a newer engine ABI than {ABI_VERSION}"
+            )
+        } else {
+            failure(&mut context, "load")
+        });
     }
     Ok(CSharpInstance {
         entity,

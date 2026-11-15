@@ -65,12 +65,25 @@ impl core::fmt::Display for HostError {
     }
 }
 
+/// ABI version of [`FabrApi`].
+///
+/// Bump on every field addition. Fields are append-only: the managed side reads
+/// this first and refuses to run against a table it was not compiled for.
+pub const ABI_VERSION: u32 = 1;
+
+/// Return code `ScriptHost.Load` uses when the SDK rejects the engine ABI.
+pub const ABI_MISMATCH: i32 = 2;
+
 /// Table of host callbacks the managed side may call.
 ///
 /// `context` is an opaque pointer owned by the caller and passed back to every
 /// callback, so the engine can attach a world or a borrow without statics.
 #[repr(C)]
 pub struct FabrApi {
+    /// Version of this table's layout.
+    pub version: u32,
+    /// Size of this table in bytes, for diagnostics on mismatch.
+    pub size: u32,
     /// Opaque context passed back to every callback.
     pub context: *mut c_void,
     /// Writes one UTF-8 log line.
@@ -329,6 +342,8 @@ namespace FabrTest;
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct FabrApi
 {
+    public uint Version;
+    public uint Size;
     public void* Context;
     public delegate* unmanaged[Cdecl]<void*, byte*, void> Log;
     public delegate* unmanaged[Cdecl]<void*, ulong, float, float, float, int> SetTranslation;
@@ -343,6 +358,12 @@ public static class Script
     [UnmanagedCallersOnly]
     public static unsafe void Run(FabrApi* api)
     {
+        byte[] abi = System.Text.Encoding.UTF8.GetBytes(
+            $"abi {api->Version} managed={sizeof(FabrApi)} host={api->Size}\0");
+        fixed (byte* text = abi)
+        {
+            api->Log(api->Context, text);
+        }
         byte[] message = System.Text.Encoding.UTF8.GetBytes("hello from C#\0");
         fixed (byte* text = message)
         {
@@ -478,6 +499,8 @@ public static class Script
             transforms: std::collections::HashMap::new(),
         };
         let mut api = FabrApi {
+            version: ABI_VERSION,
+            size: size_of::<FabrApi>() as u32,
             context: std::ptr::from_mut(&mut context).cast::<c_void>(),
             log,
             set_translation,
@@ -490,7 +513,15 @@ public static class Script
         let run: unsafe extern "C" fn(*mut FabrApi) = unsafe { std::mem::transmute(run_entry) };
         // SAFETY: `api` holds valid callbacks and the context lives for the call.
         unsafe { run(std::ptr::from_ref(&api).cast_mut()) };
-        assert_eq!(context.logs, ["hello from C#"]);
+        let table = size_of::<FabrApi>();
+        assert_eq!(
+            context.logs,
+            [
+                format!("abi {ABI_VERSION} managed={table} host={table}"),
+                "hello from C#".to_owned(),
+            ]
+        );
+        context.logs.clear();
         assert_eq!(context.transforms.get(&7), Some(&[1.5, 2.0, -3.0]));
 
         let script = host
@@ -503,7 +534,7 @@ public static class Script
             script.update(&mut api, 11, 0.25);
             script.stop(&mut api, 11);
         }
-        assert_eq!(context.logs, ["hello from C#", "start", "stop"]);
+        assert_eq!(context.logs, ["start", "stop"]);
         assert_eq!(context.transforms.get(&11), Some(&[0.5, 0.0, 0.0]));
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -36,11 +36,17 @@ script: Some((
 The same scene can run Lua scripts on other objects. The Inspector's Script
 section picks C#, filters the picker to `.dll` files, and edits the class name.
 
+## ABI
+
+`FabrApi` is append-only. Adding a callback means appending a field and bumping
+`ABI_VERSION` in `crates/eme_script_csharp` and `Fabr.AbiVersion` in `Fabr.cs`.
+`ScriptHost.Load` refuses a table older than the SDK, so the engine and the
+bindings must be built from the same commit.
+
 ## Runtime rules
 
 - One .NET runtime per process; the first script initializes it from the
-  bindings' `runtimeconfig.json`.
-- Class names are plain type names inside the assembly (`Example.Spin`), not
+  bindings' `runtimeconfig.json`.- Class names are plain type names inside the assembly (`Example.Spin`), not
   assembly-qualified.
 - Exports copy `assets/`, so the assemblies travel with the game; the target
   machine needs the .NET runtime installed.

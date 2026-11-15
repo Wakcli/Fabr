@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://i.imgur.com/XmLFET2.png" width="180" alt="Fabr">
+  <img src="https://i.imgur.com/XmLFET2.png" width="543" alt="Fabr">
 </p>
 
 <h3 align="center">A game engine with an editor, built on Bevy.</h3>

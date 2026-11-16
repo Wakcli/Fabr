@@ -21,9 +21,8 @@ use alloc::sync::Arc;
 use eme_ecs::prelude::*;
 use eme_math::prelude::*;
 use eme_script_csharp::{ABI_VERSION, FabrApi, shared_host};
-use eme_transform::prelude::Transform;
 
-use crate::ScriptLog;
+use crate::{ApiState, ScriptLog};
 
 /// Managed bootstrap assembly staged next to the game's scripts.
 pub const BINDINGS_ASSEMBLY: &str = "Fabr.Bindings.dll";
@@ -64,9 +63,9 @@ pub(crate) struct CSharpInstance {
 }
 
 struct CSharpContext {
-    snapshot: Arc<HashMap<Entity, Vec3>>,
-    ops: Vec<(Entity, Vec3)>,
-    log: Vec<String>,
+    /// Shared operation surface: the same queues the Lua host drains, so a
+    /// callback added here reaches the engine through one apply pass.
+    api: ApiState,
 }
 
 /// Loads one scene script through the managed bootstrap.
@@ -88,11 +87,11 @@ pub(crate) fn load(
         ));
     }
     let bootstrap = scripts.bootstrap(&bindings)?;
-    let mut context = Box::new(CSharpContext {
-        snapshot: Arc::new(HashMap::new()),
-        ops: Vec::new(),
-        log: Vec::new(),
-    });
+    let state = ApiState {
+        self_entity: entity,
+        ..Default::default()
+    };
+    let mut context = Box::new(CSharpContext { api: state });
     let mut api = FabrApi {
         version: ABI_VERSION,
         size: size_of::<FabrApi>() as u32,
@@ -137,7 +136,7 @@ pub(crate) fn load(
 
 /// Drains the managed log into the failure message.
 fn failure(context: &mut CSharpContext, phase: &str) -> String {
-    let lines = std::mem::take(&mut context.log);
+    let lines = std::mem::take(&mut context.api.log);
     if lines.is_empty() {
         format!("csharp {phase} failed")
     } else {
@@ -249,7 +248,7 @@ pub(crate) fn stop(instance: &mut CSharpInstance, log: &mut ScriptLog) {
         unsafe { (instance.bootstrap.stop)(&mut instance.api, instance.entity.to_bits()) };
         instance.started = false;
     }
-    for line in instance.context.log.drain(..) {
+    for line in instance.context.api.log.drain(..) {
         log.push(line);
     }
 }
@@ -267,7 +266,7 @@ unsafe extern "C" fn api_log(context: *mut c_void, line: *const c_char) {
     }
     // SAFETY: the managed side sends a null-terminated UTF-8 string.
     let text = unsafe { CStr::from_ptr(line) }.to_string_lossy().into_owned();
-    context.log.push(text);
+    context.api.log.push(text);
 }
 
 /// # Safety
@@ -284,10 +283,14 @@ unsafe extern "C" fn api_set_translation(
         return 0;
     };
     let entity = Entity::from_bits(id);
-    if !context.snapshot.contains_key(&entity) {
+    if !context.api.local.transforms.contains_key(&entity) {
         return 0;
     }
-    context.ops.push((entity, Vec3::new(x, y, z)));
+    let (_, rotation) = context.api.transform(entity);
+    let translation = Vec3::new(x, y, z);
+    context.api.set_transform(entity, translation, rotation);
+    context.api.ops.retain(|(target, _, _)| *target != entity);
+    context.api.ops.push((entity, translation, rotation));
     1
 }
 
@@ -306,14 +309,16 @@ unsafe extern "C" fn api_get_translation(
     if out.is_null() {
         return 0;
     }
-    let Some(position) = context.snapshot.get(&Entity::from_bits(id)) else {
+    let entity = Entity::from_bits(id);
+    if !context.api.local.transforms.contains_key(&entity) {
         return 0;
-    };
+    }
+    let (translation, _) = context.api.transform(entity);
     // SAFETY: the managed side passes room for three floats.
     unsafe {
-        *out = position.x;
-        *out.add(1) = position.y;
-        *out.add(2) = position.z;
+        *out = translation.x;
+        *out.add(1) = translation.y;
+        *out.add(2) = translation.z;
     }
     1
 }
@@ -323,15 +328,22 @@ unsafe extern "C" fn api_get_translation(
 /// Returns the translation writes the script requested.
 pub(crate) fn step(
     instance: &mut CSharpInstance,
-    snapshot: &Arc<HashMap<Entity, Vec3>>,
+    snapshot: &Arc<HashMap<Entity, (Vec3, Quat)>>,
     dt: f32,
     log: &mut ScriptLog,
-) -> Vec<(Entity, Vec3)> {
+) -> Vec<(Entity, Vec3, Quat)> {
     if instance.failed {
         return Vec::new();
     }
-    instance.context.snapshot = Arc::clone(snapshot);
-    instance.context.ops.clear();
+    instance.context.api.local.transforms.clear();
+    instance
+        .context
+        .api
+        .local
+        .transforms
+        .extend(snapshot.iter().map(|(entity, (t, r))| (*entity, (*t, *r))));
+    instance.context.api.ops.clear();
+    instance.context.api.log.clear();
     let handle = instance.entity.to_bits();
     let mut code = 0;
     if !instance.started {
@@ -346,7 +358,7 @@ pub(crate) fn step(
         // SAFETY: same instance-owned table and bootstrap.
         code = unsafe { (instance.bootstrap.update)(&mut instance.api, handle, dt) };
     }
-    for line in instance.context.log.drain(..) {
+    for line in instance.context.api.log.drain(..) {
         log.push(line);
     }
     if code != 0 {
@@ -354,19 +366,7 @@ pub(crate) fn step(
         log.push(format!("script {}: disabled after a managed error", instance.path));
         return Vec::new();
     }
-    std::mem::take(&mut instance.context.ops)
-}
-
-/// Writes queued translations to the transform store.
-pub(crate) fn apply_ops(
-    ops: Vec<(Entity, Vec3)>,
-    transforms: &mut Query<(Entity, &mut Transform, Option<&Name>)>,
-) {
-    for (target, translation) in ops {
-        if let Ok((_, mut transform, _)) = transforms.get_mut(target) {
-            transform.translation = translation;
-        }
-    }
+    std::mem::take(&mut instance.context.api.ops)
 }
 
 /// Stops every loaded instance, for example when play mode ends.

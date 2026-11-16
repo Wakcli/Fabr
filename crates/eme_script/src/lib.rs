@@ -1599,11 +1599,19 @@ pub fn update_scripts(
                 log.push(format!("script audio: missing asset {}", request.path));
             }
         }
-        for (target, translation, rotation) in &api.ops {
-            if let Ok((_, mut transform, _)) = transforms.get_mut(*target) {
-                transform.translation = *translation;
-                transform.rotation = *rotation;
-            }
+        write_ops(&api.ops, &mut transforms);
+    }
+}
+
+/// Writes queued transforms back to the world.
+fn write_ops(
+    ops: &[(Entity, Vec3, Quat)],
+    transforms: &mut Query<(Entity, &mut Transform, Option<&Name>)>,
+) {
+    for (target, translation, rotation) in ops {
+        if let Ok((_, mut transform, _)) = transforms.get_mut(*target) {
+            transform.translation = *translation;
+            transform.rotation = *rotation;
         }
     }
 }
@@ -1621,7 +1629,7 @@ pub fn update_csharp_scripts(
     }
     let mut snapshot = HashMap::new();
     for (entity, transform, _) in &mut transforms {
-        snapshot.insert(entity, transform.translation);
+        snapshot.insert(entity, (transform.translation, transform.rotation));
     }
     let snapshot = Arc::new(snapshot);
     let mut entities = scripts.entities();
@@ -1631,7 +1639,7 @@ pub fn update_csharp_scripts(
             continue;
         };
         let ops = csharp::step(instance, &snapshot, time.delta_secs(), &mut log);
-        csharp::apply_ops(ops, &mut transforms);
+        write_ops(&ops, &mut transforms);
     }
 }
 

@@ -17,10 +17,15 @@ pub use eme_game_scene::{
     TransformDelta, FORMAT_VERSION,
 };
 pub use eme_script::{
-    key_binding, script_files, script_property_defaults, update_scripts, AudioBus, AudioMix,
-    InputActions, SceneRequests, ScriptLog, ScriptPlugin, ScriptReload, ScriptRoot, SceneOp, ScriptUi,
-    ScriptedObject, ScriptsActive, UiElement,
+    key_binding, next_layer_id, script_files, script_property_defaults, update_scripts, AudioBus,
+    AudioMix, AudioRequest, InputActions, SceneOp, SceneRequests, ScriptAudio, ScriptLog,
+    ScriptPlugin, ScriptReload, ScriptRoot, ScriptRuntime, ScriptUi, ScriptedObject, ScriptsActive,
+    UiElement,
 };
+
+mod context;
+
+pub use context::GameContext;
 
 use eme::prelude::*;
 use std::path::Path;
@@ -49,47 +54,6 @@ pub trait FabrGame: Send + Sync + 'static {
     fn on_stop(&mut self, _ctx: &mut GameContext) {}
 }
 
-/// Value-based world access handed to a game's lifecycle hooks.
-///
-/// Handles are entities, values are plain numbers, and nothing here borrows
-/// from the world after the call returns; the same shape as the C# callback
-/// table and the Lua `fabr` table.
-pub struct GameContext<'w> {
-    world: &'w mut World,
-}
-
-impl<'w> GameContext<'w> {
-    /// Finds the first named object, mirroring `fabr.entity.find` in Lua.
-    pub fn find(&mut self, name: &str) -> Option<Entity> {
-        let mut query = self.world.query::<(Entity, &Name)>();
-        query
-            .iter(self.world)
-            .find(|(_, candidate)| candidate.as_str() == name)
-            .map(|(entity, _)| entity)
-    }
-
-    /// Reads an object's world translation.
-    pub fn translation(&mut self, entity: Entity) -> Option<[f32; 3]> {
-        let transform = self.world.get::<Transform>(entity)?;
-        Some(transform.translation.to_array())
-    }
-
-    /// Writes an object's world translation; returns false for unknown objects.
-    pub fn set_translation(&mut self, entity: Entity, translation: [f32; 3]) -> bool {
-        let Some(mut transform) = self.world.get_mut::<Transform>(entity) else {
-            return false;
-        };
-        transform.translation = Vec3::from_array(translation);
-        true
-    }
-
-    /// Writes one line to the engine log.
-    pub fn log(&mut self, message: impl Into<String>) {
-        let message = message.into();
-        eme::log::info!("{message}");
-    }
-}
-
 /// The running game's instance, kept as a resource for the lifecycle systems.
 #[derive(Resource)]
 struct GameRuntime {
@@ -102,7 +66,7 @@ struct GameStopRequested(bool);
 
 fn start_game(world: &mut World) {
     world.resource_scope(|world, mut runtime: Mut<GameRuntime>| {
-        let mut ctx = GameContext { world };
+        let mut ctx = GameContext::new(world);
         runtime.game.on_start(&mut ctx);
     });
 }
@@ -110,7 +74,7 @@ fn start_game(world: &mut World) {
 fn update_game(world: &mut World) {
     let dt = world.resource::<Time>().delta_secs();
     world.resource_scope(|world, mut runtime: Mut<GameRuntime>| {
-        let mut ctx = GameContext { world };
+        let mut ctx = GameContext::new(world);
         runtime.game.on_update(&mut ctx, dt);
     });
 }
@@ -126,7 +90,7 @@ fn stop_game(world: &mut World) {
         return;
     }
     world.resource_scope(|world, mut runtime: Mut<GameRuntime>| {
-        let mut ctx = GameContext { world };
+        let mut ctx = GameContext::new(world);
         runtime.game.on_stop(&mut ctx);
     });
     world.resource_mut::<GameStopRequested>().0 = false;
@@ -141,7 +105,7 @@ pub fn install<G: FabrGame + Default>(app: &mut App) {
     })
     .init_resource::<GameStopRequested>()
     .add_systems(Startup, start_game)
-    .add_systems(Update, update_game)
+    .add_systems(Update, update_game.before(update_scripts))
     .add_systems(Last, (notice_game_exit, stop_game).chain());
 }
 
@@ -262,15 +226,13 @@ mod tests {
     #[test]
     fn the_context_reads_and_writes_world_values() {
         let mut world = World::new();
-        let entity = world
-            .spawn(Transform::from_xyz(1.0, 2.0, 3.0))
-            .id();
-        let mut ctx = GameContext { world: &mut world };
+        let entity = world.spawn(Transform::from_xyz(1.0, 2.0, 3.0)).id();
+        let missing = world.spawn_empty().id();
+        world.despawn(missing);
+        let mut ctx = GameContext::new(&mut world);
         assert_eq!(ctx.translation(entity), Some([1.0, 2.0, 3.0]));
         assert!(ctx.set_translation(entity, [4.0, 5.0, 6.0]));
         assert_eq!(ctx.translation(entity), Some([4.0, 5.0, 6.0]));
-        let missing = ctx.world.spawn_empty().id();
-        ctx.world.despawn(missing);
         assert!(!ctx.set_translation(missing, [0.0; 3]));
     }
 

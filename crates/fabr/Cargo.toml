@@ -16,7 +16,10 @@ dynamic_linking = ["eme/dynamic_linking"]
 
 [dependencies]
 eme = { path = "../..", version = "0.20.0-dev", default-features = false, features = ["eme_log"] }
+eme_anim = { path = "../eme_anim", version = "0.20.0-dev" }
 eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev" }
+eme_game_runtime = { path = "../eme_game_runtime", version = "0.20.0-dev" }
+eme_input = { path = "../eme_input", version = "0.20.0-dev", features = ["keyboard", "mouse"] }
 eme_plugin = { path = "../eme_plugin", version = "0.20.0-dev" }
 eme_editor_project = { path = "../eme_editor_project", version = "0.20.0-dev" }
 eme_game_scene = { path = "../eme_game_scene", version = "0.20.0-dev" }

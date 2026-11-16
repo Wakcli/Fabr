@@ -392,7 +392,8 @@ pub enum SceneOp {
 /// Ids for additive scene layers, unique for the process lifetime.
 static NEXT_LAYER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn next_layer_id() -> u64 {
+/// Allocates an id for an additive scene layer.
+pub fn next_layer_id() -> u64 {
     NEXT_LAYER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 

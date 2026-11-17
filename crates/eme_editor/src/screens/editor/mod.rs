@@ -276,6 +276,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<scene::ModelIndex>()
             .init_resource::<scene::NodeSelection>()
             .init_resource::<crate::script_watch::ScriptWatcher>()
+            .init_resource::<crate::script_build::CSharpBuild>()
             .init_resource::<inspector::ReattachState>()
             .init_resource::<inspector::ScriptPicker>()
             .init_resource::<inspector::InspectorFilter>()
@@ -423,6 +424,7 @@ impl Plugin for EditorPlugin {
                     dock::sync.in_set(crate::profile::UiProfileSet),
                     persist::edit_shortcuts,
                     build::poll_build,
+                    crate::script_build::poll_csharp_build,
                     build_dialog::sync_modal,
                     build_dialog::style_buttons,
                     build_dialog::escape,

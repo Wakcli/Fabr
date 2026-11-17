@@ -32,6 +32,7 @@ mod orbit;
 mod persist;
 mod play;
 mod scene;
+mod script_build;
 mod script_watch;
 mod settings;
 mod screens;

@@ -26,6 +26,12 @@ That one command produces all three files the engine needs next to each other:
 `assets/scripts/managed/` is build output and stays out of git. When an
 assembly is missing, the engine logs the directory it expected to find it in.
 
+The Inspector's Script section has a **Build** row that runs the same command
+for the selected object's assembly and streams the output to the Console. The
+assembly name picks the project: `Game.dll` builds
+`sdk/csharp/Game/Game.csproj`. A successful build is picked up by the script
+watcher and the live instance reloads.
+
 ## Attach it in a scene
 
 A scene object's script names the assembly and the class:

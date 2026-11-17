@@ -2864,10 +2864,21 @@ pub fn sync_color_swatch(
 /// Rebuilds the Script section rows for the selected object.
 pub fn sync_script_rows(
     state: Res<SceneState>,
+    build: Res<crate::script_build::CSharpBuild>,
     mut commands: Commands,
     hosts: Query<Entity, With<ScriptRows>>,
     mut shown: Local<Option<(Entity, String)>>,
-    mut base_seen: Local<Option<(Entity, u64, String, ScriptLanguage, Option<String>, u64)>>,
+    mut base_seen: Local<
+        Option<(
+            Entity,
+            u64,
+            String,
+            ScriptLanguage,
+            Option<String>,
+            u64,
+            u64,
+        )>,
+    >,
 ) {
     let Ok(host) = hosts.single() else {
         return;
@@ -2904,6 +2915,7 @@ pub fn sync_script_rows(
         language,
         class.clone(),
         state.rev,
+        build.rev(),
     );
     if base_seen.as_ref() == Some(&base) {
         return;
@@ -2923,6 +2935,9 @@ pub fn sync_script_rows(
         path.clone().unwrap_or_default(),
         class
     );
+    if language == ScriptLanguage::CSharp {
+        signature.push_str(&format!("|build:{}", build.rev()));
+    }
     if let Some(Ok(defaults)) = &defaults {
         for (key, value) in defaults {
             signature.push_str(&format!("|{key}={value:?}"));
@@ -3011,10 +3026,11 @@ pub fn sync_script_rows(
                 "Set the class name to run this script.",
             );
         }
-        if path.is_none() {
+        let Some(path) = path else {
             spawn_hint(&mut commands, host, script_hint(language));
             return;
-        }
+        };
+        spawn_build_row(&mut commands, host, &build, &path);
         spawn_hint(
             &mut commands,
             host,
@@ -3241,6 +3257,85 @@ fn spawn_class_row(commands: &mut Commands, host: Entity, object: u64, class: Op
         .observe(script_class_key);
 }
 
+/// Build row: runs the project that produces the script's assembly.
+fn spawn_build_row(
+    commands: &mut Commands,
+    host: Entity,
+    build: &crate::script_build::CSharpBuild,
+    assembly: &str,
+) {
+    let workspace = crate::build::workspace_dir();
+    let project = crate::script_build::project_for(&workspace, assembly);
+    let expected = crate::script_build::expected_project(&workspace, assembly);
+    let shown = project
+        .as_ref()
+        .or(expected.as_ref())
+        .map(|path| {
+            path.strip_prefix(&workspace)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .unwrap_or_default();
+    let row = commands
+        .spawn_scene(bsn! {
+            Node {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(px(8)),
+                column_gap: px(6),
+            }
+            ChildOf(host)
+            Children [ {text("Build", FONT_SIZE, tokens::TEXT)} -- {spacer()} ]
+        })
+        .id();
+    if build.running() {
+        let label = text("Building…", FONT_SIZE, tokens::TEXT_DIM);
+        commands.spawn_scene(bsn! {
+            Node { padding: UiRect::horizontal(px(8)) }
+            ChildOf(row)
+            Children [ {label} ]
+        });
+        return;
+    }
+    if project.is_some() {
+        commands
+            .spawn_scene(bsn! {
+                Node {
+                    height: px(22),
+                    flex_shrink: 0.0,
+                    display: Display::Flex,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(px(1)),
+                }
+                Button
+                ChildOf(row)
+                Children [ {text("Build", FONT_SIZE, tokens::TEXT)} ]
+            })
+            .insert(BuildScriptButton(assembly.to_owned()))
+            .observe(start_script_build);
+    }
+    let status = match build.last() {
+        _ if project.is_none() => format!("No project at {shown}."),
+        Some(outcome) if outcome.assembly == assembly && outcome.ok => {
+            format!("Built {}.", file_name(assembly))
+        }
+        Some(outcome) if outcome.assembly == assembly => {
+            "Last build failed; see the Console.".into()
+        }
+        _ => format!("Builds {shown}."),
+    };
+    spawn_hint(commands, host, status);
+}
+
+fn file_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
+}
+
 /// Marks the dynamic Script section host.
 #[derive(Component, Clone, Default)]
 pub struct ScriptRows;
@@ -3273,6 +3368,10 @@ pub struct ScriptClassField(pub u64);
 /// Focused class name edit.
 #[derive(Component, Clone, Copy, Default)]
 pub struct ScriptClassEdit;
+
+/// Button that builds the assembly behind a C# script.
+#[derive(Component, Clone, Default)]
+pub struct BuildScriptButton(pub String);
 
 /// Script picker overlay state.
 #[derive(Resource, Clone, Default)]
@@ -3348,6 +3447,24 @@ fn open_script_picker(
     picker.object = Some(button.0);
     picker.language = button.1;
     picker.choices = eme_script::script_files_for(&crate::asset_root(), button.1);
+}
+
+fn start_script_build(
+    activate: On<Activate>,
+    buttons: Query<&BuildScriptButton>,
+    mut build: ResMut<crate::script_build::CSharpBuild>,
+    mut log: ResMut<ConsoleLog>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    if let Err(err) = build.start(
+        &crate::build::workspace_dir(),
+        &crate::asset_root(),
+        &button.0,
+    ) {
+        log.push(format!("csharp: {err}"));
+    }
 }
 
 /// Rebuilds the picker rows.
@@ -4808,6 +4925,32 @@ mod tests {
                 .lines()
                 .iter()
                 .any(|line| line.contains("failed") && line.contains("not allowed"))
+        );
+    }
+
+    #[test]
+    fn the_build_button_starts_a_build_for_its_assembly() {
+        let mut world = World::new();
+        world.insert_resource(crate::script_build::CSharpBuild::default());
+        world.insert_resource(ConsoleLog::default());
+        world.add_observer(start_script_build);
+        let button = world
+            .spawn(BuildScriptButton("scripts/managed/Missing.dll".into()))
+            .id();
+        world.trigger(Activate { entity: button });
+
+        let build = world.resource::<crate::script_build::CSharpBuild>();
+        assert_eq!(
+            build.last().map(|outcome| outcome.assembly.as_str()),
+            Some("scripts/managed/Missing.dll")
+        );
+        assert!(!build.running());
+        assert!(
+            world
+                .resource::<ConsoleLog>()
+                .lines()
+                .iter()
+                .any(|line| line.starts_with("csharp: no project"))
         );
     }
 }

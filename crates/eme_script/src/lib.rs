@@ -1440,21 +1440,163 @@ pub struct FrameInput<'w> {
     grid: Option<Res<'w, NavGrid>>,
 }
 
+/// World-side handles the scripting passes write through.
+///
+/// Lua and C# queue operations while they run; this bundle owns the queries and
+/// resources those operations land in, so both passes share one applier instead
+/// of each carrying its own copy of the queries.
+#[derive(SystemParam)]
+pub struct ApplyTargets<'w, 's> {
+    root: Res<'w, ScriptRoot>,
+    audio: ResMut<'w, ScriptAudio>,
+    transforms: Query<'w, 's, (Entity, &'static mut Transform, Option<&'static Name>)>,
+    bodies: Query<'w, 's, (Entity, &'static mut PhysicsBody)>,
+    animations: Query<'w, 's, (Entity, &'static mut AnimationSet)>,
+    agents: Query<'w, 's, (Entity, &'static mut NavAgent)>,
+    controllers: Query<'w, 's, &'static mut KinematicController>,
+    commands: Commands<'w, 's>,
+}
+
+impl ApplyTargets<'_, '_> {
+    /// Reads the world into the frame every script instance sees.
+    fn snapshot(&mut self, input: &FrameInput) -> FrameState {
+        let mut frame = build_frame(input);
+        for (entity, transform, name) in &mut self.transforms {
+            frame
+                .transforms
+                .insert(entity, (transform.translation, transform.rotation));
+            if let Some(name) = name {
+                frame.names.insert(name.as_str().to_owned(), entity);
+            }
+        }
+        for (entity, body) in &self.bodies {
+            frame.velocities.insert(entity, body.velocity);
+            frame.angular.insert(entity, body.angular_velocity);
+            if body.grounded {
+                frame.grounded.insert(entity);
+            }
+        }
+        for (entity, set) in &self.animations {
+            frame.anim_clips.insert(entity, set.clips.clone());
+        }
+        frame
+    }
+
+    /// Applies one instance's queued operations to the world.
+    fn apply(
+        &mut self,
+        api: &mut ApiState,
+        log: &mut ScriptLog,
+        scene_requests: &mut Vec<SceneOp>,
+        ui: &mut Vec<UiElement>,
+    ) {
+        for line in api.log.drain(..) {
+            log.push(line);
+        }
+        for (target, velocity) in api.velocity_ops.drain(..) {
+            if let Ok((_, mut body)) = self.bodies.get_mut(target) {
+                body.velocity = velocity;
+                if velocity.y > 0.0 {
+                    body.grounded = false;
+                }
+            }
+        }
+        for (target, angular) in api.angular_ops.drain(..) {
+            if let Ok((_, mut body)) = self.bodies.get_mut(target) {
+                body.angular_velocity = angular;
+            }
+        }
+        for (target, impulse) in api.spin_ops.drain(..) {
+            if let Ok((_, mut body)) = self.bodies.get_mut(target) {
+                body.apply_angular_impulse(impulse, 1.0);
+            }
+        }
+        for (a, b, rest, stiffness, damping) in api.joint_ops.drain(..) {
+            self.commands.entity(a).insert(DistanceJoint {
+                a,
+                b,
+                rest: rest.max(0.05),
+                stiffness: stiffness.clamp(0.0, 200.0),
+                damping: damping.clamp(0.0, 50.0),
+            });
+        }
+        for (entity, op) in api.animation_ops.drain(..) {
+            if let Ok((_, mut set)) = self.animations.get_mut(entity) {
+                match op {
+                    AnimationOp::Play(name) => {
+                        set.play(&name);
+                    }
+                    AnimationOp::Stop => set.stop(),
+                }
+            }
+        }
+        for (entity, op) in api.nav_ops.drain(..) {
+            match op {
+                NavOp::Go { goal, speed } => {
+                    if let Ok((_, mut agent)) = self.agents.get_mut(entity) {
+                        agent.speed = speed;
+                        agent.go_to(goal);
+                    } else {
+                        let mut agent = NavAgent::default();
+                        agent.speed = speed;
+                        agent.go_to(goal);
+                        self.commands.entity(entity).insert(agent);
+                    }
+                }
+                NavOp::Stop => {
+                    if let Ok((_, mut agent)) = self.agents.get_mut(entity) {
+                        agent.stop();
+                    }
+                }
+            }
+        }
+        for (entity, op) in api.controller_ops.drain(..) {
+            if let Ok(mut controller) = self.controllers.get_mut(entity) {
+                match op {
+                    ControllerOp::Walk(x, z) => controller.walk(x, z),
+                    ControllerOp::Jump => controller.jump(),
+                }
+            }
+        }
+        for element in api.ui.drain(..) {
+            ui.push(element);
+        }
+        for op in api.scene_ops.drain(..) {
+            match &op {
+                SceneOp::Load(path) => log.push(format!("scene: load requested {path}")),
+                SceneOp::Additive { id, path } => {
+                    log.push(format!("scene: additive load requested {path} as layer {id}"));
+                }
+                SceneOp::Unload(id) => log.push(format!("scene: unload requested for layer {id}")),
+                SceneOp::Reload => log.push("scene: reload requested".to_string()),
+            }
+            scene_requests.push(op);
+        }
+        for request in api.audio.drain(..) {
+            if self.root.0.join(&request.path).is_file() {
+                log.push(format!(
+                    "script audio: play {} @ {:.2} ({})",
+                    request.path,
+                    request.volume,
+                    request.bus.label()
+                ));
+                self.audio.requests.push(request);
+            } else {
+                log.push(format!("script audio: missing asset {}", request.path));
+            }
+        }
+        write_ops(&api.ops, &mut self.transforms);
+    }
+}
+
 /// Runs `on_start` once and `on_update` for every live instance.
 pub fn update_scripts(
     active: Res<ScriptsActive>,
     input: FrameInput,
-    root: Res<ScriptRoot>,
-    mut audio: ResMut<ScriptAudio>,
     mut runtime: ResMut<ScriptRuntime>,
     mut log: ResMut<ScriptLog>,
-    mut transforms: Query<(Entity, &mut Transform, Option<&Name>)>,
-    mut bodies: Query<(Entity, &mut PhysicsBody)>,
-    mut animations: Query<(Entity, &mut AnimationSet)>,
-    mut agents: Query<(Entity, &mut NavAgent)>,
-    mut controllers: Query<&mut KinematicController>,
     mut frame_out: ResMut<ScriptFrame>,
-    mut commands: Commands,
+    mut targets: ApplyTargets,
 ) {
     if !active.0 {
         return;
@@ -1472,25 +1614,7 @@ pub fn update_scripts(
         .collect();
     order.sort_unstable();
 
-    let mut frame = build_frame(&input);
-    for (entity, transform, name) in &mut transforms {
-        frame
-            .transforms
-            .insert(entity, (transform.translation, transform.rotation));
-        if let Some(name) = name {
-            frame.names.insert(name.as_str().to_owned(), entity);
-        }
-    }
-    for (entity, body) in &bodies {
-        frame.velocities.insert(entity, body.velocity);
-        frame.angular.insert(entity, body.angular_velocity);
-        if body.grounded {
-            frame.grounded.insert(entity);
-        }
-    }
-    for (entity, set) in &animations {
-        frame.anim_clips.insert(entity, set.clips.clone());
-    }
+    let mut frame = targets.snapshot(&input);
     frame.ui_clicks = std::mem::take(ui_clicks);
     let frame = Arc::new(frame);
     frame_out.0 = Arc::clone(&frame);
@@ -1535,103 +1659,7 @@ pub fn update_scripts(
             continue;
         }
 
-        let mut api = instance.api.lock().unwrap();
-        for line in api.log.drain(..) {
-            log.push(line);
-        }
-        for (target, velocity) in api.velocity_ops.drain(..) {
-            if let Ok((_, mut body)) = bodies.get_mut(target) {
-                body.velocity = velocity;
-                if velocity.y > 0.0 {
-                    body.grounded = false;
-                }
-            }
-        }
-        for (target, angular) in api.angular_ops.drain(..) {
-            if let Ok((_, mut body)) = bodies.get_mut(target) {
-                body.angular_velocity = angular;
-            }
-        }
-        for (target, impulse) in api.spin_ops.drain(..) {
-            if let Ok((_, mut body)) = bodies.get_mut(target) {
-                body.apply_angular_impulse(impulse, 1.0);
-            }
-        }
-        for (a, b, rest, stiffness, damping) in api.joint_ops.drain(..) {
-            commands.entity(a).insert(DistanceJoint {
-                a,
-                b,
-                rest: rest.max(0.05),
-                stiffness: stiffness.clamp(0.0, 200.0),
-                damping: damping.clamp(0.0, 50.0),
-            });
-        }
-        for (entity, op) in api.animation_ops.drain(..) {
-            if let Ok((_, mut set)) = animations.get_mut(entity) {
-                match op {
-                    AnimationOp::Play(name) => {
-                        set.play(&name);
-                    }
-                    AnimationOp::Stop => set.stop(),
-                }
-            }
-        }
-        for (entity, op) in api.nav_ops.drain(..) {
-            match op {
-                NavOp::Go { goal, speed } => {
-                    if let Ok((_, mut agent)) = agents.get_mut(entity) {
-                        agent.speed = speed;
-                        agent.go_to(goal);
-                    } else {
-                        let mut agent = NavAgent::default();
-                        agent.speed = speed;
-                        agent.go_to(goal);
-                        commands.entity(entity).insert(agent);
-                    }
-                }
-                NavOp::Stop => {
-                    if let Ok((_, mut agent)) = agents.get_mut(entity) {
-                        agent.stop();
-                    }
-                }
-            }
-        }
-        for (entity, op) in api.controller_ops.drain(..) {
-            if let Ok(mut controller) = controllers.get_mut(entity) {
-                match op {
-                    ControllerOp::Walk(x, z) => controller.walk(x, z),
-                    ControllerOp::Jump => controller.jump(),
-                }
-            }
-        }
-        for element in api.ui.drain(..) {
-            ui.push(element);
-        }
-        for op in api.scene_ops.drain(..) {
-            match &op {
-                SceneOp::Load(path) => log.push(format!("scene: load requested {path}")),
-                SceneOp::Additive { id, path } => {
-                    log.push(format!("scene: additive load requested {path} as layer {id}"));
-                }
-                SceneOp::Unload(id) => log.push(format!("scene: unload requested for layer {id}")),
-                SceneOp::Reload => log.push("scene: reload requested".to_string()),
-            }
-            scene_requests.push(op);
-        }
-        for request in api.audio.drain(..) {
-            if root.0.join(&request.path).is_file() {
-                log.push(format!(
-                    "script audio: play {} @ {:.2} ({})",
-                    request.path,
-                    request.volume,
-                    request.bus.label()
-                ));
-                audio.requests.push(request);
-            } else {
-                log.push(format!("script audio: missing asset {}", request.path));
-            }
-        }
-        write_ops(&api.ops, &mut transforms);
+        targets.apply(&mut instance.api.lock().unwrap(), &mut log, scene_requests, ui);
     }
 }
 
@@ -1652,21 +1680,24 @@ fn write_ops(
 pub fn update_csharp_scripts(
     active: Res<ScriptsActive>,
     frame: Res<ScriptFrame>,
+    mut runtime: ResMut<ScriptRuntime>,
     mut scripts: ResMut<CSharpScripts>,
     mut log: ResMut<ScriptLog>,
-    mut transforms: Query<(Entity, &mut Transform, Option<&Name>)>,
+    mut targets: ApplyTargets,
 ) {
     if !active.0 || scripts.is_empty() {
         return;
     }
+    let runtime = &mut *runtime;
+    let (scene_requests, ui) = (&mut runtime.scene_requests, &mut runtime.ui);
     let mut entities = scripts.entities();
     entities.sort_unstable();
     for entity in entities {
         let Some(instance) = scripts.instance_mut(entity) else {
             continue;
         };
-        let ops = csharp::step(instance, &frame.0, frame.0.delta, &mut log);
-        write_ops(&ops, &mut transforms);
+        csharp::step(instance, &frame.0, frame.0.delta);
+        targets.apply(instance.api_mut(), &mut log, scene_requests, ui);
     }
 }
 

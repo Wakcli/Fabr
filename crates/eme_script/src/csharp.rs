@@ -62,6 +62,12 @@ pub(crate) struct CSharpInstance {
     failed: bool,
 }
 
+impl CSharpInstance {
+    pub(crate) fn api_mut(&mut self) -> &mut ApiState {
+        &mut self.context.api
+    }
+}
+
 struct CSharpContext {
     /// Shared operation surface: the same queues the Lua host drains, so a
     /// callback added here reaches the engine through one apply pass.
@@ -325,15 +331,11 @@ unsafe extern "C" fn api_get_translation(
 
 /// Runs one C# instance against the frame's transform snapshot.
 ///
-/// Returns the translation writes the script requested.
-pub(crate) fn step(
-    instance: &mut CSharpInstance,
-    frame: &Arc<FrameState>,
-    dt: f32,
-    log: &mut ScriptLog,
-) -> Vec<(Entity, Vec3, Quat)> {
+/// Queued operations stay in the instance's `ApiState` for
+/// [`apply`](crate::ApplyTargets) to drain, the same way the Lua pass does.
+pub(crate) fn step(instance: &mut CSharpInstance, frame: &Arc<FrameState>, dt: f32) {
     if instance.failed {
-        return Vec::new();
+        return;
     }
     instance.context.api.reset_frame(Arc::clone(frame));
     let handle = instance.entity.to_bits();
@@ -350,15 +352,15 @@ pub(crate) fn step(
         // SAFETY: same instance-owned table and bootstrap.
         code = unsafe { (instance.bootstrap.update)(&mut instance.api, handle, dt) };
     }
-    for line in instance.context.api.log.drain(..) {
-        log.push(line);
-    }
     if code != 0 {
         instance.failed = true;
-        log.push(format!("script {}: disabled after a managed error", instance.path));
-        return Vec::new();
+        instance.context.api.ops.clear();
+        instance
+            .context
+            .api
+            .log
+            .push(format!("script {}: disabled after a managed error", instance.path));
     }
-    std::mem::take(&mut instance.context.api.ops)
 }
 
 /// Stops every loaded instance, for example when play mode ends.

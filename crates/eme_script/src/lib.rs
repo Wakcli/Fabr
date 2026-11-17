@@ -1885,9 +1885,18 @@ impl Plugin for ScriptPlugin {
                     .after(update_scripts)
                     .after(eme_game_runtime::run_behaviours),
             )
-            .add_systems(Update, play_script_audio.after(update_scripts))
-            .add_systems(Update, publish_scene_requests.after(update_scripts))
-            .add_systems(Update, publish_script_ui.after(update_scripts));
+            .add_systems(
+                Update,
+                play_script_audio.after(update_csharp_scripts),
+            )
+            .add_systems(
+                Update,
+                publish_scene_requests.after(update_csharp_scripts),
+            )
+            .add_systems(
+                Update,
+                publish_script_ui.after(update_csharp_scripts),
+            );
     }
 }
 

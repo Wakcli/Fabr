@@ -432,6 +432,7 @@ struct FrameState {
 struct LocalFrame {
     transforms: HashMap<Entity, (Vec3, Quat)>,
     velocities: HashMap<Entity, Vec3>,
+    angular: HashMap<Entity, Vec3>,
     grounded: HashMap<Entity, bool>,
 }
 
@@ -510,10 +511,20 @@ impl ApiState {
             .unwrap_or_else(|| self.frame.grounded.contains(&entity))
     }
 
+    fn angular_velocity(&self, entity: Entity) -> Vec3 {
+        self.local
+            .angular
+            .get(&entity)
+            .copied()
+            .or_else(|| self.frame.angular.get(&entity).copied())
+            .unwrap_or_default()
+    }
+
     fn reset_frame(&mut self, frame: Arc<FrameState>) {
         self.frame = frame;
         self.local.transforms.clear();
         self.local.velocities.clear();
+        self.local.angular.clear();
         self.local.grounded.clear();
         self.ops.clear();
         self.log.clear();
@@ -527,6 +538,158 @@ impl ApiState {
         self.scene_ops.clear();
         self.ui.clear();
         self.controller_ops.clear();
+    }
+}
+
+impl ApiState {
+    fn translation(&self, entity: Entity) -> Vec3 {
+        self.transform(entity).0
+    }
+
+    fn rotation(&self, entity: Entity) -> Quat {
+        self.transform(entity).1
+    }
+
+    fn set_translation(&mut self, entity: Entity, translation: Vec3) {
+        let (_, rotation) = self.transform(entity);
+        self.set_transform(entity, translation, rotation);
+        self.ops.retain(|(target, _, _)| *target != entity);
+        self.ops.push((entity, translation, rotation));
+    }
+
+    fn translate(&mut self, entity: Entity, delta: Vec3) {
+        self.set_translation(entity, self.translation(entity) + delta);
+    }
+
+    fn set_rotation(&mut self, entity: Entity, rotation: Quat) {
+        let (translation, _) = self.transform(entity);
+        self.set_transform(entity, translation, rotation);
+        self.ops.retain(|(target, _, _)| *target != entity);
+        self.ops.push((entity, translation, rotation));
+    }
+
+    fn rotate_y(&mut self, entity: Entity, radians: f32) {
+        self.set_rotation(entity, Quat::from_rotation_y(radians) * self.rotation(entity));
+    }
+
+    fn set_velocity(&mut self, entity: Entity, velocity: Vec3) {
+        self.local.velocities.insert(entity, velocity);
+        self.local.grounded.insert(entity, false);
+        self.velocity_ops.retain(|(target, _)| *target != entity);
+        self.velocity_ops.push((entity, velocity));
+    }
+
+    fn set_angular_velocity(&mut self, entity: Entity, angular: Vec3) {
+        self.local.angular.insert(entity, angular);
+        self.angular_ops.push((entity, angular));
+    }
+
+    fn add_spin(&mut self, entity: Entity, impulse: Vec3) {
+        self.spin_ops.push((entity, impulse));
+    }
+
+    fn walk(&mut self, entity: Entity, x: f32, z: f32) {
+        self.controller_ops.push((entity, ControllerOp::Walk(x, z)));
+    }
+
+    fn jump(&mut self, entity: Entity) {
+        self.controller_ops.push((entity, ControllerOp::Jump));
+    }
+
+    fn animation_clips(&self, entity: Entity) -> &[String] {
+        self.frame.anim_clips.get(&entity).map_or(&[], Vec::as_slice)
+    }
+
+    fn play_animation(&mut self, entity: Entity, name: String) -> bool {
+        if !self.animation_clips(entity).iter().any(|clip| clip == &name) {
+            self.log.push(format!("animation: missing clip {name}"));
+            return false;
+        }
+        self.animation_ops.push((entity, AnimationOp::Play(name)));
+        true
+    }
+
+    fn stop_animation(&mut self, entity: Entity) {
+        self.animation_ops.push((entity, AnimationOp::Stop));
+    }
+
+    fn find_path(&self, from: Vec3, to: Vec3) -> Option<Vec<Vec3>> {
+        self.frame.nav.as_ref()?.find_path(from, to)
+    }
+
+    fn move_to(&mut self, entity: Entity, goal: Vec3, speed: f32) {
+        let speed = speed.clamp(0.1, 50.0);
+        self.nav_ops.push((entity, NavOp::Go { goal, speed }));
+    }
+
+    fn stop_moving(&mut self, entity: Entity) {
+        self.nav_ops.push((entity, NavOp::Stop));
+    }
+
+    fn play_sound(&mut self, path: String, volume: f32, bus: AudioBus) {
+        let volume = if volume.is_finite() {
+            volume.clamp(0.0, 4.0)
+        } else {
+            1.0
+        };
+        self.audio.push(AudioRequest { path, volume, bus });
+    }
+
+    fn ui_text(&mut self, x: f32, y: f32, size: f32, text: String, color: [f32; 3]) {
+        self.ui.push(UiElement::Text {
+            x: x.clamp(0.0, 1.0),
+            y: y.clamp(0.0, 1.0),
+            size: size.clamp(4.0, 96.0),
+            text,
+            color,
+        });
+    }
+
+    fn ui_panel(&mut self, rect: [f32; 4], color: [f32; 4]) {
+        self.ui.push(UiElement::Panel {
+            x: rect[0].clamp(0.0, 1.0),
+            y: rect[1].clamp(0.0, 1.0),
+            w: rect[2].clamp(0.0, 1.0),
+            h: rect[3].clamp(0.0, 1.0),
+            color,
+        });
+    }
+
+    fn ui_button(&mut self, id: u32, rect: [f32; 4], label: String) {
+        self.ui.push(UiElement::Button {
+            id,
+            x: rect[0].clamp(0.0, 1.0),
+            y: rect[1].clamp(0.0, 1.0),
+            w: rect[2].clamp(0.0, 1.0),
+            h: rect[3].clamp(0.0, 1.0),
+            label,
+        });
+    }
+
+    fn load_scene(&mut self, path: String) {
+        self.scene_ops.push(SceneOp::Load(path));
+    }
+
+    fn reload_scene(&mut self) {
+        self.scene_ops.push(SceneOp::Reload);
+    }
+
+    fn load_scene_additive(&mut self, path: String) -> u64 {
+        let id = next_layer_id();
+        self.scene_ops.push(SceneOp::Additive { id, path });
+        id
+    }
+
+    fn unload_scene(&mut self, id: u64) {
+        self.scene_ops.push(SceneOp::Unload(id));
+    }
+
+    fn create_joint(&mut self, a: Entity, b: Entity, rest: f32, stiffness: f32, damping: f32) {
+        self.joint_ops.push((a, b, rest, stiffness, damping));
+    }
+
+    fn find(&self, name: &str) -> Option<Entity> {
+        self.frame.names.get(name).copied()
     }
 }
 
@@ -599,39 +762,28 @@ impl ScriptRuntime {
         let api_get = api.clone();
         self_table.set("get_translation", lua.create_function(move |_, _self: Value| {
             let state = api_get.lock().unwrap();
-            let (t, _) = state.transform(state.self_entity);
+            let t = state.translation(state.self_entity);
             Ok((t.x, t.y, t.z))
         })?)?;
         let api_set = api.clone();
         self_table.set("set_translation", lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
             let mut state = api_set.lock().unwrap();
             let entity = state.self_entity;
-            let (_, r) = state.transform(entity);
-            state.set_transform(entity, Vec3::new(x, y, z), r);
-            state.ops.retain(|(e, _, _)| *e != entity);
-            state.ops.push((entity, Vec3::new(x, y, z), r));
+            state.set_translation(entity, Vec3::new(x, y, z));
             Ok(())
         })?)?;
         let api_move = api.clone();
         self_table.set("translate", lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
             let mut state = api_move.lock().unwrap();
             let entity = state.self_entity;
-            let (t, r) = state.transform(entity);
-            let next = t + Vec3::new(x, y, z);
-            state.set_transform(entity, next, r);
-            state.ops.retain(|(e, _, _)| *e != entity);
-            state.ops.push((entity, next, r));
+            state.translate(entity, Vec3::new(x, y, z));
             Ok(())
         })?)?;
         let api_rotate = api.clone();
         self_table.set("rotate_y", lua.create_function(move |_, (_self, radians): (Value, f32)| {
             let mut state = api_rotate.lock().unwrap();
             let entity = state.self_entity;
-            let (t, r) = state.transform(entity);
-            let next = Quat::from_rotation_y(radians) * r;
-            state.set_transform(entity, t, next);
-            state.ops.retain(|(e, _, _)| *e != entity);
-            state.ops.push((entity, t, next));
+            state.rotate_y(entity, radians);
             Ok(())
         })?)?;
 
@@ -652,11 +804,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
                 let mut state = api_set_vel.lock().unwrap();
                 let entity = state.self_entity;
-                let velocity = Vec3::new(x, y, z);
-                state.local.velocities.insert(entity, velocity);
-                state.local.grounded.insert(entity, false);
-                state.velocity_ops.retain(|(target, _)| *target != entity);
-                state.velocity_ops.push((entity, velocity));
+                state.set_velocity(entity, Vec3::new(x, y, z));
                 Ok(())
             })?,
         )?;
@@ -667,7 +815,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
                 let mut state = api_set_spin.lock().unwrap();
                 let entity = state.self_entity;
-                state.angular_ops.push((entity, Vec3::new(x, y, z)));
+                state.set_angular_velocity(entity, Vec3::new(x, y, z));
                 Ok(())
             })?,
         )?;
@@ -676,12 +824,7 @@ impl ScriptRuntime {
             "get_angular_velocity",
             lua.create_function(move |_, _self: Value| {
                 let state = api_get_spin.lock().unwrap();
-                let spin = state
-                    .frame
-                    .angular
-                    .get(&state.self_entity)
-                    .copied()
-                    .unwrap_or_default();
+                let spin = state.angular_velocity(state.self_entity);
                 Ok((spin.x, spin.y, spin.z))
             })?,
         )?;
@@ -691,7 +834,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, (_self, x, y, z): (Value, f32, f32, f32)| {
                 let mut state = api_add_spin.lock().unwrap();
                 let entity = state.self_entity;
-                state.spin_ops.push((entity, Vec3::new(x, y, z)));
+                state.add_spin(entity, Vec3::new(x, y, z));
                 Ok(())
             })?,
         )?;
@@ -702,10 +845,8 @@ impl ScriptRuntime {
             lua.create_function(move |lua, _self: Value| {
                 let state = api_clips.lock().unwrap();
                 let table = lua.create_table()?;
-                if let Some(clips) = state.frame.anim_clips.get(&state.self_entity) {
-                    for (index, clip) in clips.iter().enumerate() {
-                        table.set(index + 1, clip.clone())?;
-                    }
+                for (index, clip) in state.animation_clips(state.self_entity).iter().enumerate() {
+                    table.set(index + 1, clip.clone())?;
                 }
                 Ok(table)
             })?,
@@ -716,16 +857,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, (_self, name): (Value, String)| {
                 let mut state = api_play_anim.lock().unwrap();
                 let entity = state.self_entity;
-                let known = state.frame.anim_clips.get(&entity)
-                    .is_some_and(|clips| clips.iter().any(|clip| clip == &name));
-                if !known {
-                    state.log.push(format!("animation: missing clip {name}"));
-                    return Ok(false);
-                }
-                                state
-                    .animation_ops
-                    .push((entity, AnimationOp::Play(name)));
-                Ok(true)
+                Ok(state.play_animation(entity, name))
             })?,
         )?;
         let api_stop_anim = api.clone();
@@ -734,7 +866,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, _self: Value| {
                 let mut state = api_stop_anim.lock().unwrap();
                 let entity = state.self_entity;
-                                state.animation_ops.push((entity, AnimationOp::Stop));
+                state.stop_animation(entity);
                 Ok(())
             })?,
         )?;
@@ -744,16 +876,10 @@ impl ScriptRuntime {
             "move_to",
             lua.create_function(
                 move |_, (_self, x, y, z, speed): (Value, f32, f32, f32, Option<f32>)| {
+                    let speed = speed.filter(|speed| speed.is_finite()).unwrap_or(3.0);
                     let mut state = api_move.lock().unwrap();
                     let entity = state.self_entity;
-                    let speed = speed.filter(|speed| speed.is_finite()).unwrap_or(3.0);
-                    state.nav_ops.push((
-                        entity,
-                        NavOp::Go {
-                            goal: Vec3::new(x, y, z),
-                            speed: speed.clamp(0.1, 50.0),
-                        },
-                    ));
+                    state.move_to(entity, Vec3::new(x, y, z), speed);
                     Ok(())
                 },
             )?,
@@ -764,7 +890,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, _self: Value| {
                 let mut state = api_stop_move.lock().unwrap();
                 let entity = state.self_entity;
-                state.nav_ops.push((entity, NavOp::Stop));
+                state.stop_moving(entity);
                 Ok(())
             })?,
         )?;
@@ -801,18 +927,11 @@ impl ScriptRuntime {
             "play",
             lua.create_function(
                 move |_, (path, volume, bus): (String, Option<f32>, Option<String>)| {
-                    let volume = volume.unwrap_or(1.0);
-                    let volume = if volume.is_finite() {
-                        volume.clamp(0.0, 4.0)
-                    } else {
-                        1.0
-                    };
                     let bus = bus.as_deref().map(AudioBus::parse).unwrap_or_default();
                     api_play
                         .lock()
                         .unwrap()
-                        .audio
-                        .push(AudioRequest { path, volume, bus });
+                        .play_sound(path, volume.unwrap_or(1.0), bus);
                     Ok(())
                 },
             )?,
@@ -851,10 +970,7 @@ impl ScriptRuntime {
                 move |lua, (x1, y1, z1, x2, y2, z2): (f32, f32, f32, f32, f32, f32)| {
                     let state = api_nav.lock().unwrap();
                     let table = lua.create_table()?;
-                    let Some(grid) = &state.frame.nav else {
-                        return Ok(table);
-                    };
-                    let Some(path) = grid.find_path(
+                    let Some(path) = state.find_path(
                         Vec3::new(x1, y1, z1),
                         Vec3::new(x2, y2, z2),
                     ) else {
@@ -877,17 +993,17 @@ impl ScriptRuntime {
         ui.set("clear", lua.create_function(move |_, ()| { api_ui.lock().unwrap().ui.clear(); Ok(()) })?)?;
         let api_text = api.clone();
         ui.set("text", lua.create_function(move |_, (x, y, size, text, r, g, b): (f32, f32, f32, String, Option<f32>, Option<f32>, Option<f32>)| {
-            api_text.lock().unwrap().ui.push(UiElement::Text { x: x.clamp(0.0,1.0), y: y.clamp(0.0,1.0), size: size.clamp(4.0,96.0), text, color: [r.unwrap_or(1.0), g.unwrap_or(1.0), b.unwrap_or(1.0)] });
+            api_text.lock().unwrap().ui_text(x, y, size, text, [r.unwrap_or(1.0), g.unwrap_or(1.0), b.unwrap_or(1.0)]);
             Ok(())
         })?)?;
         let api_panel = api.clone();
         ui.set("panel", lua.create_function(move |_, (x, y, w, h, r, g, b, a): (f32, f32, f32, f32, f32, f32, f32, f32)| {
-            api_panel.lock().unwrap().ui.push(UiElement::Panel { x: x.clamp(0.0,1.0), y: y.clamp(0.0,1.0), w: w.clamp(0.0,1.0), h: h.clamp(0.0,1.0), color: [r,g,b,a] });
+            api_panel.lock().unwrap().ui_panel([x, y, w, h], [r, g, b, a]);
             Ok(())
         })?)?;
         let api_button = api.clone();
         ui.set("button", lua.create_function(move |_, (id, x, y, w, h, label): (u32, f32, f32, f32, f32, String)| {
-            api_button.lock().unwrap().ui.push(UiElement::Button { id, x: x.clamp(0.0,1.0), y: y.clamp(0.0,1.0), w: w.clamp(0.0,1.0), h: h.clamp(0.0,1.0), label });
+            api_button.lock().unwrap().ui_button(id, [x, y, w, h], label);
             Ok(())
         })?)?;
         let api_clicked = api.clone();
@@ -899,7 +1015,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, (_self, x, z): (Value, f32, f32)| {
                 let mut state = api_walk.lock().unwrap();
                 let entity = state.self_entity;
-                state.controller_ops.push((entity, ControllerOp::Walk(x, z)));
+                state.walk(entity, x, z);
                 Ok(())
             })?,
         )?;
@@ -909,7 +1025,7 @@ impl ScriptRuntime {
             lua.create_function(move |_, _self: Value| {
                 let mut state = api_jump.lock().unwrap();
                 let entity = state.self_entity;
-                state.controller_ops.push((entity, ControllerOp::Jump));
+                state.jump(entity);
                 Ok(())
             })?,
         )?;
@@ -919,11 +1035,7 @@ impl ScriptRuntime {
         scene.set(
             "load",
             lua.create_function(move |_, path: String| {
-                api_scene
-                    .lock()
-                    .unwrap()
-                    .scene_ops
-                    .push(SceneOp::Load(path));
+                api_scene.lock().unwrap().load_scene(path);
                 Ok(true)
             })?,
         )?;
@@ -931,7 +1043,7 @@ impl ScriptRuntime {
         scene.set(
             "reload",
             lua.create_function(move |_, ()| {
-                api_reload.lock().unwrap().scene_ops.push(SceneOp::Reload);
+                api_reload.lock().unwrap().reload_scene();
                 Ok(true)
             })?,
         )?;
@@ -939,27 +1051,14 @@ impl ScriptRuntime {
         scene.set(
             "load_additive",
             lua.create_function(move |_, path: String| {
-                let id = next_layer_id();
-                api_additive
-                    .lock()
-                    .unwrap()
-                    .scene_ops
-                    .push(SceneOp::Additive {
-                        id,
-                        path: path.clone(),
-                    });
-                Ok(id)
+                Ok(api_additive.lock().unwrap().load_scene_additive(path))
             })?,
         )?;
         let api_unload = api.clone();
         scene.set(
             "unload",
             lua.create_function(move |_, id: u64| {
-                api_unload
-                    .lock()
-                    .unwrap()
-                    .scene_ops
-                    .push(SceneOp::Unload(id));
+                api_unload.lock().unwrap().unload_scene(id);
                 Ok(true)
             })?,
         )?;
@@ -971,13 +1070,10 @@ impl ScriptRuntime {
             lua.create_function(
                 move |_, (a, b, rest, stiffness, damping): (String, String, f32, f32, f32)| {
                     let mut state = api_joint.lock().unwrap();
-                    let (Some(first), Some(second)) = (
-                        state.frame.names.get(&a).copied(),
-                        state.frame.names.get(&b).copied(),
-                    ) else {
+                    let (Some(first), Some(second)) = (state.find(&a), state.find(&b)) else {
                         return Ok(false);
                     };
-                    state.joint_ops.push((first, second, rest, stiffness, damping));
+                    state.create_joint(first, second, rest, stiffness, damping);
                     Ok(true)
                 },
             )?,
@@ -988,7 +1084,7 @@ impl ScriptRuntime {
         fabr.set("entity", lua.create_table()?)?;
         if let Ok(table) = fabr.get::<Table>("entity") {
             table.set("find", lua.create_function(move |lua, name: String| {
-                let entity = api_find.lock().unwrap().frame.names.get(&name).copied();
+                let entity = api_find.lock().unwrap().find(&name);
                 match entity {
                     Some(entity) => entity_handle(lua, api_find.clone(), entity, name),
                     None => Ok(Value::Nil),
@@ -1799,6 +1895,26 @@ impl Plugin for ScriptPlugin {
 mod tests {
     use super::*;
     use eme_ecs::system::RunSystemOnce;
+
+    #[test]
+    fn api_state_reads_back_its_own_writes() {
+        let mut api = ApiState::default();
+        let entity = api.self_entity;
+        api.set_translation(entity, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(api.translation(entity), Vec3::new(1.0, 2.0, 3.0));
+        api.translate(entity, Vec3::X);
+        assert_eq!(api.translation(entity), Vec3::new(2.0, 2.0, 3.0));
+        api.rotate_y(entity, core::f32::consts::FRAC_PI_2);
+        assert!((api.rotation(entity).y - core::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        api.set_angular_velocity(entity, Vec3::Y);
+        assert_eq!(api.angular_velocity(entity), Vec3::Y);
+        api.set_velocity(entity, Vec3::Z);
+        assert_eq!(api.velocity(entity), Vec3::Z);
+        assert!(!api.grounded(entity));
+        assert_eq!(api.ops.len(), 1);
+        assert_eq!(api.velocity_ops.len(), 1);
+        assert_eq!(api.angular_ops.len(), 1);
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("fabr-script-{}-{name}", std::process::id()));

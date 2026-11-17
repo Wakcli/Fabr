@@ -1,4 +1,8 @@
 #![expect(unsafe_code, reason = "C# scripts are driven through a raw FFI callback table")]
+#![allow(
+    clippy::missing_safety_doc,
+    reason = "the callback contract is stated once, above the table"
+)]
 
 //! C# gameplay scripts hosted by the .NET runtime.
 //!
@@ -22,7 +26,7 @@ use eme_ecs::prelude::*;
 use eme_math::prelude::*;
 use eme_script_csharp::{ABI_VERSION, FabrApi, shared_host};
 
-use crate::{ApiState, FrameState, ScriptLog};
+use crate::{ApiState, AudioBus, FrameState, ScriptLog};
 
 /// Managed bootstrap assembly staged next to the game's scripts.
 pub const BINDINGS_ASSEMBLY: &str = "Fabr.Bindings.dll";
@@ -104,7 +108,46 @@ pub(crate) fn load(
         context: std::ptr::from_mut(&mut *context).cast::<c_void>(),
         log: api_log,
         set_translation: api_set_translation,
-        get_translation: api_get_translation,
+        translation: api_translation,
+        delta: api_delta,
+        elapsed: api_elapsed,
+        key: api_key,
+        key_down: api_key_down,
+        mouse: api_mouse,
+        action: api_action,
+        action_down: api_action_down,
+        find: api_find,
+        name: api_name,
+        translate: api_translate,
+        rotation: api_rotation,
+        set_rotation: api_set_rotation,
+        rotate_y: api_rotate_y,
+        velocity: api_velocity,
+        set_velocity: api_set_velocity,
+        grounded: api_grounded,
+        angular_velocity: api_angular_velocity,
+        set_angular_velocity: api_set_angular_velocity,
+        add_spin: api_add_spin,
+        walk: api_walk,
+        jump: api_jump,
+        animation_clip_count: api_animation_clip_count,
+        animation_clip: api_animation_clip,
+        play_animation: api_play_animation,
+        stop_animation: api_stop_animation,
+        find_path: api_find_path,
+        move_to: api_move_to,
+        stop_moving: api_stop_moving,
+        play_sound: api_play_sound,
+        ui_clear: api_ui_clear,
+        ui_text: api_ui_text,
+        ui_panel: api_ui_panel,
+        ui_button: api_ui_button,
+        ui_clicked: api_ui_clicked,
+        load_scene: api_load_scene,
+        reload_scene: api_reload_scene,
+        load_scene_additive: api_load_scene_additive,
+        unload_scene: api_unload_scene,
+        create_joint: api_create_joint,
     };
     let assembly_text = CString::new(assembly.to_string_lossy().as_bytes())
         .map_err(|err| err.to_string())?;
@@ -259,24 +302,101 @@ pub(crate) fn stop(instance: &mut CSharpInstance, log: &mut ScriptLog) {
     }
 }
 
-/// # Safety
-/// `context` must point at the issuing instance's context and `line` at a
-/// NUL-terminated UTF-8 string.
-unsafe extern "C" fn api_log(context: *mut c_void, line: *const c_char) {
-    // SAFETY: the caller passes the context registered in its own table.
-    let Some(context) = (unsafe { context.cast::<CSharpContext>().as_mut() }) else {
-        return;
+// Safety contract for everything below, which only the managed side reaches
+// through the table built in `CSharpInstance::new`:
+//
+// - `context` is the issuing instance's `CSharpContext`, or null.
+// - `*const c_char` arguments are NUL-terminated UTF-8 that outlives the call.
+// - `*mut f32` arguments have room for the number of floats the name implies.
+// - out-parameters may be null, in which case the callback reports success
+//   without writing.
+//
+// A callback that returns without a live context answers with the zero value
+// so a managed script cannot take the host down by running at the wrong time.
+macro_rules! api_state {
+    ($context:expr) => {
+        match
+            // SAFETY: the contract above fixes the pointer's provenance.
+            unsafe { $context.cast::<CSharpContext>().as_mut() }
+        {
+            Some(state) => state,
+            None => return Default::default(),
+        }
     };
-    if line.is_null() {
-        return;
-    }
-    // SAFETY: the managed side sends a null-terminated UTF-8 string.
-    let text = unsafe { CStr::from_ptr(line) }.to_string_lossy().into_owned();
-    context.api.log.push(text);
 }
 
-/// # Safety
-/// `context` must point at the issuing instance's context.
+/// Borrows the NUL-terminated UTF-8 string the managed side passed.
+fn read_str<'a>(ptr: *const c_char) -> &'a str {
+    if ptr.is_null() {
+        return "";
+    }
+    // SAFETY: the managed side keeps the buffer alive for the call.
+    unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
+}
+
+/// Copies UTF-8 into a caller buffer without a terminator.
+///
+/// Returns the bytes written, which is the length clipped to `cap`.
+fn write_str(text: &str, out: *mut c_char, cap: u32) -> i32 {
+    let bytes = text.as_bytes();
+    let len = bytes.len().min(cap as usize);
+    if out.is_null() || len == 0 {
+        return len as i32;
+    }
+    // SAFETY: the managed side passes room for `cap` bytes.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), len) };
+    len as i32
+}
+
+fn read_point(ptr: *const f32) -> Vec3 {
+    // SAFETY: the managed side passes three floats.
+    unsafe { Vec3::new(*ptr, *ptr.add(1), *ptr.add(2)) }
+}
+
+fn write_point(value: Vec3, out: *mut f32) {
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: the managed side passes room for three floats.
+    unsafe {
+        *out = value.x;
+        *out.add(1) = value.y;
+        *out.add(2) = value.z;
+    }
+}
+
+fn read_quad(ptr: *const f32) -> [f32; 4] {
+    // SAFETY: the managed side passes four floats.
+    unsafe { [*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)] }
+}
+
+fn write_quad(value: [f32; 4], out: *mut f32) {
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: the managed side passes room for four floats.
+    unsafe {
+        *out = value[0];
+        *out.add(1) = value[1];
+        *out.add(2) = value[2];
+        *out.add(3) = value[3];
+    }
+}
+
+fn write_u64(value: u64, out: *mut u64) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    // SAFETY: the managed side passes room for one handle.
+    unsafe { *out = value };
+    true
+}
+
+unsafe extern "C" fn api_log(context: *mut c_void, line: *const c_char) {
+    let state = api_state!(context);
+    state.api.log.push(read_str(line).to_owned());
+}
+
 unsafe extern "C" fn api_set_translation(
     context: *mut c_void,
     id: u64,
@@ -284,48 +404,426 @@ unsafe extern "C" fn api_set_translation(
     y: f32,
     z: f32,
 ) -> i32 {
-    // SAFETY: see `api_log`.
-    let Some(context) = (unsafe { context.cast::<CSharpContext>().as_mut() }) else {
-        return 0;
-    };
+    let state = api_state!(context);
     let entity = Entity::from_bits(id);
-    if !context.api.frame.transforms.contains_key(&entity) {
+    if !state.api.frame.transforms.contains_key(&entity) {
         return 0;
     }
-    let (_, rotation) = context.api.transform(entity);
-    let translation = Vec3::new(x, y, z);
-    context.api.set_transform(entity, translation, rotation);
-    context.api.ops.retain(|(target, _, _)| *target != entity);
-    context.api.ops.push((entity, translation, rotation));
+    state.api.set_translation(entity, Vec3::new(x, y, z));
     1
 }
 
-/// # Safety
-/// `context` must point at the issuing instance's context and `out` at room
-/// for three floats.
-unsafe extern "C" fn api_get_translation(
-    context: *mut c_void,
-    id: u64,
-    out: *mut f32,
-) -> i32 {
-    // SAFETY: see `api_log`.
-    let Some(context) = (unsafe { context.cast::<CSharpContext>().as_mut() }) else {
+unsafe extern "C" fn api_translation(context: *mut c_void, id: u64, out: *mut f32) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    if !state.api.frame.transforms.contains_key(&entity) {
+        return 0;
+    }
+    write_point(state.api.translation(entity), out);
+    1
+}
+
+unsafe extern "C" fn api_delta(context: *mut c_void) -> f32 {
+    api_state!(context).api.frame.delta
+}
+
+unsafe extern "C" fn api_elapsed(context: *mut c_void) -> f32 {
+    api_state!(context).api.frame.elapsed
+}
+
+unsafe extern "C" fn api_key(context: *mut c_void, name: *const c_char) -> i32 {
+    let state = api_state!(context);
+    let name = crate::normalize_key(read_str(name));
+    i32::from(state.api.frame.keys.contains(&name))
+}
+
+unsafe extern "C" fn api_key_down(context: *mut c_void, name: *const c_char) -> i32 {
+    let state = api_state!(context);
+    let name = crate::normalize_key(read_str(name));
+    i32::from(state.api.frame.keys_down.contains(&name))
+}
+
+unsafe extern "C" fn api_mouse(context: *mut c_void, button: u8) -> i32 {
+    i32::from(api_state!(context).api.frame.mouse.contains(&button))
+}
+
+unsafe extern "C" fn api_action(context: *mut c_void, name: *const c_char) -> i32 {
+    let state = api_state!(context);
+    let held = state
+        .api
+        .frame
+        .actions
+        .get(read_str(name))
+        .copied()
+        .unwrap_or(false);
+    i32::from(held)
+}
+
+unsafe extern "C" fn api_action_down(context: *mut c_void, name: *const c_char) -> i32 {
+    let state = api_state!(context);
+    let held = state
+        .api
+        .frame
+        .actions_down
+        .get(read_str(name))
+        .copied()
+        .unwrap_or(false);
+    i32::from(held)
+}
+
+unsafe extern "C" fn api_find(context: *mut c_void, name: *const c_char, out: *mut u64) -> i32 {
+    let state = api_state!(context);
+    let Some(entity) = state.api.find(read_str(name)) else {
         return 0;
     };
-    if out.is_null() {
-        return 0;
-    }
+    i32::from(write_u64(entity.to_bits(), out))
+}
+
+unsafe extern "C" fn api_name(
+    context: *mut c_void,
+    id: u64,
+    out: *mut c_char,
+    cap: u32,
+) -> i32 {
+    let state = api_state!(context);
     let entity = Entity::from_bits(id);
-    if !context.api.frame.transforms.contains_key(&entity) {
+    let Some((name, _)) = state
+        .api
+        .frame
+        .names
+        .iter()
+        .find(|(_, target)| **target == entity)
+    else {
+        return -1;
+    };
+    write_str(name, out, cap)
+}
+
+unsafe extern "C" fn api_translate(
+    context: *mut c_void,
+    id: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    if !state.api.frame.transforms.contains_key(&entity) {
         return 0;
     }
-    let (translation, _) = context.api.transform(entity);
-    // SAFETY: the managed side passes room for three floats.
-    unsafe {
-        *out = translation.x;
-        *out.add(1) = translation.y;
-        *out.add(2) = translation.z;
+    state.api.translate(entity, Vec3::new(x, y, z));
+    1
+}
+
+unsafe extern "C" fn api_rotation(context: *mut c_void, id: u64, out: *mut f32) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    if !state.api.frame.transforms.contains_key(&entity) {
+        return 0;
     }
+    let rotation = state.api.rotation(entity);
+    write_quad([rotation.x, rotation.y, rotation.z, rotation.w], out);
+    1
+}
+
+unsafe extern "C" fn api_set_rotation(
+    context: *mut c_void,
+    id: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    if !state.api.frame.transforms.contains_key(&entity) {
+        return 0;
+    }
+    state.api.set_rotation(entity, Quat::from_xyzw(x, y, z, w));
+    1
+}
+
+unsafe extern "C" fn api_rotate_y(context: *mut c_void, id: u64, radians: f32) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    if !state.api.frame.transforms.contains_key(&entity) {
+        return 0;
+    }
+    state.api.rotate_y(entity, radians);
+    1
+}
+
+unsafe extern "C" fn api_velocity(context: *mut c_void, id: u64, out: *mut f32) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    let known = state.api.frame.velocities.contains_key(&entity)
+        || state.api.local.velocities.contains_key(&entity);
+    if !known {
+        return 0;
+    }
+    write_point(state.api.velocity(entity), out);
+    1
+}
+
+unsafe extern "C" fn api_set_velocity(
+    context: *mut c_void,
+    id: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
+    let state = api_state!(context);
+    state
+        .api
+        .set_velocity(Entity::from_bits(id), Vec3::new(x, y, z));
+    1
+}
+
+unsafe extern "C" fn api_grounded(context: *mut c_void, id: u64) -> i32 {
+    i32::from(api_state!(context).api.grounded(Entity::from_bits(id)))
+}
+
+unsafe extern "C" fn api_angular_velocity(context: *mut c_void, id: u64, out: *mut f32) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    let known = state.api.frame.angular.contains_key(&entity)
+        || state.api.local.angular.contains_key(&entity);
+    if !known {
+        return 0;
+    }
+    write_point(state.api.angular_velocity(entity), out);
+    1
+}
+
+unsafe extern "C" fn api_set_angular_velocity(
+    context: *mut c_void,
+    id: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
+    let state = api_state!(context);
+    state
+        .api
+        .set_angular_velocity(Entity::from_bits(id), Vec3::new(x, y, z));
+    1
+}
+
+unsafe extern "C" fn api_add_spin(
+    context: *mut c_void,
+    id: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
+    let state = api_state!(context);
+    state
+        .api
+        .add_spin(Entity::from_bits(id), Vec3::new(x, y, z));
+    1
+}
+
+unsafe extern "C" fn api_walk(context: *mut c_void, id: u64, x: f32, z: f32) -> i32 {
+    let state = api_state!(context);
+    state.api.walk(Entity::from_bits(id), x, z);
+    1
+}
+
+unsafe extern "C" fn api_jump(context: *mut c_void, id: u64) -> i32 {
+    let state = api_state!(context);
+    state.api.jump(Entity::from_bits(id));
+    1
+}
+
+unsafe extern "C" fn api_animation_clip_count(context: *mut c_void, id: u64) -> u32 {
+    let state = api_state!(context);
+    state.api.animation_clips(Entity::from_bits(id)).len() as u32
+}
+
+unsafe extern "C" fn api_animation_clip(
+    context: *mut c_void,
+    id: u64,
+    index: u32,
+    out: *mut c_char,
+    cap: u32,
+) -> i32 {
+    let state = api_state!(context);
+    let clips = state.api.animation_clips(Entity::from_bits(id));
+    let Some(clip) = clips.get(index as usize) else {
+        return -1;
+    };
+    write_str(clip, out, cap)
+}
+
+unsafe extern "C" fn api_play_animation(
+    context: *mut c_void,
+    id: u64,
+    name: *const c_char,
+) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    i32::from(state.api.play_animation(entity, read_str(name).to_owned()))
+}
+
+unsafe extern "C" fn api_stop_animation(context: *mut c_void, id: u64) -> i32 {
+    let state = api_state!(context);
+    state.api.stop_animation(Entity::from_bits(id));
+    1
+}
+
+unsafe extern "C" fn api_find_path(
+    context: *mut c_void,
+    from: *const f32,
+    to: *const f32,
+    out: *mut f32,
+    capacity: u32,
+) -> u32 {
+    let state = api_state!(context);
+    if from.is_null() || to.is_null() {
+        return 0;
+    }
+    let Some(path) = state.api.find_path(read_point(from), read_point(to)) else {
+        return 0;
+    };
+    let total = path.len() as u32;
+    if out.is_null() {
+        return total;
+    }
+    for (index, point) in path.iter().take(capacity as usize).enumerate() {
+        // SAFETY: the managed side passes room for `capacity` points.
+        write_point(*point, unsafe { out.add(index * 3) });
+    }
+    total
+}
+
+unsafe extern "C" fn api_move_to(
+    context: *mut c_void,
+    id: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+    speed: f32,
+) -> i32 {
+    let state = api_state!(context);
+    let entity = Entity::from_bits(id);
+    if !state.api.frame.transforms.contains_key(&entity) {
+        return 0;
+    }
+    state.api.move_to(entity, Vec3::new(x, y, z), speed);
+    1
+}
+
+unsafe extern "C" fn api_stop_moving(context: *mut c_void, id: u64) -> i32 {
+    let state = api_state!(context);
+    state.api.stop_moving(Entity::from_bits(id));
+    1
+}
+
+unsafe extern "C" fn api_play_sound(
+    context: *mut c_void,
+    path: *const c_char,
+    volume: f32,
+    bus: i32,
+) -> i32 {
+    let state = api_state!(context);
+    let bus = if bus == 1 {
+        AudioBus::Music
+    } else {
+        AudioBus::Sfx
+    };
+    state
+        .api
+        .play_sound(read_str(path).to_owned(), volume, bus);
+    1
+}
+
+unsafe extern "C" fn api_ui_clear(context: *mut c_void) {
+    api_state!(context).api.ui.clear();
+}
+
+unsafe extern "C" fn api_ui_text(
+    context: *mut c_void,
+    x: f32,
+    y: f32,
+    size: f32,
+    text: *const c_char,
+    r: f32,
+    g: f32,
+    b: f32,
+) {
+    let state = api_state!(context);
+    state
+        .api
+        .ui_text(x, y, size, read_str(text).to_owned(), [r, g, b]);
+}
+
+unsafe extern "C" fn api_ui_panel(context: *mut c_void, rect: *const f32, color: *const f32) {
+    let state = api_state!(context);
+    if rect.is_null() || color.is_null() {
+        return;
+    }
+    state.api.ui_panel(read_quad(rect), read_quad(color));
+}
+
+unsafe extern "C" fn api_ui_button(
+    context: *mut c_void,
+    id: u32,
+    rect: *const f32,
+    label: *const c_char,
+) {
+    let state = api_state!(context);
+    if rect.is_null() {
+        return;
+    }
+    state.api.ui_button(id, read_quad(rect), read_str(label).to_owned());
+}
+
+unsafe extern "C" fn api_ui_clicked(context: *mut c_void, id: u32) -> i32 {
+    i32::from(api_state!(context).api.frame.ui_clicks.contains(&id))
+}
+
+unsafe extern "C" fn api_load_scene(context: *mut c_void, path: *const c_char) -> i32 {
+    let state = api_state!(context);
+    state.api.load_scene(read_str(path).to_owned());
+    1
+}
+
+unsafe extern "C" fn api_reload_scene(context: *mut c_void) -> i32 {
+    api_state!(context).api.reload_scene();
+    1
+}
+
+unsafe extern "C" fn api_load_scene_additive(
+    context: *mut c_void,
+    path: *const c_char,
+    out: *mut u64,
+) -> i32 {
+    let state = api_state!(context);
+    let id = state.api.load_scene_additive(read_str(path).to_owned());
+    i32::from(write_u64(id, out))
+}
+
+unsafe extern "C" fn api_unload_scene(context: *mut c_void, id: u64) -> i32 {
+    api_state!(context).api.unload_scene(id);
+    1
+}
+
+unsafe extern "C" fn api_create_joint(
+    context: *mut c_void,
+    a: u64,
+    b: u64,
+    rest: f32,
+    stiffness: f32,
+    damping: f32,
+) -> i32 {
+    let state = api_state!(context);
+    let (a, b) = (Entity::from_bits(a), Entity::from_bits(b));
+    // `apply` inserts the joint through Commands, which panics on a dead entity.
+    if !state.api.frame.transforms.contains_key(&a) || !state.api.frame.transforms.contains_key(&b)
+    {
+        return 0;
+    }
+    state.api.create_joint(a, b, rest, stiffness, damping);
     1
 }
 

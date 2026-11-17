@@ -69,7 +69,7 @@ impl core::fmt::Display for HostError {
 ///
 /// Bump on every field addition. Fields are append-only: the managed side reads
 /// this first and refuses to run against a table it was not compiled for.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// Return code `ScriptHost.Load` uses when the SDK rejects the engine ABI.
 pub const ABI_MISMATCH: i32 = 2;
@@ -78,6 +78,10 @@ pub const ABI_MISMATCH: i32 = 2;
 ///
 /// `context` is an opaque pointer owned by the caller and passed back to every
 /// callback, so the engine can attach a world or a borrow without statics.
+///
+/// Writes queue an operation against the current frame; the scripting pass
+/// applies it after the managed call returns. Reads answer from the frame the
+/// script was given, which includes the script's own unapplied writes.
 #[repr(C)]
 pub struct FabrApi {
     /// Version of this table's layout.
@@ -91,7 +95,101 @@ pub struct FabrApi {
     /// Sets an object's world translation; returns 1 on success.
     pub set_translation: unsafe extern "C" fn(*mut c_void, u64, f32, f32, f32) -> i32,
     /// Reads an object's world translation into three floats; returns 1 on success.
-    pub get_translation: unsafe extern "C" fn(*mut c_void, u64, *mut f32) -> i32,
+    pub translation: unsafe extern "C" fn(*mut c_void, u64, *mut f32) -> i32,
+
+    /// Seconds elapsed in the last frame.
+    pub delta: unsafe extern "C" fn(*mut c_void) -> f32,
+    /// Seconds since the app started.
+    pub elapsed: unsafe extern "C" fn(*mut c_void) -> f32,
+
+    /// Whether a key is held, by project-settings key name.
+    pub key: unsafe extern "C" fn(*mut c_void, *const c_char) -> i32,
+    /// Whether a key went down this frame.
+    pub key_down: unsafe extern "C" fn(*mut c_void, *const c_char) -> i32,
+    /// Whether a mouse button is held: 1 left, 2 right, 3 middle.
+    pub mouse: unsafe extern "C" fn(*mut c_void, u8) -> i32,
+    /// Whether a project input action is held.
+    pub action: unsafe extern "C" fn(*mut c_void, *const c_char) -> i32,
+    /// Whether a project input action went down this frame.
+    pub action_down: unsafe extern "C" fn(*mut c_void, *const c_char) -> i32,
+
+    /// Finds the first object with this name; writes the handle on success.
+    pub find: unsafe extern "C" fn(*mut c_void, *const c_char, *mut u64) -> i32,
+    /// Writes an object's name as UTF-8 without a terminator; -1 when unnamed.
+    pub name: unsafe extern "C" fn(*mut c_void, u64, *mut c_char, u32) -> i32,
+
+    /// Adds to an object's world translation; returns 1 on success.
+    pub translate: unsafe extern "C" fn(*mut c_void, u64, f32, f32, f32) -> i32,
+    /// Reads an object's rotation as a quaternion in `[x, y, z, w]` order.
+    pub rotation: unsafe extern "C" fn(*mut c_void, u64, *mut f32) -> i32,
+    /// Writes an object's world rotation.
+    pub set_rotation: unsafe extern "C" fn(*mut c_void, u64, f32, f32, f32, f32) -> i32,
+    /// Turns an object around the world Y axis.
+    pub rotate_y: unsafe extern "C" fn(*mut c_void, u64, f32) -> i32,
+
+    /// Reads an object's linear velocity.
+    pub velocity: unsafe extern "C" fn(*mut c_void, u64, *mut f32) -> i32,
+    /// Writes an object's linear velocity.
+    pub set_velocity: unsafe extern "C" fn(*mut c_void, u64, f32, f32, f32) -> i32,
+    /// Whether an object stood on ground in the last physics step.
+    pub grounded: unsafe extern "C" fn(*mut c_void, u64) -> i32,
+    /// Reads an object's angular velocity.
+    pub angular_velocity: unsafe extern "C" fn(*mut c_void, u64, *mut f32) -> i32,
+    /// Writes an object's angular velocity.
+    pub set_angular_velocity: unsafe extern "C" fn(*mut c_void, u64, f32, f32, f32) -> i32,
+    /// Adds an angular impulse, as if the object had been pushed off-centre.
+    pub add_spin: unsafe extern "C" fn(*mut c_void, u64, f32, f32, f32) -> i32,
+    /// Asks a character controller to walk in an XZ direction.
+    pub walk: unsafe extern "C" fn(*mut c_void, u64, f32, f32) -> i32,
+    /// Asks a character controller to jump on the next step.
+    pub jump: unsafe extern "C" fn(*mut c_void, u64) -> i32,
+
+    /// Number of clips the object's model provides.
+    pub animation_clip_count: unsafe extern "C" fn(*mut c_void, u64) -> u32,
+    /// Writes one clip name as UTF-8 without a terminator; -1 when out of range.
+    pub animation_clip: unsafe extern "C" fn(*mut c_void, u64, u32, *mut c_char, u32) -> i32,
+    /// Plays a clip; returns 1 when the model provides it.
+    pub play_animation: unsafe extern "C" fn(*mut c_void, u64, *const c_char) -> i32,
+    /// Stops the current clip.
+    pub stop_animation: unsafe extern "C" fn(*mut c_void, u64) -> i32,
+
+    /// Writes the path between two points as `[x, y, z]` triples.
+    ///
+    /// Returns the number of points the path has, which may exceed `capacity`;
+    /// call again with a large enough buffer to read them.
+    pub find_path: unsafe extern "C" fn(*mut c_void, *const f32, *const f32, *mut f32, u32)
+        -> u32,
+    /// Sends a nav agent to a goal, adding the agent when the object lacks one.
+    pub move_to: unsafe extern "C" fn(*mut c_void, u64, f32, f32, f32, f32) -> i32,
+    /// Stops a nav agent and forgets its goal.
+    pub stop_moving: unsafe extern "C" fn(*mut c_void, u64) -> i32,
+
+    /// Queues a sound relative to the asset root; 0 sfx, 1 music.
+    pub play_sound: unsafe extern "C" fn(*mut c_void, *const c_char, f32, i32) -> i32,
+
+    /// Removes every HUD element this frame.
+    pub ui_clear: unsafe extern "C" fn(*mut c_void),
+    /// Draws text at normalised coordinates.
+    pub ui_text:
+        unsafe extern "C" fn(*mut c_void, f32, f32, f32, *const c_char, f32, f32, f32),
+    /// Draws a filled panel; `rect` is `[x, y, width, height]`.
+    pub ui_panel: unsafe extern "C" fn(*mut c_void, *const f32, *const f32),
+    /// Draws a button; `rect` is `[x, y, width, height]`.
+    pub ui_button: unsafe extern "C" fn(*mut c_void, u32, *const f32, *const c_char),
+    /// Whether a button with this id was pressed since the last frame.
+    pub ui_clicked: unsafe extern "C" fn(*mut c_void, u32) -> i32,
+
+    /// Loads a scene document, replacing the current one.
+    pub load_scene: unsafe extern "C" fn(*mut c_void, *const c_char) -> i32,
+    /// Reloads the current scene document.
+    pub reload_scene: unsafe extern "C" fn(*mut c_void) -> i32,
+    /// Adds a scene document as a layer; writes the layer id on success.
+    pub load_scene_additive: unsafe extern "C" fn(*mut c_void, *const c_char, *mut u64) -> i32,
+    /// Removes an additive scene layer.
+    pub unload_scene: unsafe extern "C" fn(*mut c_void, u64) -> i32,
+
+    /// Springs two bodies to a rest distance.
+    pub create_joint: unsafe extern "C" fn(*mut c_void, u64, u64, f32, f32, f32) -> i32,
 }
 
 /// The three lifecycle entry points a C# script class exports.
@@ -339,15 +437,17 @@ mod tests {
 
 namespace FabrTest;
 
+// the ABI 1 prefix of the table: a client compiled against the first layout
+// must keep working against every later one
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct FabrApi
+public unsafe struct FabrApiPrefix
 {
     public uint Version;
     public uint Size;
     public void* Context;
     public delegate* unmanaged[Cdecl]<void*, byte*, void> Log;
     public delegate* unmanaged[Cdecl]<void*, ulong, float, float, float, int> SetTranslation;
-    public delegate* unmanaged[Cdecl]<void*, ulong, float*, int> GetTranslation;
+    public delegate* unmanaged[Cdecl]<void*, ulong, float*, int> Translation;
 }
 
 public static class Script
@@ -356,10 +456,10 @@ public static class Script
     public static int Answer() => 42;
 
     [UnmanagedCallersOnly]
-    public static unsafe void Run(FabrApi* api)
+    public static unsafe void Run(FabrApiPrefix* api)
     {
         byte[] abi = System.Text.Encoding.UTF8.GetBytes(
-            $"abi {api->Version} managed={sizeof(FabrApi)} host={api->Size}\0");
+            $"abi {api->Version} prefix={sizeof(FabrApiPrefix)} host={api->Size}\0");
         fixed (byte* text = abi)
         {
             api->Log(api->Context, text);
@@ -373,7 +473,7 @@ public static class Script
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe void Start(FabrApi* api, ulong entity)
+    public static unsafe void Start(FabrApiPrefix* api, ulong entity)
     {
         byte[] message = System.Text.Encoding.UTF8.GetBytes("start\0");
         fixed (byte* text = message)
@@ -384,10 +484,10 @@ public static class Script
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe void Update(FabrApi* api, ulong entity, float dt)
+    public static unsafe void Update(FabrApiPrefix* api, ulong entity, float dt)
     {
         float* position = stackalloc float[3];
-        if (api->GetTranslation(api->Context, entity, position) == 0)
+        if (api->Translation(api->Context, entity, position) == 0)
         {
             return;
         }
@@ -395,7 +495,7 @@ public static class Script
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe void Stop(FabrApi* api, ulong entity)
+    public static unsafe void Stop(FabrApiPrefix* api, ulong entity)
     {
         byte[] message = System.Text.Encoding.UTF8.GetBytes("stop\0");
         fixed (byte* text = message)
@@ -413,6 +513,150 @@ public static class Script
             .status()
             .ok()?;
         status.success().then(|| dir.join("out"))
+    }
+
+mod stubs {
+    // every slot needs a value; nothing calls these
+    #![allow(clippy::missing_safety_doc, reason = "the stubs are never called")]
+
+    use std::ffi::{c_char, c_void};
+
+    pub unsafe extern "C" fn clock(_: *mut c_void) -> f32 {
+        0.0
+    }
+
+    pub unsafe extern "C" fn query(_: *mut c_void, _: *const c_char) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn mouse(_: *mut c_void, _: u8) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn lookup(_: *mut c_void, _: *const c_char, _: *mut u64) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn read_name(_: *mut c_void, _: u64, _: *mut c_char, _: u32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn write_vec3(_: *mut c_void, _: u64, _: f32, _: f32, _: f32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn read_vec3(_: *mut c_void, _: u64, _: *mut f32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn write_quad(_: *mut c_void, _: u64, _: f32, _: f32, _: f32, _: f32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn entity_angle(_: *mut c_void, _: u64, _: f32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn entity_flag(_: *mut c_void, _: u64) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn walk(_: *mut c_void, _: u64, _: f32, _: f32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn entity_count(_: *mut c_void, _: u64) -> u32 {
+        0
+    }
+
+    pub unsafe extern "C" fn read_clip(_: *mut c_void, _: u64, _: u32, _: *mut c_char, _: u32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn entity_text(_: *mut c_void, _: u64, _: *const c_char) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn path(_: *mut c_void, _: *const f32, _: *const f32, _: *mut f32, _: u32) -> u32 {
+        0
+    }
+
+    pub unsafe extern "C" fn sound(_: *mut c_void, _: *const c_char, _: f32, _: i32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn clear(_: *mut c_void) {
+    }
+
+    pub unsafe extern "C" fn ui_text(_: *mut c_void, _: f32, _: f32, _: f32, _: *const c_char, _: f32, _: f32, _: f32) {
+    }
+
+    pub unsafe extern "C" fn ui_panel(_: *mut c_void, _: *const f32, _: *const f32) {
+    }
+
+    pub unsafe extern "C" fn ui_button(_: *mut c_void, _: u32, _: *const f32, _: *const c_char) {
+    }
+
+    pub unsafe extern "C" fn ui_click(_: *mut c_void, _: u32) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn flag(_: *mut c_void) -> i32 {
+        0
+    }
+
+    pub unsafe extern "C" fn joint(_: *mut c_void, _: u64, _: u64, _: f32, _: f32, _: f32) -> i32 {
+        0
+    }
+}
+    fn stub_table(context: *mut c_void) -> FabrApi {
+        FabrApi {
+            version: ABI_VERSION,
+            size: size_of::<FabrApi>() as u32,
+            context,
+            log,
+            set_translation,
+            translation: get_translation,
+            delta: stubs::clock,
+            elapsed: stubs::clock,
+            key: stubs::query,
+            key_down: stubs::query,
+            mouse: stubs::mouse,
+            action: stubs::query,
+            action_down: stubs::query,
+            find: stubs::lookup,
+            name: stubs::read_name,
+            translate: stubs::write_vec3,
+            rotation: stubs::read_vec3,
+            set_rotation: stubs::write_quad,
+            rotate_y: stubs::entity_angle,
+            velocity: stubs::read_vec3,
+            set_velocity: stubs::write_vec3,
+            grounded: stubs::entity_flag,
+            angular_velocity: stubs::read_vec3,
+            set_angular_velocity: stubs::write_vec3,
+            add_spin: stubs::write_vec3,
+            walk: stubs::walk,
+            jump: stubs::entity_flag,
+            animation_clip_count: stubs::entity_count,
+            animation_clip: stubs::read_clip,
+            play_animation: stubs::entity_text,
+            stop_animation: stubs::entity_flag,
+            find_path: stubs::path,
+            move_to: stubs::write_quad,
+            stop_moving: stubs::entity_flag,
+            play_sound: stubs::sound,
+            ui_clear: stubs::clear,
+            ui_text: stubs::ui_text,
+            ui_panel: stubs::ui_panel,
+            ui_button: stubs::ui_button,
+            ui_clicked: stubs::ui_click,
+            load_scene: stubs::query,
+            reload_scene: stubs::flag,
+            load_scene_additive: stubs::lookup,
+            unload_scene: stubs::entity_flag,
+            create_joint: stubs::joint,
+        }
     }
 
     struct TestContext {
@@ -498,14 +742,7 @@ public static class Script
             logs: Vec::new(),
             transforms: std::collections::HashMap::new(),
         };
-        let mut api = FabrApi {
-            version: ABI_VERSION,
-            size: size_of::<FabrApi>() as u32,
-            context: std::ptr::from_mut(&mut context).cast::<c_void>(),
-            log,
-            set_translation,
-            get_translation,
-        };
+        let mut api = stub_table(std::ptr::from_mut(&mut context).cast::<c_void>());
         let run_entry = host
             .entry_point(&out.join("Host.dll"), "FabrTest.Script, Host", "Run")
             .expect("run entry point resolves");
@@ -514,13 +751,21 @@ public static class Script
         // SAFETY: `api` holds valid callbacks and the context lives for the call.
         unsafe { run(std::ptr::from_ref(&api).cast_mut()) };
         let table = size_of::<FabrApi>();
-        assert_eq!(
-            context.logs,
-            [
-                format!("abi {ABI_VERSION} managed={table} host={table}"),
-                "hello from C#".to_owned(),
-            ]
+        let abi = context.logs[0].clone();
+        assert!(abi.starts_with(&format!("abi {ABI_VERSION} ")), "{abi}");
+        let number = |key: &str| -> usize {
+            abi.split(key)
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .and_then(|value| value.trim_end_matches('\0').parse().ok())
+                .unwrap_or_default()
+        };
+        assert_eq!(number("host="), table, "{abi}");
+        assert!(
+            number("prefix=") < table,
+            "the ABI 1 prefix must still fit inside the live table: {abi}"
         );
+        assert_eq!(context.logs[1], "hello from C#");
         context.logs.clear();
         assert_eq!(context.transforms.get(&7), Some(&[1.5, 2.0, -3.0]));
 

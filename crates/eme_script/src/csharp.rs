@@ -87,13 +87,20 @@ pub(crate) fn load(
     assembly: &Path,
 ) -> Result<CSharpInstance, String> {
     if !assembly.is_file() {
-        return Err(format!("{}: no such assembly", assembly.display()));
+        let dir = assembly.parent().unwrap_or(assembly);
+        return Err(format!(
+            "{}: no such assembly; build a C# project into {}",
+            assembly.display(),
+            dir.display()
+        ));
     }
     let bindings = assembly.with_file_name(BINDINGS_ASSEMBLY);
     if !bindings.is_file() {
+        let dir = assembly.parent().unwrap_or(assembly);
         return Err(format!(
-            "{}: missing managed bootstrap next to the assembly",
-            bindings.display()
+            "{}: missing managed bootstrap next to the assembly; rebuild into {}",
+            bindings.display(),
+            dir.display()
         ));
     }
     let bootstrap = scripts.bootstrap(&bindings)?;

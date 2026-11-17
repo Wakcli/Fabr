@@ -409,6 +409,112 @@ mod tests {
     use super::*;
     use std::process::Command;
 
+    /// C# spelling of each Rust ABI type used in [`FabrApi`].
+    fn managed_type(rust: &str) -> &'static str {
+        match rust.trim() {
+            "*mut c_void" | "*const c_void" => "void*",
+            "*const c_char" | "*mut c_char" => "byte*",
+            "*mut f32" | "*const f32" => "float*",
+            "*mut u64" => "ulong*",
+            "u64" => "ulong",
+            "u32" => "uint",
+            "u8" => "byte",
+            "i32" => "int",
+            "f32" => "float",
+            other => panic!("no managed spelling for {other}"),
+        }
+    }
+
+    /// Splits `fn(A, B) -> R` into the managed `A, B, R` list.
+    fn managed_signature(sig: &str) -> String {
+        let open = sig.find('(').expect("signature has arguments");
+        let close = sig.rfind(')').expect("signature closes");
+        let args: Vec<&str> = sig[open + 1..close]
+            .split(',')
+            .map(str::trim)
+            .filter(|arg| !arg.is_empty())
+            .collect();
+        let ret = sig[close + 1..]
+            .trim()
+            .trim_end_matches(',')
+            .strip_prefix("->")
+            .map(str::trim)
+            .unwrap_or("()");
+        let mut parts: Vec<&'static str> = args.iter().map(|arg| managed_type(arg)).collect();
+        parts.push(if ret == "()" {
+            "void"
+        } else {
+            managed_type(ret)
+        });
+        parts.join(", ")
+    }
+
+    fn struct_fields(
+        src: &str,
+        header: &str,
+        splitter: &str,
+        field: impl Fn(&str) -> Option<(String, String)>,
+    ) -> Vec<(String, String)> {
+        let start = src.find(header).expect("struct header");
+        let end = start + src[start..].find("\n}").expect("struct ends");
+        let flat = src[start..end].split_whitespace().collect::<Vec<_>>().join(" ");
+        flat.split(splitter).skip(1).filter_map(field).collect()
+    }
+
+    #[test]
+    fn the_managed_table_matches_the_engine_table() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Ok(managed) = std::fs::read_to_string(manifest.join("../../sdk/csharp/Fabr.Bindings/Fabr.cs"))
+        else {
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
+                "sdk/csharp unavailable; skipping the binding check"
+            );
+            return;
+        };
+        let engine = std::fs::read_to_string(manifest.join("src/lib.rs")).unwrap();
+
+        let engine_fields = struct_fields(&engine, "pub struct FabrApi {", "pub ", |field| {
+            let (name, sig) = field.split("///").next()?.split_once(": unsafe extern")?;
+            Some((name.to_owned(), managed_signature(sig)))
+        });
+
+        let managed_fields = struct_fields(&managed, "public unsafe struct FabrApi", "public ", |field| {
+            let (_, rest) = field.split_once("delegate* unmanaged[Cdecl]<")?;
+            let (sig, name) = rest.split_once('>')?;
+            Some((name.trim().trim_end_matches(';').to_owned(), sig.to_owned()))
+        });
+
+        assert_eq!(
+            engine_fields.len(),
+            managed_fields.len(),
+            "the managed struct must declare every engine field"
+        );
+        for (index, ((engine_name, engine_sig), (managed_name, managed_sig))) in
+            engine_fields.iter().zip(&managed_fields).enumerate()
+        {
+            let expected = engine_name
+                .split('_')
+                .map(|part| {
+                    let mut chars = part.chars();
+                    chars
+                        .next()
+                        .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+                        .unwrap_or_default()
+                })
+                .collect::<String>();
+            assert_eq!(&expected, managed_name, "field {index} is out of order");
+            assert_eq!(engine_sig, managed_sig, "{engine_name} has the wrong shape");
+        }
+
+        assert_eq!(
+            engine_fields.len(),
+            (size_of::<FabrApi>() - 16) / size_of::<usize>(),
+            "every field must occupy one pointer slot after the header"
+        );
+    }
+
     fn dotnet_available() -> bool {
         Command::new("dotnet")
             .arg("--version")

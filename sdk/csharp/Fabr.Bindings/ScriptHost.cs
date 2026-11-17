@@ -26,12 +26,12 @@ public static unsafe class ScriptHost
     [UnmanagedCallersOnly]
     public static int Load(FabrApi* api, ulong handle, byte* assemblyPath, byte* typeName)
     {
-        if (api->Version < Fabr.AbiVersion || api->Size < (uint)sizeof(FabrApi))
+        if (api->Version < FabrOps.AbiVersion || api->Size < (uint)sizeof(FabrApi))
         {
             Console.Error.WriteLine(
-                $"Fabr.Bindings needs engine ABI {Fabr.AbiVersion} and a {sizeof(FabrApi)}-byte table, " +
+                $"Fabr.Bindings needs engine ABI {FabrOps.AbiVersion} and a {sizeof(FabrApi)}-byte table, " +
                 $"engine provides {api->Version} and {api->Size} bytes");
-            return Fabr.AbiMismatch;
+            return FabrOps.AbiMismatch;
         }
         try
         {
@@ -136,6 +136,6 @@ public static unsafe class ScriptHost
 
     private static void Report(FabrApi* api, string phase, Exception error)
     {
-        Fabr.Log(api, $"csharp {phase}: {error.GetType().Name}: {error.Message}");
+        FabrOps.Log(api, $"csharp {phase}: {error.GetType().Name}: {error.Message}");
     }
 }

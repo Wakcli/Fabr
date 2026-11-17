@@ -2804,8 +2804,14 @@ public sealed class Spin : FabrScript
         let first = world.get::<Transform>(managed).unwrap().translation.x;
         assert!((first - 0.5).abs() < 1e-4, "{first}");
 
-        let game = build_game_script(&project, &bindings, 4.0);
-        std::fs::copy(&game, dir.join("scripts/managed/Game.dll")).unwrap();
+        // rebuild straight into the staged folder, the way the editor and the
+        // README build a game assembly
+        std::fs::write(project.join("Script.cs"), game_script_source(4.0)).unwrap();
+        let staged = dir.join("scripts/managed");
+        run_dotnet(
+            &project,
+            &["build", "-c", "Release", "-o", staged.to_str().unwrap()],
+        );
         world
             .resource_mut::<ScriptReload>()
             .request("scripts/managed/Game.dll");

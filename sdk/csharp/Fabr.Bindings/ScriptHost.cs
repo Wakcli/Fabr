@@ -39,7 +39,10 @@ public static unsafe class ScriptHost
             string type = Marshal.PtrToStringUTF8((IntPtr)typeName) ?? throw new ArgumentException("missing class name");
             Release(handle);
             AssemblyLoadContext context = new ScriptContext($"fabr-{handle}");
-            Assembly assembly = context.LoadFromAssemblyPath(Path.GetFullPath(path));
+            // Path loads are cached for the life of the process: reloading the same
+            // path after a rebuild would hand back the previous assembly image.
+            byte[] image = File.ReadAllBytes(Path.GetFullPath(path));
+            Assembly assembly = context.LoadFromStream(new MemoryStream(image));
             Type? script = assembly.GetType(type, throwOnError: true);
             if (script is null || !typeof(FabrScript).IsAssignableFrom(script))
             {

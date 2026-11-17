@@ -17,6 +17,7 @@ use eme_app::{App, Plugin, Update};
 use eme_asset::{AssetServer, Handle};
 use eme_audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use eme_ecs::prelude::*;
+use eme_ecs::system::SystemParam;
 use eme_anim::AnimationSet;
 use eme_game_runtime::{
     DistanceJoint, KinematicController, NavAgent, NavGrid, PhysicsBody,
@@ -553,6 +554,10 @@ impl Default for ScriptRuntime {
         }
     }
 }
+
+/// The frame [`update_scripts`] built, shared with the C# pass.
+#[derive(Resource, Clone, Default)]
+pub struct ScriptFrame(Arc<FrameState>);
 
 impl ScriptRuntime {
     /// Evaluates a script module in a fresh environment.
@@ -1377,13 +1382,68 @@ pub fn sync_scripts(
     }
 }
 
+/// Reads the frame's inputs, leaving the world untouched.
+fn build_frame(snapshot: &FrameInput) -> FrameState {
+    let FrameInput {
+        time,
+        keys,
+        mouse,
+        actions,
+        grid,
+    } = snapshot;
+    let mut pressed = HashMap::new();
+    let mut just_pressed = HashMap::new();
+    for (name, bindings) in &actions.map {
+        pressed.insert(name.clone(), bindings.iter().any(|key| keys.pressed(*key)));
+        just_pressed.insert(
+            name.clone(),
+            bindings.iter().any(|key| keys.just_pressed(*key)),
+        );
+    }
+    let mouse = [
+        (MouseButton::Left, 1u8),
+        (MouseButton::Right, 2),
+        (MouseButton::Middle, 3),
+    ]
+    .into_iter()
+    .filter(|(button, _)| mouse.pressed(*button))
+    .map(|(_, id)| id)
+    .collect();
+    FrameState {
+        keys: keys
+            .get_pressed()
+            .map(|key| format!("{key:?}").to_ascii_lowercase())
+            .map(|key| key.strip_prefix("key").map_or(key.clone(), str::to_owned))
+            .collect(),
+        keys_down: keys
+            .get_just_pressed()
+            .map(|key| format!("{key:?}").to_ascii_lowercase())
+            .map(|key| key.strip_prefix("key").map_or(key.clone(), str::to_owned))
+            .collect(),
+        actions: pressed,
+        actions_down: just_pressed,
+        mouse,
+        nav: Some(Arc::new(grid.as_deref().cloned().unwrap_or_default())),
+        delta: time.delta_secs(),
+        elapsed: time.elapsed_secs(),
+        ..Default::default()
+    }
+}
+
+/// Frame inputs read before the scripting pass starts writing to the world.
+#[derive(SystemParam)]
+pub struct FrameInput<'w> {
+    time: Res<'w, Time>,
+    keys: Res<'w, ButtonInput<KeyCode>>,
+    mouse: Res<'w, ButtonInput<MouseButton>>,
+    actions: Res<'w, InputActions>,
+    grid: Option<Res<'w, NavGrid>>,
+}
+
 /// Runs `on_start` once and `on_update` for every live instance.
 pub fn update_scripts(
     active: Res<ScriptsActive>,
-    time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    actions: Res<InputActions>,
+    input: FrameInput,
     root: Res<ScriptRoot>,
     mut audio: ResMut<ScriptAudio>,
     mut runtime: ResMut<ScriptRuntime>,
@@ -1393,7 +1453,7 @@ pub fn update_scripts(
     mut animations: Query<(Entity, &mut AnimationSet)>,
     mut agents: Query<(Entity, &mut NavAgent)>,
     mut controllers: Query<&mut KinematicController>,
-    grid: Option<Res<NavGrid>>,
+    mut frame_out: ResMut<ScriptFrame>,
     mut commands: Commands,
 ) {
     if !active.0 {
@@ -1406,16 +1466,13 @@ pub fn update_scripts(
         ui,
         ui_clicks,
     } = &mut *runtime;
-    if instances.is_empty() {
-        return;
-    }
     let mut order: Vec<(u64, Entity)> = instances
         .iter()
         .map(|(entity, instance)| (instance.object_id, *entity))
         .collect();
     order.sort_unstable();
 
-    let mut frame = FrameState::default();
+    let mut frame = build_frame(&input);
     for (entity, transform, name) in &mut transforms {
         frame
             .transforms
@@ -1431,41 +1488,15 @@ pub fn update_scripts(
             frame.grounded.insert(entity);
         }
     }
-    frame.nav = Some(Arc::new(grid.as_deref().cloned().unwrap_or_default()));
     for (entity, set) in &animations {
         frame.anim_clips.insert(entity, set.clips.clone());
     }
-    frame.keys = keys
-        .get_pressed()
-        .map(|key| format!("{key:?}").to_ascii_lowercase())
-        .map(|key| key.strip_prefix("key").map_or(key.clone(), str::to_owned))
-        .collect();
-    frame.keys_down = keys
-        .get_just_pressed()
-        .map(|key| format!("{key:?}").to_ascii_lowercase())
-        .map(|key| key.strip_prefix("key").map_or(key.clone(), str::to_owned))
-        .collect();
-    for (name, bindings) in &actions.map {
-        frame
-            .actions
-            .insert(name.clone(), bindings.iter().any(|key| keys.pressed(*key)));
-        frame
-            .actions_down
-            .insert(name.clone(), bindings.iter().any(|key| keys.just_pressed(*key)));
-    }
-    frame.mouse = [
-        (MouseButton::Left, 1u8),
-        (MouseButton::Right, 2),
-        (MouseButton::Middle, 3),
-    ]
-    .into_iter()
-    .filter(|(button, _)| mouse.pressed(*button))
-    .map(|(_, id)| id)
-    .collect();
-    frame.delta = time.delta_secs();
-    frame.elapsed = time.elapsed_secs();
     frame.ui_clicks = std::mem::take(ui_clicks);
     let frame = Arc::new(frame);
+    frame_out.0 = Arc::clone(&frame);
+    if order.is_empty() {
+        return;
+    }
 
     for (_, entity) in order {
         let Some(instance) = instances.get_mut(&entity) else {
@@ -1496,7 +1527,7 @@ pub fn update_scripts(
         if result.is_ok()
             && let Ok(update) = module.get::<mlua::Function>("on_update")
         {
-            result = update.call::<()>((self_table.clone(), time.delta_secs()));
+            result = update.call::<()>((self_table.clone(), frame.delta));
         }
         if let Err(err) = result {
             log.push(format!("script {}: {err}", instance.path));
@@ -1620,7 +1651,7 @@ fn write_ops(
 /// Runs C# scripts after the Lua pass against the same frame's transforms.
 pub fn update_csharp_scripts(
     active: Res<ScriptsActive>,
-    time: Res<Time>,
+    frame: Res<ScriptFrame>,
     mut scripts: ResMut<CSharpScripts>,
     mut log: ResMut<ScriptLog>,
     mut transforms: Query<(Entity, &mut Transform, Option<&Name>)>,
@@ -1628,18 +1659,13 @@ pub fn update_csharp_scripts(
     if !active.0 || scripts.is_empty() {
         return;
     }
-    let mut snapshot = HashMap::new();
-    for (entity, transform, _) in &mut transforms {
-        snapshot.insert(entity, (transform.translation, transform.rotation));
-    }
-    let snapshot = Arc::new(snapshot);
     let mut entities = scripts.entities();
     entities.sort_unstable();
     for entity in entities {
         let Some(instance) = scripts.instance_mut(entity) else {
             continue;
         };
-        let ops = csharp::step(instance, &snapshot, time.delta_secs(), &mut log);
+        let ops = csharp::step(instance, &frame.0, frame.0.delta, &mut log);
         write_ops(&ops, &mut transforms);
     }
 }
@@ -1720,6 +1746,7 @@ impl Plugin for ScriptPlugin {
             .init_resource::<AudioMix>()
             .init_resource::<ScriptRuntime>()
             .init_resource::<CSharpScripts>()
+            .init_resource::<ScriptFrame>()
             .add_systems(Update, sync_scripts)
             .add_systems(
                 Update,
@@ -1766,6 +1793,7 @@ mod tests {
         world.insert_resource(Time::<()>::default());
         world.insert_resource(ButtonInput::<KeyCode>::default());
         world.insert_resource(ButtonInput::<MouseButton>::default());
+        world.insert_resource(ScriptFrame::default());
         world
     }
 
@@ -2615,6 +2643,7 @@ public sealed class Spin : FabrScript
         let managed = csharp_scripted(&mut world, "scripts/managed/Game.dll", "Game.Spin");
         world.run_system_once(sync_scripts).unwrap();
         advance(&mut world, 0.5);
+        world.run_system_once(update_scripts).unwrap();
         world.run_system_once(update_csharp_scripts).unwrap();
         let first = world.get::<Transform>(managed).unwrap().translation.x;
         assert!((first - 0.5).abs() < 1e-4, "{first}");
@@ -2626,6 +2655,7 @@ public sealed class Spin : FabrScript
             .request("scripts/managed/Game.dll");
         world.run_system_once(sync_scripts).unwrap();
         advance(&mut world, 0.5);
+        world.run_system_once(update_scripts).unwrap();
         world.run_system_once(update_csharp_scripts).unwrap();
         let second = world.get::<Transform>(managed).unwrap().translation.x;
         assert!((second - 2.5).abs() < 1e-4, "expected 2.5 after reload, got {second}");

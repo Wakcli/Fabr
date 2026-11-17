@@ -22,7 +22,7 @@ use eme_ecs::prelude::*;
 use eme_math::prelude::*;
 use eme_script_csharp::{ABI_VERSION, FabrApi, shared_host};
 
-use crate::{ApiState, ScriptLog};
+use crate::{ApiState, FrameState, ScriptLog};
 
 /// Managed bootstrap assembly staged next to the game's scripts.
 pub const BINDINGS_ASSEMBLY: &str = "Fabr.Bindings.dll";
@@ -283,7 +283,7 @@ unsafe extern "C" fn api_set_translation(
         return 0;
     };
     let entity = Entity::from_bits(id);
-    if !context.api.local.transforms.contains_key(&entity) {
+    if !context.api.frame.transforms.contains_key(&entity) {
         return 0;
     }
     let (_, rotation) = context.api.transform(entity);
@@ -310,7 +310,7 @@ unsafe extern "C" fn api_get_translation(
         return 0;
     }
     let entity = Entity::from_bits(id);
-    if !context.api.local.transforms.contains_key(&entity) {
+    if !context.api.frame.transforms.contains_key(&entity) {
         return 0;
     }
     let (translation, _) = context.api.transform(entity);
@@ -328,22 +328,14 @@ unsafe extern "C" fn api_get_translation(
 /// Returns the translation writes the script requested.
 pub(crate) fn step(
     instance: &mut CSharpInstance,
-    snapshot: &Arc<HashMap<Entity, (Vec3, Quat)>>,
+    frame: &Arc<FrameState>,
     dt: f32,
     log: &mut ScriptLog,
 ) -> Vec<(Entity, Vec3, Quat)> {
     if instance.failed {
         return Vec::new();
     }
-    instance.context.api.local.transforms.clear();
-    instance
-        .context
-        .api
-        .local
-        .transforms
-        .extend(snapshot.iter().map(|(entity, (t, r))| (*entity, (*t, *r))));
-    instance.context.api.ops.clear();
-    instance.context.api.log.clear();
+    instance.context.api.reset_frame(Arc::clone(frame));
     let handle = instance.entity.to_bits();
     let mut code = 0;
     if !instance.started {

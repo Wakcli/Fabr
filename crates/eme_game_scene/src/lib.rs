@@ -342,8 +342,8 @@ pub struct ScriptRef {
     /// Language the script is written in; older scenes are Lua.
     #[serde(default)]
     pub language: ScriptLanguage,
-    /// Assembly-qualified class name for C# scripts, for example
-    /// `"Game.Spin, Game"`.
+    /// Namespace-qualified class name for C# scripts, for example
+    /// `"Game.Spin"`. The assembly comes from `path`; do not append `, Game`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
 }

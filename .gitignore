@@ -55,3 +55,6 @@ assets/textures/GroundSand005/**
 # .NET build output from the C# SDK and game projects
 bin/
 obj/
+
+# C# game assemblies are build output; see sdk/csharp/README.md
+assets/scripts/managed/

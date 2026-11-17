@@ -8,17 +8,23 @@ rebuilt assembly can be reloaded without restarting the game.
 
 ## Build a game assembly
 
+`sdk/csharp/Game` is the sample project the demo scene attaches: `Game.Spin`
+for the managed crate and `Game.Walker` for a character that reads input,
+walks, jumps, swaps clips, and draws its own HUD. Build it straight into the
+project's script folder:
+
 ```sh
-dotnet build sdk/csharp/Example/Example.csproj -c Release -o /tmp/fabr-csharp
+dotnet build sdk/csharp/Game/Game.csproj -c Release -o assets/scripts/managed
 ```
 
-Copy these into the project's `assets/scripts/managed/`:
+That one command produces all three files the engine needs next to each other:
 
+- `Game.dll`
 - `Fabr.Bindings.dll`
 - `Fabr.Bindings.runtimeconfig.json`
-- `Example.dll`
 
-The bindings build produces the first two; the example build produces the third.
+`assets/scripts/managed/` is build output and stays out of git. When an
+assembly is missing, the engine logs the directory it expected to find it in.
 
 ## Attach it in a scene
 
@@ -26,10 +32,10 @@ A scene object's script names the assembly and the class:
 
 ```ron
 script: Some((
-    path: "scripts/managed/Example.dll",
+    path: "scripts/managed/Game.dll",
     properties: {},
     language: csharp,
-    class: Some("Example.Spin"),
+    class: Some("Game.Spin"),
 ))
 ```
 
@@ -80,7 +86,7 @@ is missing, out of order, or has the wrong shape.
 
 - One .NET runtime per process; the first script initializes it from the
   bindings' `runtimeconfig.json`.
-- Class names are plain type names inside the assembly (`Example.Spin`), not
+- Class names are plain type names inside the assembly (`Game.Spin`), not
   assembly-qualified.
 - Exports copy `assets/`, so the assemblies travel with the game; the target
   machine needs the .NET runtime installed.

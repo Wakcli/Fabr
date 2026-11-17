@@ -69,11 +69,11 @@ fn scripts(dir: &Path, depth: usize) -> Vec<PathBuf> {
         let path = entry.path();
         if path.is_dir() {
             found.extend(scripts(&path, depth + 1));
-        } else if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("lua"))
-        {
+        } else if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+            // the managed bootstrap itself is hosted once per process, so a
+            // rebuild of it still needs a restart, but a game assembly does not
+            ext.eq_ignore_ascii_case("lua") || ext.eq_ignore_ascii_case("dll")
+        }) {
             found.push(path);
         }
     }
@@ -123,5 +123,38 @@ mod tests {
         let changed = watcher.poll(&dir);
         assert_eq!(changed, vec!["scripts/spin.lua".to_string()]);
         assert!(watcher.poll(&dir).is_empty());
+    }
+
+    #[test]
+    fn a_rebuilt_assembly_is_reported() {
+        let dir = scratch("watch-dll");
+        let path = dir.join("managed").join("Game.dll");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"first build").unwrap();
+        let mut watcher = ScriptWatcher::default();
+        assert!(watcher.poll(&dir).is_empty(), "the first pass records a stamp");
+        std::fs::write(&path, b"second build").unwrap();
+        assert_eq!(
+            watcher.poll(&dir),
+            vec!["scripts/managed/Game.dll".to_string()]
+        );
+        assert!(watcher.poll(&dir).is_empty());
+    }
+
+    #[test]
+    fn build_byproducts_do_not_trigger_a_reload() {
+        let dir = scratch("watch-byproducts");
+        let mut watcher = ScriptWatcher::default();
+        for name in ["Game.pdb", "Game.deps.json", "Fabr.Bindings.runtimeconfig.json"] {
+            std::fs::write(dir.join(name), b"one").unwrap();
+        }
+        assert!(watcher.poll(&dir).is_empty());
+        for name in ["Game.pdb", "Game.deps.json", "Fabr.Bindings.runtimeconfig.json"] {
+            std::fs::write(dir.join(name), b"two").unwrap();
+        }
+        assert!(
+            watcher.poll(&dir).is_empty(),
+            "debug symbols and runtime metadata are not assemblies"
+        );
     }
 }

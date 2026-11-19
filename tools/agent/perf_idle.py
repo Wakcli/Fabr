@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-EDITOR = "/home/wak/.cargo-build/emberrly/debug/eme_editor"
+EDITOR = pathlib.Path.home() / ".cargo-build/emberrly/debug/eme_editor"
 
 
 def main() -> int:

@@ -46,7 +46,7 @@ eme_ecs = { path = "../eme_ecs", version = "0.20.0-dev", default-features = fals
 eme_reflect = { path = "../eme_reflect", version = "0.20.0-dev", default-features = false, optional = true }
 
 # other
-accesskit = { version = "0.24", default-features = false }
+accesskit = { version = "0.25", default-features = false }
 serde = { version = "1", default-features = false, features = [
   "alloc",
 ], optional = true }

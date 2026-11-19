@@ -5,13 +5,16 @@ namespace Game;
 
 public sealed class Spin : FabrScript
 {
+    [Property]
+    public float Speed { get; set; } = 2.0f;
+
     private float _reported;
 
     public override void OnStart() => Log($"spin start at {Position}");
 
     public override void OnUpdate(float dt)
     {
-        Translate(new Vector3(dt * 2.0f, 0.0f, 0.0f));
+        Translate(new Vector3(dt * Speed, 0.0f, 0.0f));
         RotateY(dt);
         _reported += dt;
         if (_reported < 1.0f)

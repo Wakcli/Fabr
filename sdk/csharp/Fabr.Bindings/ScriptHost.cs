@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using System.Text;
 
 namespace Fabr.Bindings;
 
@@ -127,6 +128,72 @@ public static unsafe class ScriptHost
     {
         Release(handle);
         return 0;
+    }
+
+    [UnmanagedCallersOnly]
+    public static int ApplyProperties(FabrApi* api, ulong handle, byte* payload)
+    {
+        try
+        {
+            if (!Scripts.TryGetValue(handle, out Loaded? loaded))
+            {
+                throw new InvalidOperationException($"script {handle} is not loaded");
+            }
+            loaded.Instance.Api = api;
+            string text = Marshal.PtrToStringUTF8((IntPtr)payload) ?? string.Empty;
+            ScriptProperties.Apply(loaded.Instance, text);
+            return 0;
+        }
+        catch (Exception error)
+        {
+            FabrOps.Log(api, $"csharp properties: {error.GetType().Name}: {error.Message}");
+            return 1;
+        }
+    }
+
+    // Reads the declared properties without starting the script: the assembly
+    // goes into a throwaway load context, the class is constructed so field
+    // initializers run, and the context is unloaded before returning.
+    [UnmanagedCallersOnly]
+    public static int Inspect(FabrApi* api, byte* assemblyPath, byte* typeName, byte* buffer, uint length)
+    {
+        AssemblyLoadContext? context = null;
+        try
+        {
+            string path = Marshal.PtrToStringUTF8((IntPtr)assemblyPath) ?? throw new ArgumentException("missing assembly path");
+            string type = Marshal.PtrToStringUTF8((IntPtr)typeName) ?? throw new ArgumentException("missing class name");
+            context = new ScriptContext("fabr-inspect");
+            byte[] image = File.ReadAllBytes(Path.GetFullPath(path));
+            Assembly assembly = context.LoadFromStream(new MemoryStream(image));
+            Type? script = assembly.GetType(type, throwOnError: true);
+            if (script is null || !typeof(FabrScript).IsAssignableFrom(script))
+            {
+                throw new InvalidOperationException($"{type} must derive from FabrScript");
+            }
+            FabrScript instance = (FabrScript)Activator.CreateInstance(script)!;
+            instance.Api = api;
+            return Write(ScriptProperties.Encode(instance), buffer, length);
+        }
+        catch (Exception error)
+        {
+            FabrOps.Log(api, $"csharp inspect: {error.GetType().Name}: {error.Message}");
+            return -1;
+        }
+        finally
+        {
+            context?.Unload();
+        }
+    }
+
+    private static int Write(string text, byte* buffer, uint length)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(text);
+        if (buffer is null || length < (uint)bytes.Length)
+        {
+            return bytes.Length;
+        }
+        Marshal.Copy(bytes, 0, (IntPtr)buffer, bytes.Length);
+        return bytes.Length;
     }
 
     private static void Release(ulong handle)

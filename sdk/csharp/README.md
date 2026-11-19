@@ -48,6 +48,35 @@ script: Some((
 The same scene can run Lua scripts on other objects. The Inspector's Script
 section picks C#, filters the picker to `.dll` files, and edits the class name.
 
+## Properties
+
+Mark a public field or property with `[Property]` and the Inspector lists it
+under Script. A scene value overrides the declared default, so one assembly can
+drive several objects with different numbers.
+
+```csharp
+public sealed class Spin : FabrScript
+{
+    [Property]
+    public float Speed { get; set; } = 2.0f;
+
+    public override void OnUpdate(float dt) =>
+        Translate(new Vector3(dt * Speed, 0.0f, 0.0f));
+}
+```
+
+Supported types are `float`, `double`, `int`, `bool`, and `string`. Members are
+sorted by name, so the Inspector order does not depend on declaration order.
+Overrides land once, after the class is constructed and before `OnStart`; a
+value that does not parse is reported in the Console and that member keeps its
+declared default.
+
+The Inspector reads the defaults by loading the assembly into a throwaway
+`AssemblyLoadContext` and constructing the class without starting it: field
+initializers and constructors run, `OnStart` does not. The result is cached
+against the assembly's size and modification time, so the next build refreshes
+the rows even while the editor sits in edit mode.
+
 ## The script surface
 
 `FabrScript` projects the engine's operation vocabulary one to one. Every

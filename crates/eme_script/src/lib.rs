@@ -1463,8 +1463,12 @@ pub fn sync_scripts(
         // instance must be stopped and unloaded before the new one loads
         csharp.remove(entity, &mut log);
         match csharp::load(&mut csharp, entity, path, class, &full) {
-            Ok(instance) => {
+            Ok(mut instance) => {
                 csharp.clear_failed(path, class);
+                if let Err(err) = csharp::apply_properties(&mut instance, &scripted.script.properties)
+                {
+                    log.push(format!("script {path}: {err}"));
+                }
                 if loaded {
                     log.push(format!("script {path}: reloaded"));
                 }
@@ -2689,7 +2693,7 @@ public sealed class Spin : FabrScript
         )
     }
 
-    fn build_game_script(dir: &Path, bindings: &Path, speed: f32) -> PathBuf {
+    fn build_source(dir: &Path, bindings: &Path, source: &str) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             dir.join("Game.csproj"),
@@ -2711,9 +2715,13 @@ public sealed class Spin : FabrScript
             ),
         )
         .unwrap();
-        std::fs::write(dir.join("Script.cs"), game_script_source(speed)).unwrap();
+        std::fs::write(dir.join("Script.cs"), source).unwrap();
         run_dotnet(dir, &["build", "-c", "Release", "-o", "out"]);
         dir.join("out/Game.dll")
+    }
+
+    fn build_game_script(dir: &Path, bindings: &Path, speed: f32) -> PathBuf {
+        build_source(dir, bindings, &game_script_source(speed))
     }
 
     fn stage_managed(root: &Path, game: &Path, bindings: &Path) {
@@ -2726,6 +2734,15 @@ public sealed class Spin : FabrScript
     }
 
     fn csharp_scripted(world: &mut World, path: &str, class: &str) -> Entity {
+        csharp_scripted_with(world, path, class, BTreeMap::new())
+    }
+
+    fn csharp_scripted_with(
+        world: &mut World,
+        path: &str,
+        class: &str,
+        properties: BTreeMap<String, ScriptValue>,
+    ) -> Entity {
         let entity = world
             .spawn((Name::new("Managed"), Transform::default()))
             .id();
@@ -2733,9 +2750,9 @@ public sealed class Spin : FabrScript
             object_id: 2,
             script: ScriptRef {
                 path: path.to_owned(),
+                properties,
                 language: ScriptLanguage::CSharp,
                 class: Some(class.to_owned()),
-                ..Default::default()
             },
         });
         entity
@@ -2821,6 +2838,162 @@ public sealed class Spin : FabrScript
         world.run_system_once(update_csharp_scripts).unwrap();
         let second = world.get::<Transform>(managed).unwrap().translation.x;
         assert!((second - 2.5).abs() < 1e-4, "expected 2.5 after reload, got {second}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn property_script_source() -> &'static str {
+        r#"
+using System.Numerics;
+using Fabr.Bindings;
+
+namespace Game;
+
+public sealed class Spin : FabrScript
+{
+    [Property]
+    public float Speed { get; set; } = 2.0f;
+
+    [Property]
+    public string Label { get; set; } = "spin";
+
+    [Property]
+    public bool Enabled { get; set; } = true;
+
+    [Property]
+    public int Steps { get; set; } = 3;
+
+    public float Plain { get; set; } = 9.0f;
+
+    public override void OnStart() => Log($"props {Speed:F1}|{Label}|{Enabled}|{Steps}");
+
+    public override void OnUpdate(float dt) =>
+        Translate(new Vector3(Speed * dt, 0.0f, 0.0f));
+}
+"#
+    }
+
+    #[test]
+    fn inspect_reads_declared_properties_without_starting_the_script() {
+        let _guard = csharp_guard();
+        if !dotnet_available() {
+            return;
+        }
+        let dir = scratch("csharp-inspect");
+        std::fs::create_dir_all(dir.join("scripts/managed")).unwrap();
+        let bindings = bindings();
+        let game = build_source(&dir.join("project"), &bindings, property_script_source());
+        stage_managed(&dir, &game, &bindings);
+
+        let mut scripts = CSharpScripts::default();
+        let defaults = scripts
+            .inspect(&dir, "scripts/managed/Game.dll", "Game.Spin")
+            .unwrap();
+        let names: Vec<&str> = defaults.keys().map(String::as_str).collect();
+        assert_eq!(names, ["Enabled", "Label", "Speed", "Steps"]);
+        assert_eq!(defaults["Speed"], ScriptValue::Number(2.0));
+        assert_eq!(defaults["Label"], ScriptValue::Text("spin".into()));
+        assert_eq!(defaults["Enabled"], ScriptValue::Bool(true));
+        assert_eq!(defaults["Steps"], ScriptValue::Number(3.0));
+
+        let err = scripts
+            .inspect(&dir, "scripts/managed/Game.dll", "Game.Nope")
+            .unwrap_err();
+        assert!(err.contains("Game.Nope"), "{err}");
+        let err = scripts
+            .inspect(&dir, "scripts/managed/Game.dll", "  ")
+            .unwrap_err();
+        assert!(err.contains("class name"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn csharp_property_overrides_reach_the_script() {
+        let _guard = csharp_guard();
+        if !dotnet_available() {
+            return;
+        }
+        let dir = scratch("csharp-props");
+        std::fs::create_dir_all(dir.join("scripts/managed")).unwrap();
+        let bindings = bindings();
+        let game = build_source(&dir.join("project"), &bindings, property_script_source());
+        stage_managed(&dir, &game, &bindings);
+
+        let mut props = BTreeMap::new();
+        props.insert("Speed".to_string(), ScriptValue::Number(4.0));
+        props.insert("Label".to_string(), ScriptValue::Text("fast".into()));
+        props.insert("Enabled".to_string(), ScriptValue::Bool(false));
+        props.insert("Steps".to_string(), ScriptValue::Number(7.0));
+        let mut world = world(&dir);
+        let entity =
+            csharp_scripted_with(&mut world, "scripts/managed/Game.dll", "Game.Spin", props);
+        world.run_system_once(sync_scripts).unwrap();
+        advance(&mut world, 0.5);
+        world.run_system_once(update_scripts).unwrap();
+        world.run_system_once(update_csharp_scripts).unwrap();
+
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 2.0);
+        let lines = world.resource::<ScriptLog>().lines().to_vec();
+        assert!(
+            lines.contains(&"props 4.0|fast|False|7".to_owned()),
+            "{lines:?}"
+        );
+
+        // a reload builds a new instance, so the scene overrides are applied again
+        world
+            .resource_mut::<ScriptReload>()
+            .request("scripts/managed/Game.dll");
+        world.run_system_once(sync_scripts).unwrap();
+        advance(&mut world, 0.5);
+        world.run_system_once(update_scripts).unwrap();
+        world.run_system_once(update_csharp_scripts).unwrap();
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 4.0);
+        let starts = world
+            .resource::<ScriptLog>()
+            .lines()
+            .iter()
+            .filter(|line| line.as_str() == "props 4.0|fast|False|7")
+            .count();
+        assert_eq!(starts, 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_bad_override_is_logged_and_the_default_keeps_running() {
+        let _guard = csharp_guard();
+        if !dotnet_available() {
+            return;
+        }
+        let dir = scratch("csharp-props-bad");
+        std::fs::create_dir_all(dir.join("scripts/managed")).unwrap();
+        let bindings = bindings();
+        let game = build_source(&dir.join("project"), &bindings, property_script_source());
+        stage_managed(&dir, &game, &bindings);
+
+        let mut props = BTreeMap::new();
+        props.insert("Speed".to_string(), ScriptValue::Text("quick".into()));
+        props.insert("Steps".to_string(), ScriptValue::Text("many".into()));
+        let mut world = world(&dir);
+        let entity =
+            csharp_scripted_with(&mut world, "scripts/managed/Game.dll", "Game.Spin", props);
+        world.run_system_once(sync_scripts).unwrap();
+        advance(&mut world, 0.5);
+        world.run_system_once(update_scripts).unwrap();
+        world.run_system_once(update_csharp_scripts).unwrap();
+
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 1.0);
+        let lines = world.resource::<ScriptLog>().lines().to_vec();
+        assert!(
+            lines.iter().any(|line| {
+                line.contains("csharp properties")
+                    && line.contains("Speed")
+                    && line.contains("Steps")
+            }),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"props 2.0|spin|True|3".to_owned()),
+            "{lines:?}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

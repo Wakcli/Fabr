@@ -17,12 +17,14 @@
 //! managed side never aliases ECS borrows.
 
 use std::collections::{HashMap, HashSet};
+use alloc::collections::BTreeMap;
 use alloc::ffi::CString;
 use std::ffi::{CStr, c_char, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use alloc::sync::Arc;
 use eme_ecs::prelude::*;
+use eme_game_scene::ScriptValue;
 use eme_math::prelude::*;
 use eme_script_csharp::{ABI_VERSION, FabrApi, shared_host};
 
@@ -39,6 +41,8 @@ struct Bootstrap {
     update: unsafe extern "C" fn(*mut FabrApi, u64, f32) -> i32,
     stop: unsafe extern "C" fn(*mut FabrApi, u64) -> i32,
     unload: unsafe extern "C" fn(u64) -> i32,
+    apply_properties: unsafe extern "C" fn(*mut FabrApi, u64, *const c_char) -> i32,
+    inspect: unsafe extern "C" fn(*mut FabrApi, *const c_char, *const c_char, *mut u8, u32) -> i32,
 }
 
 /// C# scripts that are loaded and running.
@@ -78,14 +82,8 @@ struct CSharpContext {
     api: ApiState,
 }
 
-/// Loads one scene script through the managed bootstrap.
-pub(crate) fn load(
-    scripts: &mut CSharpScripts,
-    entity: Entity,
-    path: &str,
-    class: &str,
-    assembly: &Path,
-) -> Result<CSharpInstance, String> {
+/// Managed bootstrap next to `assembly`, validated before any CLR call.
+fn bindings_for(assembly: &Path) -> Result<PathBuf, String> {
     if !assembly.is_file() {
         let dir = assembly.parent().unwrap_or(assembly);
         return Err(format!(
@@ -103,16 +101,15 @@ pub(crate) fn load(
             dir.display()
         ));
     }
-    let bootstrap = scripts.bootstrap(&bindings)?;
-    let state = ApiState {
-        self_entity: entity,
-        ..Default::default()
-    };
-    let mut context = Box::new(CSharpContext { api: state });
-    let mut api = FabrApi {
+    Ok(bindings)
+}
+
+/// ABI table for one instance, pointing at its context.
+fn table(context: *mut c_void) -> FabrApi {
+    FabrApi {
         version: ABI_VERSION,
         size: size_of::<FabrApi>() as u32,
-        context: std::ptr::from_mut(&mut *context).cast::<c_void>(),
+        context,
         log: api_log,
         set_translation: api_set_translation,
         translation: api_translation,
@@ -155,7 +152,25 @@ pub(crate) fn load(
         load_scene_additive: api_load_scene_additive,
         unload_scene: api_unload_scene,
         create_joint: api_create_joint,
+    }
+}
+
+/// Loads one scene script through the managed bootstrap.
+pub(crate) fn load(
+    scripts: &mut CSharpScripts,
+    entity: Entity,
+    path: &str,
+    class: &str,
+    assembly: &Path,
+) -> Result<CSharpInstance, String> {
+    let bindings = bindings_for(assembly)?;
+    let bootstrap = scripts.bootstrap(&bindings)?;
+    let state = ApiState {
+        self_entity: entity,
+        ..Default::default()
     };
+    let mut context = Box::new(CSharpContext { api: state });
+    let mut api = table(std::ptr::from_mut(&mut *context).cast::<c_void>());
     let assembly_text = CString::new(assembly.to_string_lossy().as_bytes())
         .map_err(|err| err.to_string())?;
     let class_text = CString::new(class).map_err(|err| err.to_string())?;
@@ -223,12 +238,17 @@ impl CSharpScripts {
         let update = entry("Update")?;
         let stop = entry("Stop")?;
         let unload = entry("Unload")?;
+        let apply_properties = entry("ApplyProperties")?;
+        let inspect = entry("Inspect")?;
         type Load = unsafe extern "C" fn(*mut FabrApi, u64, *const c_char, *const c_char) -> i32;
         type Start = unsafe extern "C" fn(*mut FabrApi, u64) -> i32;
         type Update = unsafe extern "C" fn(*mut FabrApi, u64, f32) -> i32;
         type Stop = unsafe extern "C" fn(*mut FabrApi, u64) -> i32;
         type Unload = unsafe extern "C" fn(u64) -> i32;
-        // SAFETY: the managed contract fixes these signatures for the five
+        type ApplyProperties = unsafe extern "C" fn(*mut FabrApi, u64, *const c_char) -> i32;
+        type Inspect =
+            unsafe extern "C" fn(*mut FabrApi, *const c_char, *const c_char, *mut u8, u32) -> i32;
+        // SAFETY: the managed contract fixes these signatures for the seven
         // [UnmanagedCallersOnly] methods, resolved from validated exports.
         let bootstrap = unsafe {
             Bootstrap {
@@ -237,6 +257,10 @@ impl CSharpScripts {
                 update: std::mem::transmute::<*mut c_void, Update>(update),
                 stop: std::mem::transmute::<*mut c_void, Stop>(stop),
                 unload: std::mem::transmute::<*mut c_void, Unload>(unload),
+                apply_properties: std::mem::transmute::<*mut c_void, ApplyProperties>(
+                    apply_properties,
+                ),
+                inspect: std::mem::transmute::<*mut c_void, Inspect>(inspect),
             }
         };
         self.bootstrap = Some(bootstrap);
@@ -294,6 +318,133 @@ impl CSharpScripts {
             .get(&entity)
             .is_some_and(|instance| instance.path == path && instance.class == class)
     }
+
+    /// `[Property]` defaults of `class`, read without starting it.
+    ///
+    /// The assembly is loaded into a throwaway collectible context and the
+    /// class is constructed, so field initializers and constructors run but
+    /// `OnStart` does not. Nothing the constructor does through the API leaves
+    /// the discard context.
+    pub fn inspect(
+        &mut self,
+        root: &Path,
+        path: &str,
+        class: &str,
+    ) -> Result<BTreeMap<String, ScriptValue>, String> {
+        let class = class.trim();
+        if class.is_empty() {
+            return Err("C# scripts need a class name".into());
+        }
+        let assembly = root.join(path);
+        let bindings = bindings_for(&assembly)?;
+        let bootstrap = self.bootstrap(&bindings)?;
+        let mut context = Box::new(CSharpContext {
+            api: ApiState::default(),
+        });
+        let mut api = table(std::ptr::from_mut(&mut *context).cast::<c_void>());
+        let assembly_text =
+            CString::new(assembly.to_string_lossy().as_bytes()).map_err(|err| err.to_string())?;
+        let class_text = CString::new(class).map_err(|err| err.to_string())?;
+        let mut read = |buffer: *mut u8, len: u32| {
+            // SAFETY: both strings outlive the call and the buffer, when
+            // present, has room for `len` bytes.
+            unsafe {
+                (bootstrap.inspect)(
+                    &mut api,
+                    assembly_text.as_ptr(),
+                    class_text.as_ptr(),
+                    buffer,
+                    len,
+                )
+            }
+        };
+        let need = read(std::ptr::null_mut(), 0);
+        if need < 0 {
+            return Err(failure(&mut context, "inspect"));
+        }
+        if need == 0 {
+            return Ok(BTreeMap::new());
+        }
+        let mut buf = vec![0u8; need as usize];
+        let got = read(buf.as_mut_ptr(), need as u32);
+        if got < 0 {
+            return Err(failure(&mut context, "inspect"));
+        }
+        decode_properties(&buf[..got.min(need) as usize])
+    }
+}
+
+/// Applies scene overrides to a freshly loaded instance.
+pub(crate) fn apply_properties(
+    instance: &mut CSharpInstance,
+    values: &BTreeMap<String, ScriptValue>,
+) -> Result<(), String> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    let mut text = String::new();
+    for (name, value) in values {
+        if name.contains(['\t', '\n']) {
+            continue;
+        }
+        text.push_str(name);
+        text.push('\t');
+        match value {
+            ScriptValue::Bool(flag) => text.push_str(if *flag { "true" } else { "false" }),
+            ScriptValue::Number(number) => text.push_str(&number.to_string()),
+            ScriptValue::Text(body) => {
+                text.extend(
+                    body.chars()
+                        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c }),
+                );
+            }
+        }
+        text.push('\n');
+    }
+    let payload = CString::new(text).map_err(|err| err.to_string())?;
+    // SAFETY: the table and context live in this instance and the payload is a
+    // NUL-terminated string for the duration of the call.
+    let code = unsafe {
+        (instance.bootstrap.apply_properties)(
+            &mut instance.api,
+            instance.entity.to_bits(),
+            payload.as_ptr(),
+        )
+    };
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(failure(&mut instance.context, "properties"))
+    }
+}
+
+/// Parses the `name\tkind\tvalue` lines the managed side writes.
+fn decode_properties(buf: &[u8]) -> Result<BTreeMap<String, ScriptValue>, String> {
+    let text = std::str::from_utf8(buf).map_err(|err| format!("properties: {err}"))?;
+    let mut out = BTreeMap::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, '\t');
+        let (Some(name), Some(kind), Some(raw)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(format!("properties: malformed line {line:?}"));
+        };
+        let value = match kind {
+            "bool" => ScriptValue::Bool(
+                raw.parse::<bool>()
+                    .map_err(|err| format!("properties: {name}: {err}"))?,
+            ),
+            "number" => ScriptValue::Number(
+                raw.parse::<f64>()
+                    .map_err(|err| format!("properties: {name}: {err}"))?,
+            ),
+            "text" => ScriptValue::Text(raw.to_owned()),
+            other => return Err(format!("properties: {name}: unknown kind {other:?}")),
+        };
+        out.insert(name.to_owned(), value);
+    }
+    Ok(out)
 }
 
 /// Calls `OnStop` and moves the script's log lines into the engine log.

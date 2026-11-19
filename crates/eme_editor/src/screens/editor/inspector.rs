@@ -23,6 +23,8 @@ use eme_game_scene::{
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use alloc::collections::BTreeMap;
+
 use super::chrome::*;
 use super::docks;
 use super::icons;
@@ -2865,9 +2867,11 @@ pub fn sync_color_swatch(
 pub fn sync_script_rows(
     state: Res<SceneState>,
     build: Res<crate::script_build::CSharpBuild>,
+    mut csharp: ResMut<eme_script::CSharpScripts>,
     mut commands: Commands,
     hosts: Query<Entity, With<ScriptRows>>,
     mut shown: Local<Option<(Entity, String)>>,
+    mut inspected: Local<Option<InspectCache>>,
     mut base_seen: Local<
         Option<(
             Entity,
@@ -2877,6 +2881,7 @@ pub fn sync_script_rows(
             Option<String>,
             u64,
             u64,
+            Option<(u64, u64)>,
         )>,
     >,
 ) {
@@ -2908,6 +2913,10 @@ pub fn sync_script_rows(
         .filter(|path| !path.is_empty());
     let class = script.as_ref().and_then(|script| script.class.clone());
 
+    let stamp = (language == ScriptLanguage::CSharp)
+        .then_some(path.as_deref())
+        .flatten()
+        .map(|path| asset_stamp(&crate::asset_root(), path));
     let base = (
         host,
         obj.id,
@@ -2916,17 +2925,37 @@ pub fn sync_script_rows(
         class.clone(),
         state.rev,
         build.rev(),
+        stamp,
     );
     if base_seen.as_ref() == Some(&base) {
         return;
     }
     *base_seen = Some(base);
 
-    let defaults = if language == ScriptLanguage::Lua {
-        path.as_deref()
-            .map(|path| eme_script::script_property_defaults(&crate::asset_root(), path))
-    } else {
-        None
+    let mut csharp_key: Option<InspectKey> = None;
+    let defaults = match language {
+        ScriptLanguage::Lua => path
+            .as_deref()
+            .map(|path| eme_script::script_property_defaults(&crate::asset_root(), path)),
+        ScriptLanguage::CSharp => match (path.as_deref(), class.as_deref()) {
+            (Some(path), Some(class)) if !class.trim().is_empty() => {
+                let key = inspect_key_for(&crate::asset_root(), path, class.trim());
+                csharp_key = Some(key.clone());
+                let cached = inspected.as_ref().filter(|cache| cache.key == key);
+                Some(match cached {
+                    Some(cache) => cache.value.clone(),
+                    None => {
+                        let value = csharp.inspect(&crate::asset_root(), path, class.trim());
+                        *inspected = Some(InspectCache {
+                            key,
+                            value: value.clone(),
+                        });
+                        value
+                    }
+                })
+            }
+            _ => None,
+        },
     };
     let mut signature = format!(
         "{}|{}|{}|{:?}",
@@ -2937,6 +2966,12 @@ pub fn sync_script_rows(
     );
     if language == ScriptLanguage::CSharp {
         signature.push_str(&format!("|build:{}", build.rev()));
+        if let Some(key) = &csharp_key {
+            signature.push_str(&format!(
+                "|inspect:{}:{}:{}:{}",
+                key.path, key.class, key.len, key.stamp
+            ));
+        }
     }
     if let Some(Ok(defaults)) = &defaults {
         for (key, value) in defaults {
@@ -3031,53 +3066,94 @@ pub fn sync_script_rows(
             return;
         };
         spawn_build_row(&mut commands, host, &build, &path);
-        spawn_hint(
-            &mut commands,
-            host,
-            "Properties are declared by the C# class.",
-        );
+        spawn_property_rows(&mut commands, host, object, script.as_ref(), defaults);
         return;
     }
 
-    let Some(path) = path else {
+    if path.is_none() {
         spawn_hint(&mut commands, host, script_hint(language));
         return;
-    };
+    }
+    spawn_property_rows(&mut commands, host, object, script.as_ref(), defaults);
+}
 
+/// What one assembly revision declared, so the Inspector can rebuild without
+/// reloading the CLR for every frame.
+pub(crate) struct InspectCache {
+    key: InspectKey,
+    value: Result<BTreeMap<String, ScriptValue>, String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct InspectKey {
+    path: String,
+    class: String,
+    len: u64,
+    stamp: u64,
+}
+
+fn inspect_key_for(root: &Path, path: &str, class: &str) -> InspectKey {
+    let (len, stamp) = asset_stamp(root, path);
+    InspectKey {
+        path: path.to_owned(),
+        class: class.to_owned(),
+        len,
+        stamp,
+    }
+}
+
+/// Size and modification time of one asset, zeroed when it is missing.
+fn asset_stamp(root: &Path, path: &str) -> (u64, u64) {
+    let meta = std::fs::metadata(root.join(path)).ok();
+    let len = meta.as_ref().map_or(0, std::fs::Metadata::len);
+    let stamp = meta
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |age| age.as_nanos() as u64);
+    (len, stamp)
+}
+
+/// Property rows shared by Lua and C# scripts.
+fn spawn_property_rows(
+    commands: &mut Commands,
+    host: Entity,
+    object: u64,
+    script: Option<&ScriptRef>,
+    defaults: Option<Result<BTreeMap<String, ScriptValue>, String>>,
+) {
     let defaults = match defaults {
         Some(Ok(defaults)) => defaults,
         Some(Err(err)) => {
-            spawn_hint(&mut commands, host, err);
+            spawn_hint(commands, host, err);
             return;
         }
         None => return,
     };
     if defaults.is_empty() {
-        spawn_hint(&mut commands, host, "No exposed properties.");
+        spawn_hint(commands, host, "No exposed properties.");
         return;
     }
 
     for (key, default) in defaults {
         let current = script
-            .as_ref()
             .and_then(|script| script.properties.get(&key))
             .cloned()
             .unwrap_or_else(|| default.clone());
         let label = text(key.clone(), FONT_SIZE, tokens::TEXT);
-        let row = commands.spawn_scene(bsn! {
-            Node {
-                display: Display::Flex,
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Center,
-                padding: UiRect::horizontal(px(8)),
-                column_gap: px(6),
-            }
-            ChildOf(host)
-            Children [ {label} -- {spacer()} ]
-        }).id();
-        commands
-            .entity(row)
-            .insert(FilterScriptRow(key.clone()));
+        let row = commands
+            .spawn_scene(bsn! {
+                Node {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(px(8)),
+                    column_gap: px(6),
+                }
+                ChildOf(host)
+                Children [ {label} -- {spacer()} ]
+            })
+            .id();
+        commands.entity(row).insert(FilterScriptRow(key.clone()));
         let shown = match &current {
             ScriptValue::Bool(value) => value.to_string(),
             ScriptValue::Number(value) => fmt_num(*value as f32),
@@ -3114,7 +3190,6 @@ pub fn sync_script_rows(
             .observe(blur_script_field)
             .observe(script_field_key);
     }
-    let _ = path;
 }
 
 /// Hint shown under the path row when a script still needs choosing.

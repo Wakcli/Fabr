@@ -1,32 +1,33 @@
 # Third-Party Licenses
 
-Generated: 2026-09-12 15:35 UTC
+Generated: 2026-11-19 16:38 UTC
 
 This project is a fork of [Bevy](https://github.com/bevyengine/bevy) (MIT OR Apache-2.0).
 The upstream `LICENSE-MIT` and `LICENSE-APACHE` files are retained in the repository root.
 
-The list below covers the **916 external crates** resolved in `Cargo.lock`
+The list below covers the **932 external crates** resolved in `Cargo.lock`
 (crates.io and git dependencies). License texts are grouped when identical.
 
 ## Summary by license
 
 | License (SPDX) | Packages |
 |---|---|
-| MIT OR Apache-2.0 | 404 |
-| MIT | 210 |
-| Apache-2.0 OR MIT | 59 |
-| MIT/Apache-2.0 | 50 |
+| MIT OR Apache-2.0 | 414 |
+| MIT | 216 |
+| Apache-2.0 OR MIT | 60 |
+| MIT/Apache-2.0 | 48 |
 | Apache-2.0 | 26 |
 | Unicode-3.0 | 22 |
-| Zlib OR Apache-2.0 OR MIT | 16 |
+| Zlib OR Apache-2.0 OR MIT | 17 |
 | BSD-3-Clause | 13 |
 | MPL-2.0 | 13 |
 | Apache-2.0/MIT | 12 |
-| MIT OR Apache-2.0 OR Zlib | 12 |
+| MIT OR Apache-2.0 OR Zlib | 11 |
 | Zlib | 11 |
 | Unlicense OR MIT | 8 |
 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 7 |
 | ISC | 6 |
+| BSL-1.0 | 3 |
 | MIT-0 | 3 |
 | (MIT OR Apache-2.0 OR Zlib) AND Apache-2.0 | 2 |
 | (MIT OR Apache-2.0) AND MIT | 2 |
@@ -34,7 +35,6 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | BSD-2-Clause OR Apache-2.0 OR MIT | 2 |
 | BSD-3-Clause OR Apache-2.0 | 2 |
 | BSD-3-Clause OR MIT OR Apache-2.0 | 2 |
-| BSL-1.0 | 2 |
 | CDLA-Permissive-2.0 | 2 |
 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | 2 |
 | MIT OR Zlib OR Apache-2.0 | 2 |
@@ -98,7 +98,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | anstyle-wincon | 3.0.11 | MIT OR Apache-2.0 |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
 | approx | 0.5.1 | Apache-2.0 |
-| arboard | 3.6.1 | MIT OR Apache-2.0 |
+| arboard | 3.7.0 | MIT OR Apache-2.0 |
 | argh | 0.1.19 | BSD-3-Clause |
 | argh_derive | 0.1.19 | BSD-3-Clause |
 | argh_shared | 0.1.19 | BSD-3-Clause |
@@ -115,7 +115,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | async-io | 2.6.0 | Apache-2.0 OR MIT |
 | async-lock | 3.4.2 | Apache-2.0 OR MIT |
 | async-process | 2.5.0 | Apache-2.0 OR MIT |
-| async-recursion | 1.1.1 | MIT OR Apache-2.0 |
+| async-recursion | 1.2.0 | MIT OR Apache-2.0 |
 | async-signal | 0.2.14 | Apache-2.0 OR MIT |
 | async-task | 4.7.1 | Apache-2.0 OR MIT |
 | async-trait | 0.1.92 | MIT OR Apache-2.0 |
@@ -136,10 +136,11 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | basis-universal-sys | 0.3.1 | MIT OR Apache-2.0 |
 | bevy_mikktspace | 1.0.0 | Zlib AND (MIT OR Apache-2.0) |
 | bindgen | 0.72.1 | BSD-3-Clause |
+| bit-set | 0.10.0 | Apache-2.0 OR MIT |
+| bit-set | 0.11.1 | Apache-2.0 OR MIT |
 | bit-set | 0.5.3 | MIT/Apache-2.0 |
 | bit-set | 0.8.0 | Apache-2.0 OR MIT |
-| bit-set | 0.9.1 | Apache-2.0 OR MIT |
-| bit-set | 0.10.0 | Apache-2.0 OR MIT |
+| bit-vec | 0.10.1 | Apache-2.0 OR MIT |
 | bit-vec | 0.6.3 | MIT/Apache-2.0 |
 | bit-vec | 0.8.0 | Apache-2.0 OR MIT |
 | bit-vec | 0.9.1 | Apache-2.0 OR MIT |
@@ -156,22 +157,22 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 |
 | by_address | 1.2.1 | MIT OR Apache-2.0 |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
-| bytemuck_derive | 1.12.0 | Zlib OR Apache-2.0 OR MIT |
+| bytemuck_derive | 1.12.1 | Zlib OR Apache-2.0 OR MIT |
 | byteorder | 1.5.0 | Unlicense OR MIT |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.12.1 | MIT |
 | calloop | 0.13.0 | MIT |
 | calloop-wayland-source | 0.3.0 | MIT |
-| camino | 1.2.5 | MIT OR Apache-2.0 |
+| camino | 1.2.6 | MIT OR Apache-2.0 |
 | cargo-platform | 0.1.9 | MIT OR Apache-2.0 |
 | cargo_metadata | 0.18.1 | MIT |
 | cast | 0.3.0 | MIT OR Apache-2.0 |
 | castaway | 0.2.4 | MIT |
-| cc | 1.4.5 | MIT OR Apache-2.0 |
+| cc | 1.10.0 | MIT OR Apache-2.0 |
 | cesu8 | 1.1.0 | Apache-2.0/MIT |
 | cexpr | 0.6.0 | Apache-2.0/MIT |
-| cfg-expr | 0.20.9 | MIT OR Apache-2.0 |
-| cfg-if | 1.0.4 | MIT OR Apache-2.0 |
+| cfg-expr | 0.20.10 | MIT OR Apache-2.0 |
+| cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | cfg_aliases | 0.2.2 | MIT |
 | chacha20 | 0.10.2 | MIT OR Apache-2.0 |
 | chrono | 0.4.45 | MIT OR Apache-2.0 |
@@ -181,12 +182,12 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | ciborium-io | 0.2.2 | Apache-2.0 |
 | ciborium-ll | 0.2.2 | Apache-2.0 |
 | clang-sys | 1.9.1 | Apache-2.0 |
-| clap | 4.6.6 | MIT OR Apache-2.0 |
-| clap_builder | 4.6.6 | MIT OR Apache-2.0 |
-| clap_derive | 4.6.4 | MIT OR Apache-2.0 |
-| clap_lex | 1.1.0 | MIT OR Apache-2.0 |
+| clap | 4.6.7 | MIT OR Apache-2.0 |
+| clap_builder | 4.6.7 | MIT OR Apache-2.0 |
+| clap_derive | 4.6.7 | MIT OR Apache-2.0 |
+| clap_lex | 1.1.1 | MIT OR Apache-2.0 |
 | claxon | 0.4.3 | Apache-2.0 |
-| clipboard-win | 5.4.1 | BSL-1.0 |
+| clipboard-win | 5.4.3 | BSL-1.0 |
 | cobs | 0.3.0 | MIT OR Apache-2.0 |
 | codespan-reporting | 0.13.1 | Apache-2.0 |
 | color-eyre | 0.6.5 | MIT OR Apache-2.0 |
@@ -194,15 +195,15 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | color_quant | 1.1.0 | MIT |
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
 | colored | 3.1.1 | MPL-2.0 |
-| combine | 4.6.8 | MIT |
+| combine | 4.6.9 | MIT |
 | comma | 1.0.0 | MIT |
 | compact_str | 0.9.1 | MIT |
 | concurrent-queue | 2.5.0 | Apache-2.0 OR MIT |
 | console | 0.16.6 | MIT |
 | console_error_panic_hook | 0.1.7 | Apache-2.0/MIT |
 | const-fnv1a-hash | 1.1.0 | MIT |
-| const_format | 0.2.36 | Zlib |
-| const_format_proc_macros | 0.2.34 | Zlib |
+| const_format | 0.2.37 | Zlib |
+| const_format_proc_macros | 0.2.37 | Zlib |
 | const_panic | 0.2.17 | Zlib |
 | const_soft_float | 0.1.4 | MIT OR Apache-2.0 |
 | constant_time_eq | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
@@ -210,8 +211,8 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | convert_case | 0.10.0 | MIT |
 | cookie | 0.18.2 | MIT OR Apache-2.0 |
 | cookie_store | 0.22.0 | MIT OR Apache-2.0 |
-| core-foundation | 0.9.4 | MIT OR Apache-2.0 |
 | core-foundation | 0.10.1 | MIT OR Apache-2.0 |
+| core-foundation | 0.9.4 | MIT OR Apache-2.0 |
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
 | core-graphics | 0.23.2 | MIT OR Apache-2.0 |
 | core-graphics-types | 0.1.3 | MIT OR Apache-2.0 |
@@ -219,7 +220,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | cpal | 0.17.3 | Apache-2.0 |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
-| crc32fast | 1.5.1 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.3 | MIT OR Apache-2.0 |
 | criterion | 0.8.2 | Apache-2.0 OR MIT |
 | criterion-plot | 0.8.2 | Apache-2.0 OR MIT |
 | critical-section | 1.2.0 | MIT OR Apache-2.0 |
@@ -232,6 +233,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | crossterm_winapi | 0.9.1 | MIT |
 | crunchy | 0.2.4 | MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
+| crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | csscolorparser | 0.6.2 | MIT OR Apache-2.0 |
 | ctrlc | 3.5.2 | MIT/Apache-2.0 |
 | ctt | 0.5.0 | MIT OR Apache-2.0 OR Zlib |
@@ -250,11 +252,12 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | data-encoding | 2.11.1 | MIT |
 | ddsfile | 0.6.0 | MIT |
 | deltae | 0.3.2 | MIT |
-| deranged | 0.5.8 | MIT OR Apache-2.0 |
+| deranged | 0.5.9 | MIT OR Apache-2.0 |
 | derive_more | 2.1.1 | MIT |
 | derive_more-impl | 2.1.1 | MIT |
 | deunicode | 1.6.2 | BSD-3-Clause |
 | digest | 0.10.7 | MIT OR Apache-2.0 |
+| digest | 0.11.3 | MIT OR Apache-2.0 |
 | dioxus-cli-config | 0.7.10 | MIT OR Apache-2.0 |
 | dioxus-core | 0.7.10 | MIT OR Apache-2.0 |
 | dioxus-core-types | 0.7.10 | MIT OR Apache-2.0 |
@@ -264,14 +267,14 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | dispatch | 0.2.0 | MIT |
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
-| disqualified | 1.0.0 | MIT OR Apache-2.0 |
+| disqualified | 1.1.0 | MIT OR Apache-2.0 |
 | dlib | 0.5.3 | MIT |
 | dlss_wgpu | 5.0.0 | MIT OR Apache-2.0 |
 | document-features | 0.2.12 | MIT OR Apache-2.0 |
 | downcast-rs | 1.2.1 | MIT/Apache-2.0 |
 | downcast-rs | 2.0.2 | MIT OR Apache-2.0 |
 | dpi | 0.1.2 | Apache-2.0 AND MIT |
-| either | 1.18.0 | MIT OR Apache-2.0 |
+| either | 1.19.0 | MIT OR Apache-2.0 |
 | embedded-io | 0.4.0 | MIT OR Apache-2.0 |
 | embedded-io | 0.6.1 | MIT OR Apache-2.0 |
 | ena | 0.14.4 | MIT OR Apache-2.0 |
@@ -285,8 +288,9 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | enumflags2 | 0.7.12 | MIT OR Apache-2.0 |
 | enumflags2_derive | 0.7.12 | MIT OR Apache-2.0 |
 | enumn | 0.1.14 | MIT OR Apache-2.0 |
-| equivalent | 1.0.2 | Apache-2.0 OR MIT |
-| erased-serde | 0.4.10 | MIT OR Apache-2.0 |
+| env_home | 0.1.0 | MIT OR Apache-2.0 |
+| equivalent | 1.0.3 | Apache-2.0 OR MIT |
+| erased-serde | 0.4.11 | MIT OR Apache-2.0 |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
 | error-code | 3.4.0 | BSL-1.0 |
 | euclid | 0.22.14 | MIT OR Apache-2.0 |
@@ -302,8 +306,8 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 |
 | file-id | 0.2.3 | MIT OR Apache-2.0 |
 | filedescriptor | 0.8.3 | MIT |
-| find-msvc-tools | 0.1.12 | MIT OR Apache-2.0 |
-| finl_unicode | 1.4.0 | (MIT OR Apache-2.0) AND Unicode-DFS-2016 |
+| find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
+| finl_unicode | 1.5.0 | (MIT OR Apache-2.0) AND Unicode-DFS-2016 |
 | fixedbitset | 0.4.2 | MIT/Apache-2.0 |
 | fixedbitset | 0.5.7 | MIT OR Apache-2.0 |
 | flate2 | 1.1.10 | MIT OR Apache-2.0 |
@@ -311,13 +315,12 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | fnv | 1.0.7 | Apache-2.0 / MIT |
 | foldhash | 0.1.5 | Zlib |
 | foldhash | 0.2.0 | Zlib |
-| font-types | 0.12.5 | MIT OR Apache-2.0 |
+| font-types | 0.12.7 | MIT OR Apache-2.0 |
 | fontique | 0.11.1 | Apache-2.0 OR MIT |
 | foreign-types | 0.5.0 | MIT/Apache-2.0 |
 | foreign-types-macros | 0.2.4 | MIT/Apache-2.0 |
 | foreign-types-shared | 0.3.1 | MIT/Apache-2.0 |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
-| fsevent-sys | 4.1.0 | MIT |
 | funty | 2.0.0 | MIT |
 | futures-channel | 0.3.34 | MIT OR Apache-2.0 |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 |
@@ -328,7 +331,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | futures-timer | 3.0.4 | MIT/Apache-2.0 |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 |
 | generational-box | 0.7.10 | MIT OR Apache-2.0 |
-| generator | 0.8.9 | MIT/Apache-2.0 |
+| generator | 0.8.11 | MIT/Apache-2.0 |
 | generic-array | 0.14.7 | MIT |
 | gethostname | 1.1.0 | Apache-2.0 |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 |
@@ -339,7 +342,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | gilrs-core | 0.6.8 | Apache-2.0/MIT |
 | gimli | 0.32.3 | MIT OR Apache-2.0 |
 | gl_generator | 0.14.0 | Apache-2.0 |
-| glam | 0.33.7 | MIT OR Apache-2.0 |
+| glam | 0.33.12 | MIT OR Apache-2.0 |
 | glob | 0.3.4 | MIT OR Apache-2.0 |
 | globset | 0.4.19 | Unlicense OR MIT |
 | globwalk | 0.9.1 | MIT |
@@ -371,7 +374,8 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | httparse | 1.10.1 | MIT OR Apache-2.0 |
 | httpdate | 1.0.3 | MIT OR Apache-2.0 |
 | humansize | 2.1.3 | MIT/Apache-2.0 |
-| hyper | 1.11.1 | MIT |
+| hybrid-array | 0.4.15 | MIT OR Apache-2.0 |
+| hyper | 1.12.0 | MIT |
 | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 |
 | iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 |
 | icu_collections | 2.1.1 | Unicode-3.0 |
@@ -394,13 +398,13 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | indenter | 0.3.4 | MIT OR Apache-2.0 |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT |
 | indicatif | 0.18.6 | MIT |
-| indoc | 2.0.7 | MIT OR Apache-2.0 |
+| indoc | 2.0.8 | MIT OR Apache-2.0 |
 | inflections | 1.1.1 | MIT |
 | inotify | 0.11.5 | ISC |
 | inotify-sys | 0.1.8 | ISC |
 | instability | 0.3.10 | MIT |
 | intel_tex_2 | 0.5.0 | MIT/Apache-2.0 |
-| inventory | 0.3.24 | MIT OR Apache-2.0 |
+| inventory | 0.3.25 | MIT OR Apache-2.0 |
 | is_ci | 1.2.0 | ISC |
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | ispc-build-utils | 0.5.0 | MIT OR Apache-2.0 OR Zlib |
@@ -416,9 +420,9 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | jni-sys | 0.4.1 | MIT OR Apache-2.0 |
 | jni-sys-macros | 0.4.1 | MIT OR Apache-2.0 |
 | jobserver | 0.1.35 | MIT OR Apache-2.0 |
-| js-sys | 0.3.105 | MIT OR Apache-2.0 |
-| kasuari | 0.4.12 | MIT OR Apache-2.0 |
-| keccak | 0.1.6 | Apache-2.0 OR MIT |
+| js-sys | 0.3.106 | MIT OR Apache-2.0 |
+| kasuari | 0.4.13 | MIT OR Apache-2.0 |
+| keccak | 0.2.2 | Apache-2.0 OR MIT |
 | khronos-egl | 6.0.0 | MIT/Apache-2.0 |
 | khronos_api | 3.1.0 | Apache-2.0 |
 | konst | 0.2.20 | Zlib |
@@ -427,9 +431,9 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | kqueue-sys | 1.1.2 | MIT |
 | ktx2 | 0.5.0 | Apache-2.0 |
 | lab | 0.11.0 | MIT |
-| lalrpop | 0.23.1 | Apache-2.0 OR MIT |
-| lalrpop-util | 0.23.1 | Apache-2.0 OR MIT |
-| lazy_static | 1.5.0 | MIT OR Apache-2.0 |
+| lalrpop | 0.23.2 | Apache-2.0 OR MIT |
+| lalrpop-util | 0.23.2 | Apache-2.0 OR MIT |
+| lazy_static | 1.5.1 | MIT OR Apache-2.0 |
 | lebe | 0.5.3 | BSD-3-Clause |
 | levenshtein | 1.0.5 | MIT |
 | lewton | 0.10.2 | MIT OR Apache-2.0 |
@@ -440,18 +444,19 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | lexical-util | 1.0.7 | MIT/Apache-2.0 |
 | lexical-write-float | 1.0.6 | MIT/Apache-2.0 |
 | lexical-write-integer | 1.0.6 | MIT/Apache-2.0 |
-| libc | 0.2.189 | MIT OR Apache-2.0 |
+| lhash | 1.1.0 | BSL-1.0 |
+| libc | 0.2.191 | MIT OR Apache-2.0 |
 | libloading | 0.8.9 | ISC |
 | libm | 0.2.16 | MIT |
-| libredox | 0.1.23 | MIT |
+| libredox | 0.1.25 | MIT |
 | libudev-sys | 0.1.4 | MIT |
 | libyml | 0.0.5 | MIT |
 | line-clipping | 0.3.8 | MIT OR Apache-2.0 |
 | linebender_resource_handle | 0.1.1 | Apache-2.0 OR MIT |
-| linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
-| litrs | 1.0.0 | MIT OR Apache-2.0 |
+| litrs | 1.0.1 | MIT OR Apache-2.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.34 | MIT OR Apache-2.0 |
 | logos | 0.16.1 | MIT OR Apache-2.0 |
@@ -459,15 +464,17 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | logos-derive | 0.16.1 | MIT OR Apache-2.0 |
 | longest-increasing-subsequence | 0.1.0 | MIT/Apache-2.0 |
 | loom | 0.7.2 | MIT |
-| lru | 0.18.4 | MIT |
+| lru | 0.18.5 | MIT |
+| lua-src | 547.0.0 | MIT |
+| luajit-src | 210.5.12+a4f56a4 | MIT |
 | lz4_flex | 0.13.1 | MIT |
-| mac_address | 1.1.8 | MIT OR Apache-2.0 |
-| mach-dxcompiler-rs | 0.1.4+2024.11.22-df583a3.1 | MIT |
+| mac_address | 1.2.1 | MIT OR Apache-2.0 |
+| mach-dxcompiler-rs | 0.1.6+2026.09.16-48d5a66.1 | MIT |
 | mach2 | 0.5.0 | BSD-2-Clause OR MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | memchr | 2.8.3 | Unlicense OR MIT |
 | memfd | 0.6.6 | MIT OR Apache-2.0 |
-| memmap2 | 0.9.11 | MIT OR Apache-2.0 |
+| memmap2 | 0.9.12 | MIT OR Apache-2.0 |
 | memmem | 0.1.1 | MIT/Apache-2.0 |
 | memoffset | 0.9.1 | MIT |
 | meshopt | 0.6.2 | MIT OR Apache-2.0 |
@@ -479,7 +486,9 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mint | 0.5.9 | MIT |
-| mio | 1.2.3 | MIT |
+| mio | 1.2.4 | MIT |
+| mlua | 0.10.5 | MIT |
+| mlua-sys | 0.6.8 | MIT |
 | moxcms | 0.7.11 | BSD-3-Clause OR Apache-2.0 |
 | mutants | 0.0.3 | MIT |
 | naga | 30.0.1 | MIT OR Apache-2.0 |
@@ -494,7 +503,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | nom | 7.1.3 | MIT |
 | nom | 8.0.0 | MIT |
 | nonmax | 0.5.5 | MIT OR Apache-2.0 |
-| notify | 8.2.0 | CC0-1.0 |
+| notify | 8.2.1 | CC0-1.0 |
 | notify-debouncer-full | 0.7.0 | MIT OR Apache-2.0 |
 | notify-types | 2.1.0 | MIT OR Apache-2.0 |
 | ntapi | 0.4.3 | Apache-2.0 OR MIT |
@@ -509,10 +518,10 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | num_cpus | 1.17.0 | MIT OR Apache-2.0 |
 | num_enum | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 |
 | num_enum_derive | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 |
-| num_threads | 0.1.7 | MIT OR Apache-2.0 |
+| num_threads | 0.1.8 | MIT OR Apache-2.0 |
 | objc-sys | 0.3.5 | MIT |
-| objc2 | 0.5.2 | MIT |
-| objc2 | 0.6.4 | MIT |
+| objc2 | 0.5.3 | MIT |
+| objc2 | 0.6.5 | MIT |
 | objc2-app-kit | 0.2.2 | MIT |
 | objc2-app-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | objc2-audio-toolbox | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
@@ -526,6 +535,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | objc2-core-graphics | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | objc2-core-image | 0.2.2 | MIT |
 | objc2-core-location | 0.2.2 | MIT |
+| objc2-core-services | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | objc2-core-text | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | objc2-encode | 4.1.0 | MIT |
 | objc2-foundation | 0.2.2 | MIT |
@@ -562,17 +572,18 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | parking | 2.2.1 | Apache-2.0 OR MIT |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
-| parlance | 0.1.0 | Apache-2.0 OR MIT |
+| parlance | 0.1.1 | Apache-2.0 OR MIT |
 | parley | 0.11.1 | Apache-2.0 OR MIT |
 | parley_data | 0.11.1 | Apache-2.0 OR MIT |
 | parse-zoneinfo | 0.3.1 | MIT |
 | paste | 1.0.15 | MIT OR Apache-2.0 |
 | pbr | 1.1.1 | MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
-| pest | 2.9.1 | MIT OR Apache-2.0 |
-| pest_derive | 2.9.1 | MIT OR Apache-2.0 |
-| pest_generator | 2.9.1 | MIT OR Apache-2.0 |
-| pest_meta | 2.9.1 | MIT OR Apache-2.0 |
+| pest | 2.9.5 | MIT OR Apache-2.0 |
+| pest_derive | 2.9.5 | MIT OR Apache-2.0 |
+| pest_generator | 2.9.5 | MIT OR Apache-2.0 |
+| pest_meta | 2.9.5 | MIT OR Apache-2.0 |
+| pest_stack_guard | 1.0.0 | MIT OR Apache-2.0 |
 | petgraph | 0.8.3 | MIT OR Apache-2.0 |
 | phf | 0.11.3 | MIT |
 | phf | 0.13.1 | MIT |
@@ -583,6 +594,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | phf_macros | 0.13.1 | MIT |
 | phf_shared | 0.11.3 | MIT |
 | phf_shared | 0.13.1 | MIT |
+| phf_shared | 0.14.0 | MIT |
 | pin-project | 1.1.13 | Apache-2.0 OR MIT |
 | pin-project-internal | 1.1.13 | Apache-2.0 OR MIT |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT |
@@ -598,7 +610,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | portable-atomic-util | 0.2.8 | Apache-2.0 OR MIT |
 | postcard | 1.1.3 | MIT OR Apache-2.0 |
 | potential_utf | 0.1.6 | Unicode-3.0 |
-| powerfmt | 0.2.0 | MIT OR Apache-2.0 |
+| powerfmt | 0.2.1 | MIT OR Apache-2.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
 | precomputed-hash | 0.1.1 | MIT |
 | presser | 0.3.1 | MIT OR Apache-2.0 |
@@ -610,6 +622,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 |
 | proptest | 1.11.0 | MIT OR Apache-2.0 |
 | proptest-derive | 0.8.0 | MIT OR Apache-2.0 |
+| psm | 0.1.24 | MIT OR Apache-2.0 |
 | pulp | 0.22.3 | MIT |
 | pulp-wasm-simd-flag | 0.1.1 | MIT |
 | pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
@@ -623,14 +636,14 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | radium | 0.7.0 | MIT |
 | radsort | 0.1.1 | MIT OR Apache-2.0 |
+| rand | 0.10.3 | MIT OR Apache-2.0 |
 | rand | 0.8.8 | MIT OR Apache-2.0 |
 | rand | 0.9.5 | MIT OR Apache-2.0 |
-| rand | 0.10.2 | MIT OR Apache-2.0 |
 | rand_chacha | 0.3.1 | MIT OR Apache-2.0 |
 | rand_chacha | 0.9.0 | MIT OR Apache-2.0 |
+| rand_core | 0.10.1 | MIT OR Apache-2.0 |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
 | rand_core | 0.9.5 | MIT OR Apache-2.0 |
-| rand_core | 0.10.1 | MIT OR Apache-2.0 |
 | rand_distr | 0.6.0 | MIT OR Apache-2.0 |
 | rand_xorshift | 0.3.0 | MIT OR Apache-2.0 |
 | rand_xorshift | 0.4.0 | MIT OR Apache-2.0 |
@@ -652,7 +665,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | rectangle-pack | 0.4.2 | MIT/Apache-2.0 |
 | redox_syscall | 0.4.1 | MIT |
 | redox_syscall | 0.5.18 | MIT |
-| redox_syscall | 0.9.4 | MIT |
+| redox_syscall | 0.9.5 | MIT |
 | regex | 1.13.1 | MIT OR Apache-2.0 |
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
@@ -662,26 +675,26 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | rmp-serde | 1.3.1 | MIT |
 | rodio | 0.22.2 | MIT OR Apache-2.0 |
 | ron | 0.12.2 | MIT OR Apache-2.0 |
-| roxmltree | 0.21.1 | MIT OR Apache-2.0 |
+| roxmltree | 0.21.2 | MIT OR Apache-2.0 |
 | rustc-demangle | 0.1.28 | MIT/Apache-2.0 |
 | rustc-hash | 1.1.0 | Apache-2.0/MIT |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustfix | 0.8.7 | MIT OR Apache-2.0 |
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustls | 0.23.44 | Apache-2.0 OR ISC OR MIT |
-| rustls-native-certs | 0.8.4 | Apache-2.0 OR ISC OR MIT |
+| rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
+| rustls-native-certs | 0.8.5 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 |
-| rustls-platform-verifier | 0.7.0 | MIT OR Apache-2.0 |
-| rustls-platform-verifier-android | 0.1.1 | MIT OR Apache-2.0 |
-| rustls-webpki | 0.103.15 | ISC |
+| rustls-platform-verifier | 0.7.1 | MIT OR Apache-2.0 |
+| rustls-platform-verifier-android | 0.2.0 | MIT OR Apache-2.0 |
+| rustls-webpki | 0.103.16 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
 | rusty-fork | 0.3.1 | MIT/Apache-2.0 |
 | ruzstd | 0.8.2 | MIT |
 | ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 |
 | same-file | 1.0.6 | Unlicense/MIT |
-| schannel | 0.1.29 | MIT |
+| schannel | 0.1.30 | MIT |
 | scoped-tls | 1.0.1 | MIT/Apache-2.0 |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 |
 | sctk-adwaita | 0.10.1 | MIT |
@@ -693,14 +706,14 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 |
-| serde_json | 1.0.151 | MIT OR Apache-2.0 |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 |
 | serde_repr | 0.1.21 | MIT OR Apache-2.0 |
-| serde_spanned | 1.1.1 | MIT OR Apache-2.0 |
+| serde_spanned | 1.1.2 | MIT OR Apache-2.0 |
 | serde_test | 1.0.177 | MIT OR Apache-2.0 |
 | serde_yml | 0.0.12 | MIT OR Apache-2.0 |
 | sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
-| sha3 | 0.10.9 | MIT OR Apache-2.0 |
+| sha3 | 0.12.0 | MIT OR Apache-2.0 |
 | sharded-slab | 0.1.7 | MIT |
 | shlex | 1.3.0 | MIT OR Apache-2.0 |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
@@ -710,24 +723,26 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | simd-adler32 | 0.3.10 | MIT |
 | simd_cesu8 | 1.2.0 | Apache-2.0 OR MIT |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 |
-| siphasher | 1.0.3 | MIT/Apache-2.0 |
+| siphasher | 1.0.4 | MIT OR Apache-2.0 |
 | skrifa | 0.44.0 | MIT OR Apache-2.0 |
 | slab | 0.4.12 | MIT |
 | slotmap | 1.1.1 | Zlib |
 | slug | 0.1.6 | MIT/Apache-2.0 |
-| smallvec | 1.16.1 | MIT OR Apache-2.0 |
+| smallvec | 1.16.4 | MIT OR Apache-2.0 |
 | smithay-client-toolkit | 0.19.2 | MIT |
 | smol-hyper | 0.1.1 | MIT OR Apache-2.0 |
 | smol_str | 0.2.2 | MIT OR Apache-2.0 |
 | spanned | 0.4.1 | MIT OR Apache-2.0 |
-| spin | 0.9.9 | MIT |
 | spin | 0.12.3 | MIT |
+| spin | 0.9.9 | MIT |
 | spirv | 0.4.0+sdk-1.4.341.0 | Apache-2.0 |
+| sponge-cursor | 0.1.0 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
+| stacker | 0.1.25 | MIT OR Apache-2.0 |
 | stackfuture | 0.3.1 | MIT |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |
 | strict-num | 0.1.1 | MIT |
-| string_cache | 0.9.0 | MIT OR Apache-2.0 |
+| string_cache | 0.11.0 | MIT OR Apache-2.0 |
 | strsim | 0.11.1 | MIT |
 | strum | 0.28.0 | MIT |
 | strum_macros | 0.28.0 | MIT |
@@ -753,8 +768,8 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | symphonia-utils-xiph | 0.5.5 | MPL-2.0 |
 | syn | 1.0.109 | MIT OR Apache-2.0 |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
-| syn | 3.0.5 | MIT OR Apache-2.0 |
-| synstructure | 0.13.2 | MIT |
+| syn | 3.0.9 | MIT OR Apache-2.0 |
+| synstructure | 0.14.0 | MIT |
 | sys-locale | 0.3.2 | MIT OR Apache-2.0 |
 | sysinfo | 0.39.6 | MIT |
 | system-deps | 7.0.8 | MIT OR Apache-2.0 |
@@ -772,9 +787,9 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | termwiz | 0.23.3 | MIT |
 | textwrap | 0.16.2 | MIT |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 |
-| thiserror | 2.0.20 | MIT OR Apache-2.0 |
+| thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
-| thiserror-impl | 2.0.20 | MIT OR Apache-2.0 |
+| thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
 | thread_local | 1.1.10 | MIT OR Apache-2.0 |
 | tiff | 0.10.3 | MIT |
 | time | 0.3.55 | MIT OR Apache-2.0 |
@@ -782,16 +797,15 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | time-macros | 0.2.32 | MIT OR Apache-2.0 |
 | tiny-skia | 0.11.4 | BSD-3-Clause |
 | tiny-skia-path | 0.11.4 | BSD-3-Clause |
-| tinystr | 0.8.4 | Unicode-3.0 |
+| tinystr | 0.8.5 | Unicode-3.0 |
 | tinytemplate | 1.2.1 | Apache-2.0 OR MIT |
-| tinyvec | 1.13.2 | Zlib OR Apache-2.0 OR MIT |
-| tinyvec_macros | 0.1.1 | MIT OR Apache-2.0 OR Zlib |
-| tokio | 1.53.1 | MIT |
-| toml | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 |
-| toml_datetime | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 |
-| toml_edit | 0.25.14+spec-1.1.0 | MIT OR Apache-2.0 |
-| toml_parser | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 |
-| toml_writer | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 |
+| tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
+| tokio | 1.54.1 | MIT |
+| toml | 1.1.8+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml_datetime | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml_edit | 0.25.17+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml_parser | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml_writer | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 |
 | tracing | 0.1.44 | MIT |
 | tracing-attributes | 0.1.31 | MIT |
 | tracing-chrome | 0.7.2 | MIT |
@@ -803,11 +817,11 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | tracing-tracy | 0.12.0 | MIT/Apache-2.0 |
 | tracing-wasm | 0.2.1 | MIT OR Apache-2.0 |
 | tracy-client | 0.19.0 | MIT/Apache-2.0 |
-| tracy-client-sys | 0.30.0 | (MIT OR Apache-2.0) AND BSD-3-Clause |
+| tracy-client-sys | 0.30.1 | (MIT OR Apache-2.0) AND BSD-3-Clause |
 | tree_magic_mini | 3.2.2 | MIT |
 | ttf-parser | 0.25.1 | MIT OR Apache-2.0 |
 | tungstenite | 0.28.0 | MIT OR Apache-2.0 |
-| twox-hash | 2.1.4 | MIT |
+| twox-hash | 2.1.5 | MIT |
 | typeid | 1.0.3 | MIT OR Apache-2.0 |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | typewit | 1.15.2 | Zlib |
@@ -815,7 +829,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | uds_windows | 1.2.1 | MIT |
 | ui_test | 0.30.4 | MIT OR Apache-2.0 |
 | unarray | 0.1.4 | MIT OR Apache-2.0 |
-| unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-linebreak | 0.1.5 | Apache-2.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
 | unicode-truncate | 2.0.1 | MIT OR Apache-2.0 |
@@ -825,8 +839,8 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | unit-prefix | 0.5.2 | MIT |
 | unsynn | 0.3.0 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
-| ureq | 3.4.1 | MIT OR Apache-2.0 |
-| ureq-proto | 0.6.2 | MIT OR Apache-2.0 |
+| ureq | 3.5.0 | MIT OR Apache-2.0 |
+| ureq-proto | 0.6.5 | MIT OR Apache-2.0 |
 | url | 2.5.8 | MIT OR Apache-2.0 |
 | urlencoding | 2.1.3 | MIT |
 | utf-8 | 0.7.6 | MIT OR Apache-2.0 |
@@ -846,11 +860,11 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | warnings-macro | 0.2.0 | MIT OR Apache-2.0 |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasip2 | 1.0.1+wasi-0.2.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasm-bindgen | 0.2.128 | MIT OR Apache-2.0 |
-| wasm-bindgen-futures | 0.4.78 | MIT OR Apache-2.0 |
-| wasm-bindgen-macro | 0.2.128 | MIT OR Apache-2.0 |
-| wasm-bindgen-macro-support | 0.2.128 | MIT OR Apache-2.0 |
-| wasm-bindgen-shared | 0.2.128 | MIT OR Apache-2.0 |
+| wasm-bindgen | 0.2.129 | MIT OR Apache-2.0 |
+| wasm-bindgen-futures | 0.4.79 | MIT OR Apache-2.0 |
+| wasm-bindgen-macro | 0.2.129 | MIT OR Apache-2.0 |
+| wasm-bindgen-macro-support | 0.2.129 | MIT OR Apache-2.0 |
+| wasm-bindgen-shared | 0.2.129 | MIT OR Apache-2.0 |
 | wayland-backend | 0.3.17 | MIT |
 | wayland-client | 0.31.15 | MIT |
 | wayland-csd-frame | 0.3.0 | MIT |
@@ -861,11 +875,11 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | wayland-scanner | 0.31.11 | MIT |
 | wayland-sys | 0.31.11 | MIT |
 | weak-table | 0.4.0 | MIT |
-| web-sys | 0.3.105 | MIT OR Apache-2.0 |
+| web-sys | 0.3.106 | MIT OR Apache-2.0 |
 | web-task | 1.1.3 | MIT OR Apache-2.0 |
 | web-time | 1.1.0 | MIT OR Apache-2.0 |
-| webpki-root-certs | 1.0.9 | CDLA-Permissive-2.0 |
-| webpki-roots | 1.0.9 | CDLA-Permissive-2.0 |
+| webpki-root-certs | 1.0.11 | CDLA-Permissive-2.0 |
+| webpki-roots | 1.0.11 | CDLA-Permissive-2.0 |
 | weezl | 0.1.12 | MIT OR Apache-2.0 |
 | wesl | 0.4.2 | MIT OR Apache-2.0 |
 | wesl-macros | 0.4.2 | MIT OR Apache-2.0 |
@@ -886,6 +900,7 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | wgpu-types | 30.0.1 | MIT OR Apache-2.0 |
 | wgsl-parse | 0.4.2 | MIT OR Apache-2.0 |
 | wgsl-types | 0.4.2 | MIT OR Apache-2.0 |
+| which | 7.0.3 | MIT |
 | winapi | 0.3.9 | MIT/Apache-2.0 |
 | winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 |
 | winapi-util | 0.1.11 | Unlicense OR MIT |
@@ -935,8 +950,9 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | winit | 0.30.13 | Apache-2.0 |
 | winnow | 0.7.15 | MIT |
 | winnow | 1.0.4 | MIT |
+| winsafe | 0.0.19 | MIT |
 | wit-bindgen | 0.46.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wl-clipboard-rs | 0.9.3 | MIT/Apache-2.0 |
+| wl-clipboard-rs | 0.9.5 | MIT OR Apache-2.0 |
 | writeable | 0.6.4 | Unicode-3.0 |
 | wyz | 0.5.1 | MIT |
 | x11-dl | 2.21.0 | MIT |
@@ -952,8 +968,8 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | xshell-macros | 0.2.7 | MIT OR Apache-2.0 |
 | yazi | 0.2.1 | Apache-2.0 OR MIT |
 | yeslogic-fontconfig-sys | 6.0.1 | MIT |
-| yoke | 0.8.3 | Unicode-3.0 |
-| yoke-derive | 0.8.2 | Unicode-3.0 |
+| yoke | 0.8.4 | Unicode-3.0 |
+| yoke-derive | 0.8.4 | Unicode-3.0 |
 | zbus | 5.13.2 | MIT |
 | zbus-lockstep | 0.5.2 | MIT |
 | zbus-lockstep-macros | 0.5.2 | MIT |
@@ -961,19 +977,19 @@ The list below covers the **916 external crates** resolved in `Cargo.lock`
 | zbus_names | 4.3.1 | MIT |
 | zbus_xml | 5.1.0 | MIT |
 | zeno | 0.3.3 | Apache-2.0 OR MIT |
-| zerocopy | 0.8.57 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| zerocopy-derive | 0.8.57 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
-| zerofrom-derive | 0.1.7 | Unicode-3.0 |
-| zeroize | 1.9.0 | Apache-2.0 OR MIT |
+| zerofrom-derive | 0.1.8 | Unicode-3.0 |
+| zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zerotrie | 0.2.5 | Unicode-3.0 |
-| zerovec | 0.11.8 | Unicode-3.0 |
-| zerovec-derive | 0.11.6 | Unicode-3.0 |
-| zlib-rs | 0.6.7 | Zlib |
+| zerovec | 0.11.9 | Unicode-3.0 |
+| zerovec-derive | 0.11.7 | Unicode-3.0 |
+| zlib-rs | 0.6.8 | Zlib |
 | zmij | 1.0.23 | MIT |
 | zstd | 0.13.3 | MIT |
 | zstd-safe | 7.3.0 | BSD-3-Clause |
-| zstd-sys | 2.1.0+zstd.1.5.7 | BSD-3-Clause |
+| zstd-sys | 2.1.2+zstd.1.5.7 | BSD-3-Clause |
 | zune-core | 0.4.12 | MIT OR Apache-2.0 OR Zlib |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
 | zune-inflate | 0.2.54 | MIT OR Apache-2.0 OR Zlib |
@@ -26439,7 +26455,7 @@ identifiers are listed above; the full text is available from crates.io.
 - block2 0.5.1 (MIT)
 - block2 0.6.2 (MIT)
 - cesu8 1.1.0 (Apache-2.0/MIT)
-- clipboard-win 5.4.1 (BSL-1.0)
+- clipboard-win 5.4.3 (BSL-1.0)
 - comma 1.0.0 (MIT)
 - constgebra 0.1.4 (MIT OR Apache-2.0)
 - ctt 0.5.0 (MIT OR Apache-2.0 OR Zlib)
@@ -26468,15 +26484,17 @@ identifiers are listed above; the full text is available from crates.io.
 - jni-sys-macros 0.4.1 (MIT OR Apache-2.0)
 - khronos_api 3.1.0 (Apache-2.0)
 - levenshtein 1.0.5 (MIT)
+- lhash 1.1.0 (BSL-1.0)
 - meshopt 0.6.2 (MIT OR Apache-2.0)
 - metis-sys 0.3.2 (MIT OR Apache-2.0)
+- mlua-sys 0.6.8 (MIT)
 - mutants 0.0.3 (MIT)
 - ndk 0.9.0 (MIT OR Apache-2.0)
 - ndk-context 0.1.1 (MIT OR Apache-2.0)
 - ndk-sys 0.6.0+11769913 (MIT OR Apache-2.0)
 - objc-sys 0.3.5 (MIT)
-- objc2 0.5.2 (MIT)
-- objc2 0.6.4 (MIT)
+- objc2 0.5.3 (MIT)
+- objc2 0.6.5 (MIT)
 - objc2-app-kit 0.2.2 (MIT)
 - objc2-app-kit 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 - objc2-audio-toolbox 0.3.2 (Zlib OR Apache-2.0 OR MIT)
@@ -26490,6 +26508,7 @@ identifiers are listed above; the full text is available from crates.io.
 - objc2-core-graphics 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 - objc2-core-image 0.2.2 (MIT)
 - objc2-core-location 0.2.2 (MIT)
+- objc2-core-services 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 - objc2-core-text 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 - objc2-encode 4.1.0 (MIT)
 - objc2-foundation 0.2.2 (MIT)
@@ -26511,7 +26530,7 @@ identifiers are listed above; the full text is available from crates.io.
 - r-efi 5.3.0 (MIT OR Apache-2.0 OR LGPL-2.1-or-later)
 - r-efi 6.0.0 (MIT OR Apache-2.0 OR LGPL-2.1-or-later)
 - ratatui-termina 0.1.0 (MIT)
-- rustls-platform-verifier-android 0.1.1 (MIT OR Apache-2.0)
+- rustls-platform-verifier-android 0.2.0 (MIT OR Apache-2.0)
 - ruzstd 0.8.2 (MIT)
 - spanned 0.4.1 (MIT OR Apache-2.0)
 - spirv 0.4.0+sdk-1.4.341.0 (Apache-2.0)

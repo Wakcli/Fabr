@@ -126,6 +126,6 @@ Work in progress is shown first on Discord: **https://discord.gg/EWb5w2TcnF**.
 
 ## License
 
-MIT OR Apache-2.0, the same terms as the Bevy it is built on. Fabr is a modified fork; upstream,
-its contributors and its assets are credited in [CREDITS.md](CREDITS.md) and
-[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+MIT OR Apache-2.0, the same terms as the Bevy it is built on. Fabr is a modified fork; the
+changes are described in [NOTICE](NOTICE), and upstream, its contributors and its assets are
+credited in [CREDITS.md](CREDITS.md) and [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).

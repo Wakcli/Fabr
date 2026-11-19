@@ -1,0 +1,12 @@
+Fabr
+Copyright 2026 GoobersAlley
+
+Fabr is a modified fork of Bevy, https://github.com/bevyengine/bevy, which is
+licensed under MIT OR Apache-2.0. The engine crates in this repository are
+derived from Bevy and have been changed: they are renamed to `eme_*`, the
+rendering, asset and platform layers were reduced to what the editor uses, and
+an editor, an export path and a scripting layer (Rust, Lua, C#) were added.
+
+Upstream copyright notices are retained in LICENSE-MIT, LICENSE-APACHE and
+CREDITS.md. Licenses of third-party dependencies are listed in
+THIRD-PARTY-LICENSES.md.

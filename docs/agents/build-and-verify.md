@@ -63,7 +63,7 @@ Each cargo invocation is gated as a whole. Do not gate individual rustc processe
 The editor captures its own frame, so no window is needed:
 
 ```sh
-env -u WAYLAND_DISPLAY -u DISPLAY EME_EDITOR_SHOT=/home/wak/.cache/emberrly/shot.png \
+env -u WAYLAND_DISPLAY -u DISPLAY EME_EDITOR_SHOT=$HOME/.cache/emberrly/shot.png \
   EME_EDITOR_SHOT_FRAME=40 xvfb-run -a -s '-screen 0 1600x900x24' cargo run -p eme_editor
 ```
 

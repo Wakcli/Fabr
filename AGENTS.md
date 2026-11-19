@@ -73,7 +73,7 @@ If a linked doc does not exist yet, create it in the change that depends on it.
   `WAYLAND_DISPLAY=wayland-1`; both are exported in shells, and `xvfb-run` alone does not stop
   winit from choosing Wayland. The only safe capture command is:
   ```sh
-  env -u WAYLAND_DISPLAY -u DISPLAY EME_EDITOR_SHOT=/home/wak/.cache/emberrly/shot.png EME_EDITOR_SHOT_FRAME=40 \
+  env -u WAYLAND_DISPLAY -u DISPLAY EME_EDITOR_SHOT=$HOME/.cache/emberrly/shot.png EME_EDITOR_SHOT_FRAME=40 \
     xvfb-run -a -s '-screen 0 1600x900x24' cargo run -p eme_editor
   ```
   Any capture whose size is not 1600x900 came from the user's compositor; treat it as a failed
@@ -263,7 +263,7 @@ leave headroom for the editor.
 ## Notes folder
 
 Every checkout has a notes folder as a sibling directory, outside the repo, for example
-`/home/wak/notes/emberrly/`. Nothing in it can be committed by accident. Put plans, findings,
+`~/notes/emberrly/`. Nothing in it can be committed by accident. Put plans, findings,
 reproduction steps, command lines that worked, run output, dead ends, and open questions there.
 
 Each notes folder starts with `INDEX.md`, a one-line-per-file index. Write notes for a reader

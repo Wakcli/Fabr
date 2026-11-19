@@ -37,7 +37,7 @@ eme_platform = { path = "../eme_platform", version = "0.20.0-dev", default-featu
 ] }
 
 # other
-taffy = { version = "0.14", default-features = false, features = [
+taffy = { version = "0.15", default-features = false, features = [
   "std",
   "block_layout",
   "flexbox",

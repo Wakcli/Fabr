@@ -49,8 +49,9 @@ assets/textures/GroundSand005/**
 # Editor Build output
 /build/
 
-# Editor runtime scene output
-/scenes/
+# Editor runtime scene output; the demo scene ships so the quick start works
+/scenes/*
+!/scenes/main.ember
 
 # .NET build output from the C# SDK and game projects
 bin/
